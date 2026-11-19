@@ -464,6 +464,22 @@ def test_run_budget_is_shared_between_languages(
     assert result.stop_reason is StopReason.TARGET_REACHED
 
 
+def test_run_budget_starves_later_language_when_exhausted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_browser(monkeypatch, {RU_URL: b"ru-video", EN_URL: b"en-video"})
+
+    result = _produce(
+        tmp_path,
+        {"ru": 1, "en": 1},
+        runtime=make_runtime(search=SearchConfig(max_queries=6, pause=0.0)),
+    )
+
+    assert result.produced_by_language == {"ru": 1, "en": 0}
+    assert result.stop_reason is StopReason.QUERIES_EXHAUSTED
+
+
 def test_stale_tmp_files_are_swept(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

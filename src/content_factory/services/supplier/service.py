@@ -128,6 +128,7 @@ def _prepare_paths(data_dir: Path, languages: Mapping[str, int]) -> tuple[Path, 
         language_dir = content_dir / language
         _ensure_directory(language_dir)
         _sweep_stale_tmp(language_dir)
+    _sweep_stale_tmp(queries_dir)
     return content_dir, queries_dir, db_path
 
 
@@ -247,16 +248,16 @@ def _seed_queries(queries_dir: Path, language: str) -> None:
             Path(tmp_name).unlink(missing_ok=True)
 
 
-def _sweep_stale_tmp(content_dir: Path) -> None:
-    """Remove temporary files older than a day from one language directory."""
+def _sweep_stale_tmp(directory: Path) -> None:
+    """Remove temporary files older than a day from a working directory."""
     now = time.time()
-    tmp_dir = content_dir / ".tmp"
+    tmp_dir = directory / ".tmp"
     try:
-        candidates = [path for path in content_dir.glob("*.tmp") if path != tmp_dir]
+        candidates = [path for path in directory.glob("*.tmp") if path != tmp_dir]
         candidates.extend(tmp_dir.glob("*"))
     except OSError as ex:
-        logger.bind(path=str(content_dir), error=ex, error_type=type(ex).__name__).warning(
-            "Не удалось прочитать временные файлы {}", content_dir
+        logger.bind(path=str(directory), error=ex, error_type=type(ex).__name__).warning(
+            "Не удалось прочитать временные файлы {}", directory
         )
         return
 
