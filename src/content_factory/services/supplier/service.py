@@ -216,7 +216,11 @@ def _copy_without_overwrite(source: Path, destination: Path) -> None:
 
 
 def _seed_queries(queries_dir: Path, language: str) -> None:
-    """Скопировать сид запросов атомарно, не перезаписывая существующий файл."""
+    """Скопировать сид запросов, не перезаписывая существующий файл.
+
+    На файловых системах с hard link копия появляется атомарно; иначе файл
+    назначения создаётся эксклюзивно и заполняется копированием.
+    """
     destination = queries_dir / f"{language}.txt"
     source = _SEED_QUERIES_DIR / f"{language}.txt"
     if destination.exists() or not source.is_file():
