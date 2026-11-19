@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,24 @@ def test_compose_contract() -> None:
     assert worker["restart"] == "unless-stopped"
     assert "./app_data:/app/app_data" in api["volumes"]
     assert "./app_data:/app/app_data" in worker["volumes"]
+
+
+def test_compose_omits_security_opt_for_snap_docker() -> None:
+    services = _load("compose.yaml")["services"]
+
+    # snapd LP#1908448: AppArmor на Linux 1 запрещает exec контейнерам с
+    # ограничением привилегий, поэтому security_opt в compose не задаётся.
+    for name in ("init", "api", "worker"):
+        assert "security_opt" not in services[name]
+
+    assert services["api"]["cap_drop"] == ["ALL"]
+    assert services["worker"]["cap_drop"] == ["ALL"]
+
+
+def test_prefect_client_matches_server() -> None:
+    pyproject = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert "prefect>=3.6,<3.7" in pyproject["project"]["dependencies"]
 
 
 def test_workflow_triggers() -> None:

@@ -1,5 +1,9 @@
 name: content-factory
 
+# Docker на Linux 1 установлен из snap: AppArmor-профиль snapd запрещает exec
+# контейнерам с флагом, запрещающим повышение привилегий (snapd LP#1908448),
+# поэтому security_opt здесь не задаём. cap_drop: ALL и loopback-порт остаются.
+#
 # Общий образ для API, воркера и одноразового init-контейнера.
 # В проде образ приходит из GHCR (деплой-скрипт задаёт IMAGE_TAG), а build
 # остаётся для локальной разработки: `docker compose up -d --build`.
@@ -37,8 +41,6 @@ services:
         chmod 0755 /app/app_data /app/app_data/content
     volumes:
       - ./app_data:/app/app_data
-    security_opt:
-      - "no-new-privileges:true"
     restart: "no"
 
   api:
@@ -56,8 +58,6 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
-    security_opt:
-      - "no-new-privileges:true"
     cap_drop:
       - ALL
     healthcheck:
@@ -92,8 +92,6 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
-    security_opt:
-      - "no-new-privileges:true"
     cap_drop:
       - ALL
     # BitBrowser и Prefect могут жить на хосте Linux 1.

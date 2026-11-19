@@ -12,8 +12,12 @@ Linux 1. Корень принадлежит root, поэтому деплой-�
 ## 1. Требования
 
 - Docker Engine 24+ и Docker Compose 2.24+ (`env_file.required`,
-  `host-gateway`).
-- Prefect 3 API на Linux 2, доступный воркеру.
+  `host-gateway`). На Linux 1 Docker поставлен из snap: compose не задаёт
+  `security_opt` с запретом повышения привилегий, иначе AppArmor snapd
+  запрещает контейнерам `exec` (snapd LP#1908448). `cap_drop: ALL` и
+  loopback-порт остаются.
+- Prefect 3.6.x на Linux 2, доступный воркеру. Клиент в образе закреплён
+  `prefect>=3.6,<3.7`, чтобы совпадать с сервером 3.6.22.
 - BitBrowser и MCP-сервер, доступные из контейнера.
 - OpenSSH 9.0+ на хосте: нужны `sftp-server -P`/`-p` и запрос `copy-data`.
   Проверка: `ssh -V` и `sftp-server -Q requests` (на Debian/Ubuntu бинарник
