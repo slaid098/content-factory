@@ -78,6 +78,7 @@ class LanguageCounters:
     def absorb_download(self, result: DownloadResult) -> None:
         """Add download counters."""
         self.downloaded += len(result.downloaded)
+        self.rejected += result.rejected
         self.failed += result.failed
         self.attempts += len(result.downloaded) + result.failed
 

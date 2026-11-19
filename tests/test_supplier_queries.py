@@ -54,6 +54,26 @@ def test_load_language_queries_handles_bom(tmp_path: Path) -> None:
     assert [item.query for item in load_language_queries(tmp_path, "ru")] == ["запрос"]
 
 
+def test_load_language_queries_shuffles_and_caps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "ru.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "content_factory.services.supplier.queries.random.shuffle",
+        lambda items: items.reverse(),
+    )
+
+    queries = load_language_queries(tmp_path, "ru", max_queries=2)
+
+    assert [item.query for item in queries] == ["three", "two"]
+
+
+def test_load_language_queries_rejects_invalid_language(tmp_path: Path) -> None:
+    with pytest.raises(SupplierError, match="недопустимый код языка"):
+        load_language_queries(tmp_path, "../x")
+
+
 def test_load_language_queries_unreadable_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

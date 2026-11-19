@@ -239,29 +239,73 @@ def test_failed_author_does_not_stop_other_authors() -> None:
     assert result.rejected == 0
 
 
-def test_max_videos_per_author_two() -> None:
-    first = make_video("1")
-    second = make_video("2")
-    third = make_video("3")
-    values = {
-        first.url: make_metadata(first, views=5000),
-        second.url: make_metadata(second),
-        third.url: make_metadata(third),
-    }
-    probe = _probe_from(values)
+def test_decision_sink_error_does_not_abort_author() -> None:
+    video = make_video("1")
+
+    class FailingSink(FakeSink):
+        def save_decision(
+            self,
+            video: Video,
+            metadata: VideoMetadata,
+            decision: FilterDecision,
+        ) -> None:
+            del video, metadata, decision
+            raise SupplierError("db is down")
 
     result = filter_videos(
-        make_config(Path(), max_videos_per_author=2),
-        [first, second, third],
+        make_config(Path()),
+        [video],
         set(),
         set(),
-        FakeSink(),
+        FailingSink(),
+        probe=lambda url: make_metadata(video),
+    )
+
+    assert result.approved == (video,)
+    assert result.rejected == 0
+
+
+def test_failure_sink_error_does_not_abort_author() -> None:
+    video = make_video("1")
+
+    class FailingSink(FakeSink):
+        def save_failure(self, video: Video, reason: str) -> None:
+            del video, reason
+            raise SupplierError("db is down")
+
+    def probe(url: str) -> VideoMetadata:
+        raise SupplierError("permanent")
+
+    result = filter_videos(
+        make_config(Path()),
+        [video],
+        set(),
+        set(),
+        FailingSink(),
         probe=probe,
     )
 
-    assert result.approved == (second, third)
+    assert result.failed == 1
+
+
+def test_rejection_sink_error_does_not_abort_author() -> None:
+    video = make_video("1")
+
+    class FailingSink(FakeSink):
+        def save_rejection(self, video: Video, reason: str) -> None:
+            del video, reason
+            raise SupplierError("db is down")
+
+    result = filter_videos(
+        make_config(Path()),
+        [video],
+        known_ids={"1"},
+        used_authors=set(),
+        sink=FailingSink(),
+        probe=lambda url: pytest.fail("probe must not be called"),
+    )
+
     assert result.rejected == 1
-    assert len(probe.calls) == 3  # type: ignore[attr-defined]
 
 
 def test_duplicate_video_id_is_probed_once() -> None:

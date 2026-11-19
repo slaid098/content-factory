@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.parse
@@ -18,6 +19,21 @@ _JSON_HEADERS = {
 
 def _quote(profile_id: str) -> str:
     return urllib.parse.quote(profile_id, safe="")
+
+
+def _display_url(url: str) -> str:
+    """Return *url* without userinfo so credentials never reach logs."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return "<invalid url>"
+    if parts.username is None and parts.password is None:
+        return url
+    netloc = parts.hostname or ""
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
 class McpTransport:
@@ -54,21 +70,34 @@ class McpTransport:
     ) -> dict[str, Any]:
         """Выполнить запрос и вернуть JSON-объект ответа."""
         url = f"{self._base_url}{path}"
-        data = json.dumps(payload).encode("utf-8") if payload is not None else None
-        request = urllib.request.Request(url, data=data, method=method, headers=_JSON_HEADERS)
+        safe_url = _display_url(url)
         try:
+            data = json.dumps(payload).encode("utf-8") if payload is not None else None
+            request = urllib.request.Request(
+                url,
+                data=data,
+                method=method,
+                headers=_JSON_HEADERS,
+            )
             with urllib.request.urlopen(request, timeout=self._timeout) as response:
-                raw = response.read().decode("utf-8")
+                raw_bytes = response.read()
         except urllib.error.HTTPError as ex:
-            raise SupplierError(f"MCP call failed: {method} {url} -> HTTP {ex.code}") from ex
+            raise SupplierError(f"MCP call failed: {method} {safe_url} -> HTTP {ex.code}") from ex
         except (urllib.error.URLError, TimeoutError, OSError) as ex:
-            raise SupplierError(f"MCP call failed: {method} {url} -> connection error") from ex
+            raise SupplierError(f"MCP call failed: {method} {safe_url} -> connection error") from ex
+        except (TypeError, ValueError, http.client.HTTPException) as ex:
+            raise SupplierError(f"MCP call failed: {method} {safe_url} -> invalid request") from ex
+
+        try:
+            raw = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError as ex:
+            raise SupplierError(f"MCP call failed: {method} {safe_url} -> invalid UTF-8") from ex
         if not raw:
             return {}
         try:
             decoded: object = json.loads(raw)
         except json.JSONDecodeError as ex:
-            raise SupplierError(f"MCP call failed: {method} {url} -> invalid JSON") from ex
+            raise SupplierError(f"MCP call failed: {method} {safe_url} -> invalid JSON") from ex
         if not isinstance(decoded, dict):
-            raise SupplierError(f"MCP call failed: {method} {url} -> unexpected JSON")
+            raise SupplierError(f"MCP call failed: {method} {safe_url} -> unexpected JSON")
         return decoded

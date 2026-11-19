@@ -10,7 +10,6 @@ from pathlib import Path
 class SupplierConfig:
     """Environment settings merged with runtime limits and filesystem paths."""
 
-    mcp_url: str
     profile_id: str
     bitbrowser_url: str
     max_views: int
@@ -18,7 +17,6 @@ class SupplierConfig:
     min_duration: int
     max_duration: int
     min_age_days: int
-    max_videos_per_author: int
     max_queries: int
     scrolls_min: int
     scrolls_max: int
@@ -34,7 +32,6 @@ class SupplierConfig:
     captcha_cooldown_min: int
     captcha_cooldown_max: int
     probe_workers: int
-    filter_max: int
     filter_pause: float
     download_workers: int
     download_pause: float
@@ -42,7 +39,4 @@ class SupplierConfig:
     queries_dir: Path
     content_dir: Path
     proxy: str
-    headless: bool
-    mcp_timeout: int
-    close_profile_after_crawl: bool
     language: str

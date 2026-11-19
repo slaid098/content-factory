@@ -95,6 +95,19 @@ def test_fetch_to_tmp_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     assert list((cfg.content_dir / ".tmp").iterdir()) == []
 
 
+def test_fetch_to_tmp_wraps_directory_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(self: Path, *args: object, **kwargs: object) -> None:
+        raise OSError("denied")
+
+    monkeypatch.setattr(Path, "mkdir", fail)
+
+    with pytest.raises(SupplierError, match="denied"):
+        _fetch_to_tmp(make_video(), make_config(tmp_path))
+
+
 def test_fetch_to_tmp_replaces_stale_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -252,33 +265,6 @@ def test_download_videos_downloads_one_per_author(
     assert [item.video.video_id for item in result.downloaded] == ["1", "3"]
 
 
-def test_download_videos_respects_author_limit(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cfg = make_config(tmp_path, max_videos_per_author=2)
-    videos = [make_video("1"), make_video("2"), make_video("3")]
-    calls: list[str] = []
-
-    def fake_worker(
-        video: Video,
-        config: SupplierConfig,
-        proxy: str,
-        sink: FakeSink,
-    ) -> tuple[str, DownloadedVideo | None]:
-        del config, proxy, sink
-        calls.append(video.video_id)
-        item = DownloadedVideo(video=video, path="x.mp4", sha256=video.video_id, size=1)
-        return "downloaded", item
-
-    monkeypatch.setattr(downloader, "_download_worker", fake_worker)
-
-    result = download_videos(cfg, videos, FakeSink(), limit=None)
-
-    assert calls == ["1", "2"]
-    assert len(result.downloaded) == 2
-
-
 def test_download_videos_rejects_duplicate_sha256(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -352,6 +338,122 @@ def test_download_videos_removes_file_when_save_fails(
     assert sink.failures == [(video, "db is locked")]
     assert not (cfg.content_dir / "unique.mp4").exists()
     assert not (cfg.content_dir / "unique.tmp").exists()
+
+
+def test_download_videos_keeps_committed_file_when_save_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = make_config(tmp_path)
+    video = make_video()
+
+    def fake_fetch(_video: Video, config: SupplierConfig) -> tuple[Path, str, int]:
+        config.content_dir.mkdir(parents=True, exist_ok=True)
+        staged = config.content_dir / "shared.tmp"
+        staged.write_bytes(b"video")
+        return staged, "shared", 5
+
+    class RacingSink(FakeSink):
+        def __init__(self) -> None:
+            super().__init__()
+            self._checks = 0
+
+        def has_sha256(self, sha256: str) -> bool:
+            del sha256
+            self._checks += 1
+            return self._checks > 1
+
+        def save_download(self, item: DownloadedVideo) -> None:
+            del item
+            raise SupplierError("UNIQUE constraint failed: downloads.sha256")
+
+    monkeypatch.setattr(downloader, "_fetch_to_tmp", fake_fetch)
+    sink = RacingSink()
+
+    result = download_videos(cfg, [video], sink)
+
+    assert result.failed == 1
+    assert (cfg.content_dir / "shared.mp4").exists()
+
+
+def test_download_videos_keeps_file_when_commit_check_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = make_config(tmp_path)
+    video = make_video()
+
+    def fake_fetch(_video: Video, config: SupplierConfig) -> tuple[Path, str, int]:
+        config.content_dir.mkdir(parents=True, exist_ok=True)
+        staged = config.content_dir / "shared.tmp"
+        staged.write_bytes(b"video")
+        return staged, "shared", 5
+
+    class BrokenCheckSink(FakeSink):
+        def __init__(self) -> None:
+            super().__init__()
+            self._checks = 0
+
+        def has_sha256(self, sha256: str) -> bool:
+            del sha256
+            self._checks += 1
+            if self._checks == 1:
+                return False
+            raise SupplierError("db is down")
+
+        def save_download(self, item: DownloadedVideo) -> None:
+            del item
+            raise SupplierError("db is down")
+
+    monkeypatch.setattr(downloader, "_fetch_to_tmp", fake_fetch)
+    sink = BrokenCheckSink()
+
+    result = download_videos(cfg, [video], sink)
+
+    assert result.failed == 1
+    assert (cfg.content_dir / "shared.mp4").exists()
+
+
+def test_downloader_continues_when_author_rejection_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = make_config(tmp_path)
+    repo = Repository(cfg.db_path)
+    repo.init_schema()
+    used = make_video("used", "bob")
+    assert repo.add_found(used)
+    repo.save_download(
+        DownloadedVideo(video=used, path="downloads/used.mp4", sha256="sha-used", size=1)
+    )
+    stale = make_video("stale", "bob")
+    fresh = make_video("fresh", "alice")
+    for video in (stale, fresh):
+        assert repo.add_found(video)
+        repo.save_decision(video, make_metadata(video), FilterDecision(True))
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise SupplierError("db is down")
+
+    monkeypatch.setattr(repo, "save_rejection", fail)
+    calls: list[tuple[list[str], int | None]] = []
+
+    def fake_download_videos(
+        config: SupplierConfig,
+        videos: Sequence[Video],
+        sink: object,
+        limit: int | None = None,
+    ) -> DownloadResult:
+        del config, sink
+        calls.append(([video.video_id for video in videos], limit))
+        return DownloadResult()
+
+    monkeypatch.setattr(downloader, "download_videos", fake_download_videos)
+
+    result = Downloader(cfg, repo).download(limit=2)
+
+    assert calls == [(["fresh"], 2)]
+    assert result.rejected == 1
 
 
 def test_download_videos_zero_limit_does_not_touch_proxy(
@@ -495,6 +597,22 @@ def test_ytdlp_logger_bridges_and_strips_debug_prefix() -> None:
     assert "info" in messages
     assert "warning" in messages
     assert "error" in messages
+
+
+def test_ytdlp_logger_hides_proxy_on_every_level() -> None:
+    proxy = "http://user:secret@127.0.0.1:8080"
+    messages: list[str] = []
+    handler = logger.add(lambda message: messages.append(message.record["message"]), level="DEBUG")
+    try:
+        ydl_logger = _YtDlpLogger(proxy)
+        for emit in (ydl_logger.debug, ydl_logger.info, ydl_logger.warning, ydl_logger.error):
+            emit(f"failed via {proxy}")
+    finally:
+        logger.remove(handler)
+
+    assert len(messages) == 4
+    assert all("secret" not in message for message in messages)
+    assert all("<proxy>" in message for message in messages)
 
 
 def test_sanitize_handles_missing_proxy_and_invalid_url() -> None:

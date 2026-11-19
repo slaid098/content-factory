@@ -76,7 +76,9 @@ class SupplierSettings(BaseSettings):
     min_duration: int = Field(default=5, ge=0)
     max_video_duration: int = Field(default=60, ge=0)
     min_age_days: int = Field(default=5, ge=0)
-    max_videos_per_author: int = Field(default=1, ge=1)
+    # The engine enforces one video per author; the donor env key stays accepted
+    # only with the single valid value.
+    max_videos_per_author: Literal[1] = 1
     scrolls_min: int = Field(default=5, ge=0)
     scrolls_max: int = Field(default=8, ge=0)
     queries_per_session_min: int = Field(default=12, ge=0)
@@ -154,6 +156,8 @@ def _validate_proxy(proxy: str) -> None:
     """Reject proxies with an unknown scheme or an unparsable host."""
     if not proxy:
         return
+    if any(char.isspace() for char in proxy):
+        raise ConfigError("SUPPLIER_PROXY не должен содержать пробелы")
     try:
         parts = urlsplit(proxy)
         _ = parts.port
@@ -178,7 +182,6 @@ def build_supplier_config(
 ) -> SupplierConfig:
     """Merge env settings, runtime limits and paths for one language."""
     return SupplierConfig(
-        mcp_url=supplier.mcp_url.strip().rstrip("/"),
         profile_id=supplier.profile_id.strip(),
         bitbrowser_url=supplier.bitbrowser_url.strip().rstrip("/"),
         max_views=supplier.max_views,
@@ -186,7 +189,6 @@ def build_supplier_config(
         min_duration=supplier.min_duration,
         max_duration=supplier.max_video_duration,
         min_age_days=supplier.min_age_days,
-        max_videos_per_author=supplier.max_videos_per_author,
         max_queries=runtime.search.max_queries,
         scrolls_min=supplier.scrolls_min,
         scrolls_max=supplier.scrolls_max,
@@ -202,7 +204,6 @@ def build_supplier_config(
         captcha_cooldown_min=supplier.captcha_cooldown_min,
         captcha_cooldown_max=supplier.captcha_cooldown_max,
         probe_workers=supplier.probe_workers,
-        filter_max=runtime.filter.max,
         filter_pause=runtime.filter.pause,
         download_workers=runtime.download.workers,
         download_pause=runtime.download.pause,
@@ -210,8 +211,5 @@ def build_supplier_config(
         queries_dir=queries_dir,
         content_dir=content_dir,
         proxy=supplier.proxy.strip(),
-        headless=supplier.headless,
-        mcp_timeout=supplier.mcp_timeout,
-        close_profile_after_crawl=supplier.close_profile_after_crawl,
         language=language,
     )

@@ -7,7 +7,7 @@ import re
 import time
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from loguru import logger
 
@@ -36,7 +36,7 @@ _CAPTCHA_TEXT_MARKERS = (
     "пройдите проверку",
     "подтвердите свою личность",
 )
-_CAPTCHA_URL_MARKERS = ("/verify", "captcha")
+_CAPTCHA_URL_PATHS = ("/verify", "/captcha")
 
 _HREF_RE = re.compile(r'href="([^"]*)"')
 _REF_RE = re.compile(r"\[(r\d+)\]")
@@ -118,8 +118,11 @@ def _looks_like_captcha_text(text: str) -> bool:
 
 
 def _looks_like_captcha_url(url: str) -> bool:
-    lowered = url.lower()
-    return any(marker in lowered for marker in _CAPTCHA_URL_MARKERS)
+    try:
+        path = urlsplit(url).path.lower()
+    except ValueError:
+        return False
+    return any(marker in path for marker in _CAPTCHA_URL_PATHS)
 
 
 def _current_url(session: McpSession) -> str:

@@ -170,6 +170,73 @@ def test_deadline_is_checked_before_work(tmp_path: Path) -> None:
     assert result == LanguageResult(downloaded=0, stop_reason=StopReason.DURATION_EXCEEDED)
 
 
+def test_deadline_is_checked_before_filter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    assert repo.add_found(make_video("1"))
+    clock = iter([0.0, 100.0])
+    monkeypatch.setattr(pipeline.time, "monotonic", lambda: next(clock))
+
+    result = run_language(
+        make_config(tmp_path),
+        repo=repo,
+        mcp=object(),
+        queries=[_query()],
+        target=1,
+        budget=Budget(queries=10, filters=10),
+        deadline=50.0,
+    )
+
+    assert result.stop_reason is StopReason.DURATION_EXCEEDED
+
+
+def test_deadline_is_checked_before_download(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    video = make_video("1")
+    assert repo.add_found(video)
+    repo.save_decision(video, make_metadata(video), FilterDecision(True))
+    clock = iter([0.0, 100.0])
+    monkeypatch.setattr(pipeline.time, "monotonic", lambda: next(clock))
+
+    result = run_language(
+        make_config(tmp_path),
+        repo=repo,
+        mcp=object(),
+        queries=[_query()],
+        target=1,
+        budget=Budget(queries=10, filters=10),
+        deadline=50.0,
+    )
+
+    assert result.stop_reason is StopReason.DURATION_EXCEEDED
+
+
+def test_deadline_is_checked_before_finder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    clock = iter([0.0, 100.0])
+    monkeypatch.setattr(pipeline.time, "monotonic", lambda: next(clock))
+
+    result = run_language(
+        make_config(tmp_path),
+        repo=repo,
+        mcp=object(),
+        queries=[_query()],
+        target=1,
+        budget=Budget(queries=10, filters=10),
+        deadline=50.0,
+    )
+
+    assert result.stop_reason is StopReason.DURATION_EXCEEDED
+
+
 def test_leftovers_are_filtered_and_downloaded_before_searching(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -300,6 +367,48 @@ def test_no_queries_returns_queries_exhausted(tmp_path: Path) -> None:
     assert result == LanguageResult(downloaded=0, stop_reason=StopReason.QUERIES_EXHAUSTED)
 
 
+def test_no_queries_flag_returns_no_queries(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+
+    result = run_language(
+        make_config(tmp_path),
+        repo=repo,
+        mcp=object(),
+        queries=[],
+        target=1,
+        budget=Budget(queries=10, filters=10),
+        deadline=time.monotonic() + 60,
+        no_queries=True,
+    )
+
+    assert result == LanguageResult(downloaded=0, stop_reason=StopReason.NO_QUERIES)
+
+
+def test_no_queries_flag_still_drains_leftovers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    video = make_video("1")
+    assert repo.add_found(video)
+    _approving_filter(monkeypatch)
+    _saving_downloader(monkeypatch)
+
+    result = run_language(
+        make_config(tmp_path),
+        repo=repo,
+        mcp=object(),
+        queries=[],
+        target=1,
+        budget=Budget(queries=10, filters=10),
+        deadline=time.monotonic() + 60,
+        no_queries=True,
+    )
+
+    assert result.downloaded == 1
+    assert result.stop_reason is StopReason.TARGET_REACHED
+
+
 def test_finder_without_queries_or_results_is_no_progress(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -427,6 +536,41 @@ def test_download_limit_is_remaining_need(
     assert result.stop_reason is StopReason.TARGET_REACHED
     assert limits == [2]
     assert repo.downloaded_count("ru") == 3
+
+
+def test_download_rejections_are_counted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    video = make_video("1")
+    assert repo.add_found(video)
+    repo.save_decision(video, make_metadata(video), FilterDecision(True))
+
+    def factory(cfg: object, repo: Repository) -> object:
+        del cfg, repo
+
+        class Stage:
+            def download(self, limit: int) -> DownloadResult:
+                del limit
+                return DownloadResult(rejected=1)
+
+        return Stage()
+
+    monkeypatch.setattr(pipeline, "Downloader", factory)
+
+    result = run_language(
+        make_config(tmp_path),
+        repo=repo,
+        mcp=object(),
+        queries=[],
+        target=1,
+        budget=Budget(queries=10, filters=10),
+        deadline=time.monotonic() + 60,
+    )
+
+    assert result.rejected == 1
+    assert result.downloaded == 0
 
 
 def test_rejected_candidates_are_counted(

@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import time
 from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
 
 from content_factory.config.settings import Settings
 from content_factory.constants import CONTENT_DIR, DB_DIR, DB_FILENAME, QUERIES_DIR
 from content_factory.exceptions.errors import SupplierError
-from content_factory.schemas.config.runtime import RunConfig
+from content_factory.schemas.config.runtime import RunConfig, SearchConfig
 from content_factory.schemas.supplier.results import (
+    FilterDecision,
     LanguageResult,
     ProduceResult,
     StopReason,
@@ -85,7 +89,10 @@ class FakeMcp:
         del wait_until, timeout_ms
         self.calls.append(("navigate", url))
         self.current_url = url
-        self.current_dom = self.ru_dom if re.search(r"%[Dd][0-9A-Fa-f]", url) else self.en_dom
+        query = parse_qs(urlsplit(url).query).get("q", [""])[0]
+        self.current_dom = (
+            self.ru_dom if re.search(r"[\u0400-\u04FF]", unquote(query)) else self.en_dom
+        )
 
     def wait_for_selector(
         self,
@@ -160,8 +167,9 @@ def _patch_run_language(
         target: int,
         budget: object,
         deadline: float,
+        no_queries: bool = False,
     ) -> LanguageResult:
-        del repo, mcp, queries, budget, deadline
+        del repo, mcp, queries, budget, deadline, no_queries
         language = cfg.language
         calls.append((language, target))
         return outcomes[language]
@@ -222,6 +230,7 @@ def test_queries_are_seeded_once_and_never_overwritten(
     queries_path = tmp_path / QUERIES_DIR / "ru.txt"
     assert first.stop_reason is StopReason.NO_PROGRESS
     assert queries_path.read_text(encoding="utf-8") == seed
+    assert list(queries_path.parent.glob(".*.tmp")) == []
 
     queries_path.write_text("# custom list\n", encoding="utf-8")
     _produce(tmp_path, {"ru": 1})
@@ -345,22 +354,177 @@ def test_deadline_check_between_languages_stops_plan(
     assert result.stop_reason is StopReason.DURATION_EXCEEDED
 
 
-def test_language_without_queries_is_skipped(
+def test_language_without_queries_returns_no_queries(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(service, "McpClient", FakeMcp)
+    calls: list[tuple[str, list[object], bool]] = []
 
-    def fail_run(*args: object, **kwargs: object) -> LanguageResult:
-        raise AssertionError("language must be skipped")
+    def fake_run(
+        cfg: object,
+        *,
+        repo: object,
+        mcp: object,
+        queries: object,
+        target: int,
+        budget: object,
+        deadline: float,
+        no_queries: bool = False,
+    ) -> LanguageResult:
+        del repo, mcp, target, budget, deadline
+        calls.append((cfg.language, list(queries), no_queries))
+        return LanguageResult(0, StopReason.NO_QUERIES)
 
-    monkeypatch.setattr(service, "run_language", fail_run)
+    monkeypatch.setattr(service, "run_language", fake_run)
 
     result = _produce(tmp_path, {"de": 1})
 
+    assert calls == [("de", [], True)]
     assert result.produced_by_language == {"de": 0}
     assert result.stop_reason is StopReason.NO_QUERIES
     assert (tmp_path / CONTENT_DIR / "de").is_dir()
+
+
+def test_invalid_language_is_rejected_before_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        service,
+        "McpClient",
+        lambda *args, **kwargs: pytest.fail("MCP must not be used"),
+    )
+
+    with pytest.raises(SupplierError, match="недопустимый код языка"):
+        _produce(tmp_path, {"../x": 1})
+
+    assert not (tmp_path / CONTENT_DIR).exists()
+
+
+def test_empty_query_file_drains_approved_leftovers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(service, "McpClient", FakeMcp)
+    video = make_video("444", "dmitri", language="de")
+    repo = Repository(tmp_path / DB_DIR / DB_FILENAME)
+    repo.init_schema()
+    assert repo.add_found(video)
+    repo.save_decision(video, make_metadata(video), FilterDecision(True))
+    queries_dir = tmp_path / QUERIES_DIR
+    queries_dir.mkdir(parents=True)
+    (queries_dir / "de.txt").write_text("# empty list\n", encoding="utf-8")
+    payload = b"de-video"
+
+    monkeypatch.setattr(
+        "content_factory.services.supplier.filter.fetch_video_metadata",
+        lambda url, proxy="", timeout=30: make_metadata(video),
+    )
+
+    class FakeYDL:
+        def __init__(self, opts: dict[str, object]) -> None:
+            self.opts = opts
+
+        def __enter__(self) -> FakeYDL:
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+        def extract_info(self, url: str, download: bool = True) -> dict[str, object]:
+            del url, download
+            Path(str(self.opts["outtmpl"])).write_bytes(payload)
+            return {"ext": "mp4", "vcodec": "h264"}
+
+    monkeypatch.setattr(downloader, "YoutubeDL", FakeYDL)
+
+    result = _produce(tmp_path, {"de": 1})
+
+    sha = hashlib.sha256(payload).hexdigest()
+    assert result.produced_by_language == {"de": 1}
+    assert result.stop_reason is StopReason.TARGET_REACHED
+    assert (tmp_path / CONTENT_DIR / "de" / f"{sha}.mp4").read_bytes() == payload
+
+
+def test_run_budget_is_shared_between_languages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_browser(monkeypatch, {RU_URL: b"ru-video", EN_URL: b"en-video"})
+
+    result = _produce(
+        tmp_path,
+        {"ru": 1, "en": 1},
+        runtime=make_runtime(search=SearchConfig(max_queries=8, pause=0.0)),
+    )
+
+    assert result.produced_by_language == {"ru": 1, "en": 1}
+    assert result.produced_total == 2
+    assert result.stop_reason is StopReason.TARGET_REACHED
+
+
+def test_stale_tmp_files_are_swept(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(service, "McpClient", FakeMcp)
+    _patch_run_language(
+        monkeypatch,
+        {"ru": LanguageResult(0, StopReason.NO_PROGRESS)},
+    )
+    content = tmp_path / CONTENT_DIR / "ru"
+    content.mkdir(parents=True)
+    stale = content / "old.tmp"
+    fresh = content / "new.tmp"
+    stale.write_bytes(b"old")
+    fresh.write_bytes(b"new")
+    old_time = time.time() - 2 * 24 * 60 * 60
+    os.utime(stale, (old_time, old_time))
+    tmp_dir = content / ".tmp"
+    tmp_dir.mkdir()
+    stale_part = tmp_dir / "111.part"
+    stale_part.write_bytes(b"part")
+    os.utime(stale_part, (old_time, old_time))
+
+    _produce(tmp_path, {"ru": 1})
+
+    assert not stale.exists()
+    assert not stale_part.exists()
+    assert fresh.exists()
+
+
+def test_stale_tmp_sweep_logs_filesystem_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = tmp_path / "content"
+    content.mkdir()
+    stale = content / "old.tmp"
+    stale.write_bytes(b"old")
+    old_time = time.time() - 2 * 24 * 60 * 60
+    os.utime(stale, (old_time, old_time))
+
+    def fail(self: Path, *args: object, **kwargs: object) -> os.stat_result:
+        raise OSError("denied")
+
+    monkeypatch.setattr(Path, "stat", fail)
+
+    service._sweep_stale_tmp(content)
+
+    assert stale in set(content.iterdir())
+
+
+def test_stale_tmp_sweep_logs_listing_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(self: Path, *args: object, **kwargs: object) -> object:
+        raise OSError("denied")
+
+    monkeypatch.setattr(Path, "glob", fail)
+
+    service._sweep_stale_tmp(tmp_path)
 
 
 def test_pause_between_languages_is_used(
@@ -424,7 +588,7 @@ def test_close_error_is_swallowed(
 ) -> None:
     class RaisingCloseMcp(FakeMcp):
         def close_profile(self, profile_id: str) -> None:
-            raise SupplierError("close failed")
+            raise RuntimeError("close failed")
 
     monkeypatch.setattr(service, "McpClient", RaisingCloseMcp)
     _patch_run_language(
@@ -465,23 +629,23 @@ def test_seed_queries_reports_filesystem_errors(
     with pytest.raises(SupplierError, match="не удалось создать файл запросов"):
         service._seed_queries(tmp_path / "queries", "ru")
 
+    assert not (tmp_path / "queries" / "ru.txt").exists()
+    assert list((tmp_path / "queries").glob(".*.tmp")) == []
+
 
 def test_seed_queries_ignores_a_race(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    real_open = Path.open
+    def racing_link(*args: object, **kwargs: object) -> None:
+        raise FileExistsError
 
-    def fake_open(self: Path, mode: str = "r", *args: object, **kwargs: object) -> object:
-        if mode == "xb":
-            raise FileExistsError
-        return real_open(self, mode, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "open", fake_open)
+    monkeypatch.setattr(service.os, "link", racing_link)
 
     service._seed_queries(tmp_path / "queries", "ru")
 
     assert not (tmp_path / "queries" / "ru.txt").exists()
+    assert list((tmp_path / "queries").glob(".*.tmp")) == []
 
 
 def test_ensure_directory_reports_filesystem_errors(
@@ -553,7 +717,17 @@ def test_pause_between_respects_zero_and_deadline(monkeypatch: pytest.MonkeyPatc
                 LanguageResult(0, StopReason.NO_QUERIES),
             ],
             3,
-            StopReason.QUERIES_EXHAUSTED,
+            StopReason.NO_QUERIES,
+            None,
+        ),
+        (
+            {"ru": 0, "en": 0},
+            [
+                LanguageResult(0, StopReason.NO_QUERIES),
+                LanguageResult(0, StopReason.NO_PROGRESS),
+            ],
+            2,
+            StopReason.NO_QUERIES,
             None,
         ),
         (
@@ -563,7 +737,7 @@ def test_pause_between_respects_zero_and_deadline(monkeypatch: pytest.MonkeyPatc
             StopReason.STOCK_SHORTFALL,
             None,
         ),
-        ({}, [], 0, StopReason.TARGET_REACHED, None),
+        ({}, [], 0, StopReason.ENOUGH_STOCK, None),
     ],
 )
 def test_result_aggregation(

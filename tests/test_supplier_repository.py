@@ -19,6 +19,7 @@ from content_factory.schemas.supplier.video import (
     Video,
     VideoMetadata,
 )
+from content_factory.services.supplier import repository
 from content_factory.services.supplier.repository import Repository
 
 
@@ -365,3 +366,60 @@ def test_database_errors_are_wrapped(
         repo.save_download(item)
     with pytest.raises(SupplierError, match="проверить SHA-256"):
         repo.has_sha256("abc")
+
+
+def test_database_read_errors_are_wrapped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(
+        "content_factory.services.supplier.repository.sqlite3.connect",
+        fail,
+    )
+
+    with pytest.raises(SupplierError, match="прочитать решения"):
+        repo.decided_video_ids()
+    with pytest.raises(SupplierError, match="прочитать авторов"):
+        repo.used_authors()
+    with pytest.raises(SupplierError, match="посчитать скачанные видео"):
+        repo.downloaded_count("ru")
+    with pytest.raises(SupplierError, match="прочитать видео"):
+        repo.list_videos(STATUS_FOUND)
+
+
+def test_database_directory_errors_are_wrapped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(self: Path, *args: object, **kwargs: object) -> None:
+        raise OSError("denied")
+
+    monkeypatch.setattr(Path, "mkdir", fail)
+
+    with pytest.raises(SupplierError, match="не удалось создать каталог"):
+        Repository(tmp_path / "nested" / "supplier.db").init_schema()
+
+
+def test_language_migration_tolerates_duplicate_column(tmp_path: Path) -> None:
+    db_path = tmp_path / "duplicate.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE videos (video_id TEXT PRIMARY KEY, language TEXT NOT NULL DEFAULT '')"
+        )
+
+        repository._add_language_column(conn)
+
+    assert db_path.is_file()
+
+
+def test_language_migration_reraises_other_errors() -> None:
+    with (
+        sqlite3.connect(":memory:") as conn,
+        pytest.raises(sqlite3.OperationalError, match="no such table"),
+    ):
+        repository._add_language_column(conn)

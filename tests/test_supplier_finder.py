@@ -14,6 +14,7 @@ from content_factory.services.supplier.finder import (
     Finder,
     _blocked_until,
     _is_captcha_page,
+    _looks_like_captcha_url,
     _normalize_url,
     _sleep_human,
     find_videos,
@@ -434,6 +435,17 @@ def test_is_captcha_page_uses_url_and_dom() -> None:
     assert _is_captcha_page(FakeMcp(url_value="https://www.tiktok.com/verify")) is True
     assert _is_captcha_page(FakeMcp(doms=[CAPTCHA_DOM])) is True
     assert _is_captcha_page(FakeMcp()) is False
+
+
+def test_captcha_url_check_ignores_query_text() -> None:
+    url = "https://www.tiktok.com/search?q=captcha"
+
+    assert _looks_like_captcha_url(url) is False
+    assert _is_captcha_page(FakeMcp(url_value=url)) is False
+
+
+def test_captcha_url_check_ignores_malformed_url() -> None:
+    assert _looks_like_captcha_url("http://[::1") is False
 
 
 def test_blocked_until_is_iso_timestamp() -> None:

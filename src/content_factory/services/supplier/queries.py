@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import random
+import re
 from pathlib import Path
 
 from content_factory.exceptions.errors import SupplierError
 from content_factory.schemas.supplier.search import QuerySpec
+
+_LANGUAGE_RE = re.compile(r"^[a-z]{2,3}$")
 
 
 def _read_file(path: Path) -> list[str]:
@@ -22,20 +26,31 @@ def _read_file(path: Path) -> list[str]:
     return queries
 
 
-def load_language_queries(directory: Path, language: str) -> list[QuerySpec]:
+def load_language_queries(
+    directory: Path,
+    language: str,
+    *,
+    max_queries: int | None = None,
+) -> list[QuerySpec]:
     """Прочитать запросы одного языка из ``<language>.txt``.
+
+    Запросы перемешиваются, чтобы каждый запуск начинал с разных строк
+    файла, и ограничиваются ``max_queries``.
 
     Args:
         directory: Каталог с файлами запросов.
         language: Код языка, например ``ru``.
+        max_queries: Максимум запросов; ``None`` означает без предела.
 
     Returns:
-        Уникальные запросы в порядке файла. Пустой список означает, что файла
-        нет или в нём нет ни одной строки запроса.
+        Уникальные перемешанные запросы. Пустой список означает, что файла
+        нет, в нём нет строк запроса или лимит равен нулю.
 
     Raises:
-        SupplierError: Файл существует, но не читается.
+        SupplierError: Код языка недопустим или файл существует, но не читается.
     """
+    if _LANGUAGE_RE.fullmatch(language) is None:
+        raise SupplierError(f"недопустимый код языка: {language!r}")
     path = directory / f"{language}.txt"
     if not path.is_file():
         return []
@@ -46,4 +61,8 @@ def load_language_queries(directory: Path, language: str) -> list[QuerySpec]:
             continue
         seen.add(query)
         result.append(QuerySpec(query=query, language=language, source=path))
+
+    random.shuffle(result)
+    if max_queries is not None:
+        result = result[: max(0, max_queries)]
     return result

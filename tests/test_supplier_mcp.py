@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -239,6 +240,77 @@ def test_connection_error_includes_url(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(SupplierError, match="connection error") as error:
         _session().url()
     assert "http://mcp/api/v1/sessions/p/url" in str(error.value)
+
+
+def test_malformed_url_is_wrapped() -> None:
+    with pytest.raises(SupplierError, match="invalid request"):
+        McpClient("").session("p").title()
+
+
+def test_http_client_error_is_wrapped(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_urlopen(request: urllib.request.Request, timeout: int = 0) -> object:
+        raise http.client.HTTPException("broken")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(SupplierError, match="invalid request"):
+        _session().url()
+
+
+def test_invalid_utf8_is_wrapped(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Response:
+        def read(self) -> bytes:
+            return b"\xff\xfe"
+
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: Response())
+    with pytest.raises(SupplierError, match="invalid UTF-8"):
+        _session().title()
+
+
+def test_error_messages_strip_userinfo(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_urlopen(request: urllib.request.Request, timeout: int = 0) -> object:
+        raise urllib.error.URLError("refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(SupplierError) as error:
+        McpClient("http://user:secret@mcp:8765").session("p").url()
+
+    message = str(error.value)
+    assert "secret" not in message
+    assert "user" not in message
+    assert "http://mcp:8765/api/v1/sessions/p/url" in message
+
+
+def test_error_messages_strip_userinfo_without_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_urlopen(request: urllib.request.Request, timeout: int = 0) -> object:
+        raise urllib.error.URLError("refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(SupplierError) as error:
+        McpClient("http://user:secret@mcp").session("p").url()
+
+    message = str(error.value)
+    assert "secret" not in message
+    assert "http://mcp/api/v1/sessions/p/url" in message
+
+
+def test_error_messages_hide_malformed_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_urlopen(request: urllib.request.Request, timeout: int = 0) -> object:
+        raise urllib.error.URLError("refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(SupplierError) as error:
+        McpClient("http://user:secret@mcp:bad").session("p").url()
+
+    assert str(error.value).endswith("connection error")
+    assert "secret" not in str(error.value)
 
 
 def test_invalid_json(monkeypatch: pytest.MonkeyPatch) -> None:

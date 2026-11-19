@@ -26,31 +26,38 @@ from content_factory.services.supplier.repository import Repository
 _FORMAT = "best[format_id!*=download]/best"
 _AUDIO_EXTS = frozenset({"aac", "m4a", "mp3", "ogg", "opus", "wav"})
 _HASH_CHUNK = 1024 * 1024
+_MAX_VIDEOS_PER_AUTHOR = 1
 # Один процесс производит один план, поэтому блокировка сериализует финальную
 # проверку SHA-256 и переименование: два одинаковых файла не перетрут друг друга.
+# Между процессами безопасность даёт UNIQUE(downloads.sha256): проигравший не
+# удаляет уже закоммиченный файл победителя (см. ``_remove_final_if_uncommitted``).
 _FINALIZE_LOCK = threading.Lock()
 
 
 class _YtDlpLogger:
     """Мост от протокола логгера yt-dlp к loguru."""
 
+    def __init__(self, proxy: str = "") -> None:
+        """Запомнить прокси, чтобы вычищать его из сообщений yt-dlp."""
+        self._proxy = proxy
+
     def debug(self, message: str) -> None:
         """Записать отладочное сообщение yt-dlp."""
         if message.startswith("[debug] "):
             message = message[8:]
-        logger.bind(source="yt-dlp").debug("{}", message)
+        logger.bind(source="yt-dlp").debug("{}", _sanitize(message, self._proxy))
 
     def info(self, message: str) -> None:
         """Записать информационное сообщение yt-dlp."""
-        logger.bind(source="yt-dlp").debug("{}", message)
+        logger.bind(source="yt-dlp").debug("{}", _sanitize(message, self._proxy))
 
     def warning(self, message: str) -> None:
         """Записать предупреждение yt-dlp."""
-        logger.bind(source="yt-dlp").warning("{}", message)
+        logger.bind(source="yt-dlp").warning("{}", _sanitize(message, self._proxy))
 
     def error(self, message: str) -> None:
         """Записать ошибку yt-dlp."""
-        logger.bind(source="yt-dlp").error("{}", message)
+        logger.bind(source="yt-dlp").error("{}", _sanitize(message, self._proxy))
 
 
 def _sha256(path: Path) -> str:
@@ -107,7 +114,7 @@ def _download_opts(cfg: SupplierConfig, tmp_path: Path) -> dict[str, Any]:
         "no_warnings": True,
         "noprogress": True,
         "overwrites": True,
-        "logger": _YtDlpLogger(),
+        "logger": _YtDlpLogger(cfg.proxy),
         "match_filter": _match_filter,
     }
 
@@ -127,11 +134,14 @@ def _fetch_to_tmp(video: Video, cfg: SupplierConfig) -> tuple[Path, str, int]:
         SupplierError: yt-dlp не смог скачать видео или вернул не mp4.
     """
     content_dir = cfg.content_dir
-    content_dir.mkdir(parents=True, exist_ok=True)
     tmp_dir = content_dir / ".tmp"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        content_dir.mkdir(parents=True, exist_ok=True)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        _cleanup_tmp(tmp_dir, video.video_id)
+    except OSError as ex:
+        raise SupplierError(_clean_error(ex, cfg.proxy)) from ex
     raw_path = tmp_dir / f"{video.video_id}.part"
-    _cleanup_tmp(tmp_dir, video.video_id)
 
     try:
         with YoutubeDL(_download_opts(cfg, raw_path)) as ydl:
@@ -164,16 +174,25 @@ def _fetch_to_tmp(video: Video, cfg: SupplierConfig) -> tuple[Path, str, int]:
     return staged, sha256, size
 
 
-def _select_videos(videos: Sequence[Video], max_per_author: int) -> list[Video]:
+def _select_videos(videos: Sequence[Video]) -> list[Video]:
     selected: list[Video] = []
     counts: dict[str, int] = {}
     for video in videos:
         count = counts.get(video.author, 0)
-        if count >= max_per_author:
+        if count >= _MAX_VIDEOS_PER_AUTHOR:
             continue
         counts[video.author] = count + 1
         selected.append(video)
     return selected
+
+
+def _record_rejection(sink: DownloadSink, video: Video, reason: str) -> None:
+    try:
+        sink.save_rejection(video, reason)
+    except SupplierError as ex:
+        logger.bind(error=ex, error_type=type(ex).__name__).error(
+            "Не удалось сохранить отказ {}", video.video_id
+        )
 
 
 def _record_failure(sink: DownloadSink, video: Video, reason: str) -> None:
@@ -183,6 +202,18 @@ def _record_failure(sink: DownloadSink, video: Video, reason: str) -> None:
         logger.bind(error=ex, error_type=type(ex).__name__).error(
             "Не удалось сохранить ошибку скачивания {}", video.video_id
         )
+
+
+def _remove_final_if_uncommitted(sink: DownloadSink, final_path: Path, sha256: str) -> None:
+    """Remove a finalized file only when no DB row points to it."""
+    try:
+        committed = sink.has_sha256(sha256)
+    except (OSError, SupplierError):
+        # When the check itself fails, keep the file: deleting a committed
+        # winner is worse than leaving an orphan.
+        return
+    if not committed:
+        final_path.unlink(missing_ok=True)
 
 
 def _download_worker(
@@ -207,7 +238,7 @@ def _download_worker(
         try:
             if sink.has_sha256(sha256):
                 staged.unlink(missing_ok=True)
-                sink.save_rejection(video, "duplicate_sha256")
+                _record_rejection(sink, video, "duplicate_sha256")
                 logger.bind(video_id=video.video_id, sha256=sha256).warning(
                     "Видео {} отклонено: duplicate_sha256", video.video_id
                 )
@@ -225,7 +256,7 @@ def _download_worker(
         except (SupplierError, OSError) as ex:
             staged.unlink(missing_ok=True)
             if moved:
-                final_path.unlink(missing_ok=True)
+                _remove_final_if_uncommitted(sink, final_path, sha256)
             reason = _clean_error(ex, proxy)
             _record_failure(sink, video, reason)
             logger.bind(error=ex, error_type=type(ex).__name__).error(
@@ -268,7 +299,7 @@ def download_videos(
     Returns:
         Скачанные видео и счётчики отказов и сбоев.
     """
-    selected = _select_videos(videos, cfg.max_videos_per_author)
+    selected = _select_videos(videos)
     if not selected:
         return DownloadResult()
 
@@ -354,14 +385,16 @@ class Downloader:
         """
         used = self._repo.used_authors()
         rejected = 0
+        available: list[Video] = []
         for video in self._repo.list_videos(STATUS_APPROVED, language=self._cfg.language):
             if video.author in used:
-                self._repo.save_rejection(video, "author_used")
+                _record_rejection(self._repo, video, "author_used")
                 rejected += 1
+                continue
+            available.append(video)
 
-        approved = self._repo.list_videos(STATUS_APPROVED, language=self._cfg.language)
-        if not approved or limit <= 0:
+        if not available or limit <= 0:
             return DownloadResult(rejected=rejected)
 
-        result = download_videos(self._cfg, approved, self._repo, limit=limit)
+        result = download_videos(self._cfg, available, self._repo, limit=limit)
         return replace(result, rejected=result.rejected + rejected)

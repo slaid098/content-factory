@@ -63,7 +63,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_videos_author_downloaded
 
 @contextmanager
 def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as ex:
+        raise SupplierError(f"не удалось создать каталог {db_path.parent}: {ex}") from ex
     conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
     try:
@@ -76,6 +79,15 @@ def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
         raise
     finally:
         conn.close()
+
+
+def _add_language_column(conn: sqlite3.Connection) -> None:
+    """Add the language column, tolerating a concurrent migration."""
+    try:
+        conn.execute("ALTER TABLE videos ADD COLUMN language TEXT NOT NULL DEFAULT ''")
+    except sqlite3.OperationalError as ex:
+        if "duplicate column name" not in str(ex).lower():
+            raise
 
 
 def _row_to_video(row: sqlite3.Row) -> Video:
@@ -123,7 +135,7 @@ class Repository:
                 conn.executescript(_SCHEMA_TABLES)
                 columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(videos)")}
                 if "language" not in columns:
-                    conn.execute("ALTER TABLE videos ADD COLUMN language TEXT NOT NULL DEFAULT ''")
+                    _add_language_column(conn)
                 conn.executescript(_SCHEMA_INDEXES)
         except sqlite3.Error as ex:
             raise SupplierError(f"не удалось подготовить схему поставщика: {ex}") from ex
@@ -317,30 +329,51 @@ class Repository:
         return row is not None
 
     def decided_video_ids(self) -> set[str]:
-        """Вернуть идентификаторы видео с финальным статусом."""
-        with _connect(self._db_path) as conn:
-            rows = conn.execute(
-                "SELECT video_id FROM videos WHERE status <> ?",
-                (STATUS_FOUND,),
-            ).fetchall()
+        """Вернуть идентификаторы видео с финальным статусом.
+
+        Raises:
+            SupplierError: Запрос к базе не удался.
+        """
+        try:
+            with _connect(self._db_path) as conn:
+                rows = conn.execute(
+                    "SELECT video_id FROM videos WHERE status <> ?",
+                    (STATUS_FOUND,),
+                ).fetchall()
+        except sqlite3.Error as ex:
+            raise SupplierError(f"не удалось прочитать решения: {ex}") from ex
         return {str(row["video_id"]) for row in rows}
 
     def used_authors(self) -> set[str]:
-        """Вернуть авторов, у которых уже есть скачанное видео."""
-        with _connect(self._db_path) as conn:
-            rows = conn.execute(
-                "SELECT DISTINCT author FROM videos WHERE status = ?",
-                (STATUS_DOWNLOADED,),
-            ).fetchall()
+        """Вернуть авторов, у которых уже есть скачанное видео.
+
+        Raises:
+            SupplierError: Запрос к базе не удался.
+        """
+        try:
+            with _connect(self._db_path) as conn:
+                rows = conn.execute(
+                    "SELECT DISTINCT author FROM videos WHERE status = ?",
+                    (STATUS_DOWNLOADED,),
+                ).fetchall()
+        except sqlite3.Error as ex:
+            raise SupplierError(f"не удалось прочитать авторов: {ex}") from ex
         return {str(row["author"]) for row in rows}
 
     def downloaded_count(self, language: str) -> int:
-        """Посчитать скачанные видео одного языка."""
-        with _connect(self._db_path) as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) AS count FROM videos WHERE language = ? AND status = ?",
-                (language, STATUS_DOWNLOADED),
-            ).fetchone()
+        """Посчитать скачанные видео одного языка.
+
+        Raises:
+            SupplierError: Запрос к базе не удался.
+        """
+        try:
+            with _connect(self._db_path) as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS count FROM videos WHERE language = ? AND status = ?",
+                    (language, STATUS_DOWNLOADED),
+                ).fetchone()
+        except sqlite3.Error as ex:
+            raise SupplierError(f"не удалось посчитать скачанные видео: {ex}") from ex
         return 0 if row is None else int(row["count"])
 
     def list_videos(
@@ -380,8 +413,11 @@ class Repository:
         if limit is not None:
             query += " LIMIT ?"
             params.append(limit)
-        with _connect(self._db_path) as conn:
-            rows = conn.execute(query, params).fetchall()
+        try:
+            with _connect(self._db_path) as conn:
+                rows = conn.execute(query, params).fetchall()
+        except sqlite3.Error as ex:
+            raise SupplierError(f"не удалось прочитать видео: {ex}") from ex
         return [_row_to_video(row) for row in rows]
 
     def _set_status(self, video_id: str, status: str, reason: str | None) -> None:

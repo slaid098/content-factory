@@ -216,6 +216,26 @@ def test_supplier_range_pairs_are_checked(
         load_supplier_settings()
 
 
+def test_supplier_rejects_more_than_one_video_per_author(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_supplier_env(monkeypatch)
+    monkeypatch.setenv("SUPPLIER_MAX_VIDEOS_PER_AUTHOR", "2")
+
+    with pytest.raises(ConfigError, match="MAX_VIDEOS_PER_AUTHOR"):
+        load_supplier_settings()
+
+
+def test_supplier_rejects_proxy_with_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_supplier_env(monkeypatch)
+    monkeypatch.setenv("SUPPLIER_PROXY", "http://user:secret@ho st:9")
+
+    with pytest.raises(ConfigError, match="пробелы"):
+        load_supplier_settings()
+
+
 def test_supplier_validation_hides_raw_values(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_supplier_env(monkeypatch)
     monkeypatch.setenv("SUPPLIER_MAX_VIEWS", "secret-value")
@@ -284,13 +304,11 @@ def test_build_supplier_config_merges_env_runtime_and_paths(tmp_path: Path) -> N
         language="ru",
     )
 
-    assert cfg.mcp_url == "http://mcp:8765"
     assert cfg.profile_id == "profile-1"
     assert cfg.bitbrowser_url == "http://bb:54529"
     assert cfg.max_duration == 90
     assert cfg.max_queries == 7
     assert cfg.search_pause == 2.0
-    assert cfg.filter_max == 11
     assert cfg.filter_pause == 0.5
     assert cfg.download_workers == 3
     assert cfg.download_pause == 0.25

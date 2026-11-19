@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import re
 import shutil
+import tempfile
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -26,6 +29,8 @@ from content_factory.services.supplier.repository import Repository
 
 _SEED_QUERIES_DIR = Path(__file__).parent / "queries"
 _STOP_PLAN = frozenset({StopReason.CAPTCHA, StopReason.DURATION_EXCEEDED})
+_LANGUAGE_RE = re.compile(r"^[a-z]{2,3}$")
+_STALE_TMP_SECONDS = 24 * 60 * 60
 
 
 def produce(
@@ -53,11 +58,13 @@ def produce(
     Raises:
         SupplierError: BitBrowser или профиль недоступны, либо каталог данных
             нельзя подготовить.
+        ConfigError: Настройки прокси некорректны.
     """
     batches = {language: amount for language, amount in plan.items() if amount > 0}
     if not batches:
         return ProduceResult({}, 0, StopReason.ENOUGH_STOCK)
 
+    _validate_languages(batches)
     content_dir, queries_dir, db_path = _prepare_paths(settings.data_dir, batches)
     profile_id = supplier_settings.profile_id.strip()
     if not profile_id:
@@ -95,12 +102,19 @@ def produce(
         if opened and supplier_settings.close_profile_after_crawl:
             try:
                 mcp.close_profile(profile_id)
-            except SupplierError as ex:
+            except Exception as ex:
                 logger.bind(error=ex, error_type=type(ex).__name__).warning(
                     "Не удалось закрыть профиль BitBrowser"
                 )
 
     return _result(produced, results, sum(batches.values()))
+
+
+def _validate_languages(languages: Mapping[str, int]) -> None:
+    """Reject language codes that cannot be used as path components."""
+    for language in languages:
+        if _LANGUAGE_RE.fullmatch(language) is None:
+            raise SupplierError(f"недопустимый код языка: {language!r}")
 
 
 def _prepare_paths(data_dir: Path, languages: Mapping[str, int]) -> tuple[Path, Path, Path]:
@@ -110,7 +124,9 @@ def _prepare_paths(data_dir: Path, languages: Mapping[str, int]) -> tuple[Path, 
     db_path = data_dir / DB_DIR / DB_FILENAME
     for language in languages:
         _seed_queries(queries_dir, language)
-        _ensure_directory(content_dir / language)
+        language_dir = content_dir / language
+        _ensure_directory(language_dir)
+        _sweep_stale_tmp(language_dir)
     return content_dir, queries_dir, db_path
 
 
@@ -144,11 +160,13 @@ def _run_languages(
             content_dir=content_dir / language,
             language=language,
         )
-        queries = load_language_queries(queries_dir, language)
+        queries = load_language_queries(
+            queries_dir,
+            language,
+            max_queries=cfg.max_queries,
+        )
         if not queries:
             logger.bind(language=language).warning("Для языка {} нет поисковых запросов", language)
-            results.append(LanguageResult(0, StopReason.NO_QUERIES))
-            continue
 
         target = repo.downloaded_count(language) + amount
         result = run_language(
@@ -159,6 +177,7 @@ def _run_languages(
             target=target,
             budget=budget,
             deadline=deadline,
+            no_queries=not queries,
         )
         produced[language] = result.downloaded
         results.append(result)
@@ -179,19 +198,50 @@ def _run_languages(
 
 
 def _seed_queries(queries_dir: Path, language: str) -> None:
-    """Скопировать сид запросов, не перезаписывая существующий файл."""
+    """Скопировать сид запросов атомарно, не перезаписывая существующий файл."""
     destination = queries_dir / f"{language}.txt"
     source = _SEED_QUERIES_DIR / f"{language}.txt"
     if destination.exists() or not source.is_file():
         return
     _ensure_directory(queries_dir)
+    descriptor, tmp_name = tempfile.mkstemp(
+        prefix=f".{language}.",
+        suffix=".tmp",
+        dir=queries_dir,
+    )
     try:
-        with source.open("rb") as reader, destination.open("xb") as writer:
+        with os.fdopen(descriptor, "wb") as writer, source.open("rb") as reader:
             shutil.copyfileobj(reader, writer)
+        os.link(tmp_name, destination)
     except FileExistsError:
         return
     except OSError as ex:
         raise SupplierError(f"не удалось создать файл запросов {destination}: {ex}") from ex
+    finally:
+        Path(tmp_name).unlink(missing_ok=True)
+
+
+def _sweep_stale_tmp(content_dir: Path) -> None:
+    """Remove temporary files older than a day from one language directory."""
+    now = time.time()
+    try:
+        candidates = list(content_dir.glob("*.tmp"))
+        candidates.extend((content_dir / ".tmp").glob("*"))
+    except OSError as ex:
+        logger.bind(path=str(content_dir), error=ex, error_type=type(ex).__name__).warning(
+            "Не удалось прочитать временные файлы {}", content_dir
+        )
+        return
+
+    for path in candidates:
+        try:
+            if now - path.stat().st_mtime < _STALE_TMP_SECONDS:
+                continue
+            path.unlink(missing_ok=True)
+        except OSError as ex:
+            logger.bind(path=str(path), error=ex, error_type=type(ex).__name__).warning(
+                "Не удалось удалить временный файл {}", path
+            )
 
 
 def _ensure_directory(directory: Path) -> None:
@@ -219,6 +269,13 @@ def _result(
 ) -> ProduceResult:
     """Aggregate language outcomes into one production result."""
     total = sum(produced.values())
+    if not results:
+        return ProduceResult(
+            produced_by_language=dict(produced),
+            produced_total=total,
+            stop_reason=StopReason.ENOUGH_STOCK,
+        )
+
     reasons = [result.stop_reason for result in results]
     blocked_until: str | None = None
 
@@ -236,11 +293,11 @@ def _result(
         reason = StopReason.DURATION_EXCEEDED
     elif total >= total_plan:
         reason = StopReason.TARGET_REACHED
-    elif results and all(item is StopReason.NO_QUERIES for item in reasons):
+    elif StopReason.NO_QUERIES in reasons:
         reason = StopReason.NO_QUERIES
-    elif results and all(item is StopReason.NO_PROGRESS for item in reasons):
+    elif all(item is StopReason.NO_PROGRESS for item in reasons):
         reason = StopReason.NO_PROGRESS
-    elif any(item in {StopReason.QUERIES_EXHAUSTED, StopReason.NO_QUERIES} for item in reasons):
+    elif StopReason.QUERIES_EXHAUSTED in reasons:
         reason = StopReason.QUERIES_EXHAUSTED
     else:
         reason = StopReason.STOCK_SHORTFALL

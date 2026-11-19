@@ -11,7 +11,7 @@ from loguru import logger
 
 from content_factory.exceptions.errors import SupplierError
 from content_factory.schemas.supplier.ports import FilterSink, ProbeFn
-from content_factory.schemas.supplier.results import FilterResult
+from content_factory.schemas.supplier.results import FilterDecision, FilterResult
 from content_factory.schemas.supplier.settings import SupplierConfig
 from content_factory.schemas.supplier.video import STATUS_FOUND, Video, VideoMetadata
 from content_factory.services.supplier.metadata import fetch_video_metadata
@@ -20,6 +20,39 @@ from content_factory.services.supplier.repository import Repository
 from content_factory.services.supplier.rules import evaluate
 
 _PROBE_ATTEMPTS = 2
+_MAX_VIDEOS_PER_AUTHOR = 1
+
+
+def _record_decision(
+    sink: FilterSink,
+    video: Video,
+    metadata: VideoMetadata,
+    decision: FilterDecision,
+) -> None:
+    try:
+        sink.save_decision(video, metadata, decision)
+    except SupplierError as ex:
+        logger.bind(error=ex, error_type=type(ex).__name__).error(
+            "Не удалось сохранить решение {}", video.video_id
+        )
+
+
+def _record_failure(sink: FilterSink, video: Video, reason: str) -> None:
+    try:
+        sink.save_failure(video, reason)
+    except SupplierError as ex:
+        logger.bind(error=ex, error_type=type(ex).__name__).error(
+            "Не удалось сохранить ошибку фильтра {}", video.video_id
+        )
+
+
+def _record_rejection(sink: FilterSink, video: Video, reason: str) -> None:
+    try:
+        sink.save_rejection(video, reason)
+    except SupplierError as ex:
+        logger.bind(error=ex, error_type=type(ex).__name__).error(
+            "Не удалось сохранить отказ фильтра {}", video.video_id
+        )
 
 
 def _default_probe(cfg: SupplierConfig) -> ProbeFn:
@@ -63,16 +96,16 @@ def _process_author(
     failed = 0
 
     for video in videos:
-        if len(approved) >= cfg.max_videos_per_author:
+        if len(approved) >= _MAX_VIDEOS_PER_AUTHOR:
             break
         metadata = _probe_video(video, probe, cfg.filter_pause)
         if metadata is None:
-            sink.save_failure(video, "metadata_error")
+            _record_failure(sink, video, "metadata_error")
             failed += 1
             continue
 
         decision = evaluate(metadata, cfg)
-        sink.save_decision(video, metadata, decision)
+        _record_decision(sink, video, metadata, decision)
         if decision.approved:
             approved.append(video)
         else:
@@ -121,11 +154,11 @@ def filter_videos(
         seen.add(video.video_id)
         order[video.video_id] = len(order)
         if video.video_id in known:
-            sink.save_rejection(video, "already_known")
+            _record_rejection(sink, video, "already_known")
             rejected += 1
             continue
         if video.author in used:
-            sink.save_rejection(video, "author_used")
+            _record_rejection(sink, video, "author_used")
             rejected += 1
             continue
         groups.setdefault(video.author, []).append(video)

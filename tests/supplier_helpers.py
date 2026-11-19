@@ -23,7 +23,6 @@ from content_factory.schemas.supplier.video import Video, VideoMetadata
 def make_config(tmp_path: Path, **overrides: object) -> SupplierConfig:
     """Build a supplier config with zero pauses and one worker."""
     base = SupplierConfig(
-        mcp_url="http://127.0.0.1:8765",
         profile_id="profile",
         bitbrowser_url="http://127.0.0.1:54529",
         max_views=1000,
@@ -31,7 +30,6 @@ def make_config(tmp_path: Path, **overrides: object) -> SupplierConfig:
         min_duration=5,
         max_duration=60,
         min_age_days=5,
-        max_videos_per_author=1,
         max_queries=30,
         scrolls_min=0,
         scrolls_max=0,
@@ -47,7 +45,6 @@ def make_config(tmp_path: Path, **overrides: object) -> SupplierConfig:
         captcha_cooldown_min=900,
         captcha_cooldown_max=1800,
         probe_workers=1,
-        filter_max=60,
         filter_pause=0.0,
         download_workers=1,
         download_pause=0.0,
@@ -55,9 +52,6 @@ def make_config(tmp_path: Path, **overrides: object) -> SupplierConfig:
         queries_dir=tmp_path / "app_data" / "queries",
         content_dir=tmp_path / "app_data" / "content" / "ru",
         proxy="http://127.0.0.1:8080",
-        headless=True,
-        mcp_timeout=5,
-        close_profile_after_crawl=True,
         language="ru",
     )
     return replace(base, **overrides)
