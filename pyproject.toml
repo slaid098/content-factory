@@ -13,7 +13,7 @@ authors = [{ name = "slaid098" }]
 dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.32",
-  "prefect>=3.1",
+  "prefect>=3.2",
   "httpx>=0.27",
   "pyyaml>=6.0",
   "pydantic>=2.9",
@@ -102,3 +102,11 @@ inheritance_allowlist = [
 check_id = "duplicate_code"
 path = "src/content_factory/services/supplier/downloader.py"
 reason = "совпадение тривиальных конструкторов этапов, база была бы оверинжинирингом"
+
+# Проверка ищет только legacy-имя docker-compose.yml. Канонический файл
+# называется compose.yaml (требование issue #6 и современное имя Compose),
+# поэтому находка «нет docker-compose.yml в корне» — ложное срабатывание.
+[[tool.audit.ignore]]
+check_id = "docker_layout"
+path = "docker-compose.yml"
+reason = "канонический compose-файл называется compose.yaml; проверка ждёт legacy-имя"

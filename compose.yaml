@@ -1,0 +1,99 @@
+name: content-factory
+
+# Общий образ для API, воркера и одноразового init-контейнера.
+x-image: &image
+  build:
+    context: .
+  image: content-factory:0.1.0
+
+# Фиксированный шлюз нужен, чтобы сервисы на хосте (Prefect, BitBrowser, MCP)
+# слушали конкретный адрес, а не 0.0.0.0. host.docker.internal указывает сюда.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+          gateway: 172.28.0.1
+
+services:
+  # Bind mount создаёт app_data от root, если каталога ещё нет. app_data и
+  # content входят в путь chroot и обязаны принадлежать root (требование
+  # sshd), поэтому init их только фиксирует. Записываемые каталоги отдаём
+  # пользователю app (uid 10001).
+  init:
+    <<: *image
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        mkdir -p /app/app_data/config /app/app_data/db /app/app_data/queries
+        chown -R 10001:10001 /app/app_data/config /app/app_data/db /app/app_data/queries
+        chmod 0750 /app/app_data/config /app/app_data/db /app/app_data/queries
+        mkdir -p /app/app_data/content
+        chown root:root /app/app_data /app/app_data/content
+        chmod 0755 /app/app_data /app/app_data/content
+    volumes:
+      - ./app_data:/app/app_data
+    security_opt:
+      - "no-new-privileges:true"
+    restart: "no"
+
+  api:
+    <<: *image
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      # Внутри контейнера слушаем 0.0.0.0, наружу публикуем только loopback.
+      - "127.0.0.1:8000:8000"
+    environment:
+      CONTENT_FACTORY_DATA_DIR: /app/app_data
+      CONTENT_FACTORY_LOG_LEVEL: ${CONTENT_FACTORY_LOG_LEVEL:-INFO}
+    volumes:
+      - ./app_data:/app/app_data
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/api/v1/stock"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  worker:
+    <<: *image
+    command: ["prefect", "worker", "start", "--pool", "content-factory"]
+    # Тонкие настройки SUPPLIER_* удобнее держать в .env, чем дублировать
+    # в compose. Файл необязателен: без него работают значения из кода.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      CONTENT_FACTORY_DATA_DIR: /app/app_data
+      CONTENT_FACTORY_LOG_LEVEL: ${CONTENT_FACTORY_LOG_LEVEL:-INFO}
+      PREFECT_API_URL: ${PREFECT_API_URL:-http://host.docker.internal:4200/api}
+      PREFECT_API_KEY: ${PREFECT_API_KEY:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      SUPPLIER_MCP_URL: ${SUPPLIER_MCP_URL:-http://host.docker.internal:8765}
+      SUPPLIER_BITBROWSER_URL: ${SUPPLIER_BITBROWSER_URL:-http://host.docker.internal:54529}
+      SUPPLIER_PROFILE_ID: ${SUPPLIER_PROFILE_ID:-}
+      SUPPLIER_PROXY: ${SUPPLIER_PROXY:-}
+    volumes:
+      - ./app_data:/app/app_data
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    # BitBrowser и Prefect могут жить на хосте Linux 1.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

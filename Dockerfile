@@ -6,7 +6,12 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-COPY pyproject.toml README.md ./
+# curl нужен healthcheck-у compose.
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml README.md prefect.yaml ./
 COPY src ./src
 RUN pip install .
 
