@@ -57,7 +57,9 @@ docker compose up -d --build
 curl -f http://127.0.0.1:8000/api/v1/stock
 ```
 
-Пошаговая инструкция (Prefect, SFTP, бэкап): [deploy/README.md](deploy/README.md).
+Перед первым production-запуском создайте пользователя и каталоги языков:
+приложение не может писать в root-овый `content/`. Пошаговая инструкция
+(каталоги, Prefect, SFTP, бэкап): [deploy/README.md](deploy/README.md).
 
 ## Настройки
 

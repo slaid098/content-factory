@@ -3,6 +3,8 @@
 tests
 app_data
 backups
+.env
+.env.*
 .venv
 venv
 __pycache__
