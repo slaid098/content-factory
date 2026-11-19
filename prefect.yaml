@@ -1,8 +1,13 @@
 name: content-factory
-prefect-version: "3.1.0"
 
 build: null
 push: null
+
+# Воркер process-пула запускает flow из своего контейнера, где код лежит
+# в /app. Явный шаг убирает интерактивный вопрос при `prefect deploy`.
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: /app
 
 deployments:
   - name: stock_topup
@@ -10,8 +15,10 @@ deployments:
     entrypoint: src/content_factory/flows/stock_topup/flow.py:stock_topup
     work_pool:
       name: content-factory
+    # Тик планировщика каждые 15 минут. Производство запускает сам flow,
+    # если истёк config.run.interval; холостые тики выходят сразу.
     schedules:
-      - name: every-15-minutes
+      - slug: every-15-minutes
         cron: "*/15 * * * *"
         timezone: UTC
         active: true

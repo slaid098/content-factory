@@ -18,6 +18,7 @@ coverage.xml
 
 # Runtime data (filesystem buffer, sqlite, seeded config and queries)
 app_data/
+backups/
 
 # Secrets
 .env

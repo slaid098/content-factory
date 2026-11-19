@@ -1,0 +1,2 @@
+# Скрипты деплоя запускаются на Linux; CRLF в рабочей копии Windows ломает shebang.
+*.sh text eol=lf

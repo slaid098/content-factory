@@ -2,6 +2,7 @@
 .github
 tests
 app_data
+backups
 .venv
 venv
 __pycache__
