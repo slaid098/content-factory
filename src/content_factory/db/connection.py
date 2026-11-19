@@ -13,3 +13,11 @@ def connect(db_path: Path) -> sqlite3.Connection:
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA journal_mode=WAL")
     return connection
+
+
+def connect_readonly(db_path: Path) -> sqlite3.Connection:
+    """Open an existing state database without creating or changing it."""
+    uri = f"{db_path.resolve().as_uri()}?mode=ro"
+    connection = sqlite3.connect(uri, uri=True)
+    connection.row_factory = sqlite3.Row
+    return connection

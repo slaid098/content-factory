@@ -1,0 +1,18 @@
+name: content-factory
+prefect-version: "3.1.0"
+
+build: null
+push: null
+
+deployments:
+  - name: stock_topup
+    description: "Плановый добор стока по языкам"
+    entrypoint: src/content_factory/flows/stock_topup/flow.py:stock_topup
+    work_pool:
+      name: content-factory
+    schedules:
+      - name: every-15-minutes
+        cron: "*/15 * * * *"
+        timezone: UTC
+        active: true
+    concurrency_limit: 1

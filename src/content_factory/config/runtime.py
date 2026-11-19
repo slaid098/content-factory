@@ -23,10 +23,19 @@ from content_factory.schemas.config.runtime import (
 from content_factory.utils.duration import parse_duration
 
 
-def load_runtime_config(path: Path) -> RuntimeConfig:
-    """Load the runtime config, seeding the default file on first start."""
-    _seed(path)
-    raw = _read(path)
+def load_runtime_config(path: Path, *, seed: bool = True) -> RuntimeConfig:
+    """Load the runtime config, seeding the default file on first start.
+
+    Args:
+        path: Path to ``config.yaml``.
+        seed: Create the file from the built-in template when it is missing.
+            Read-only callers pass ``False`` so a request never writes.
+    """
+    if seed:
+        _seed(path)
+        raw = _read(path)
+    else:
+        raw = _read(path) if path.exists() else {}
     merged = _merge(DEFAULT_CONFIG, raw, prefix="")
     return _build(merged)
 
