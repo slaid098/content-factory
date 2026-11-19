@@ -1,10 +1,12 @@
 name: content-factory
 
 # Общий образ для API, воркера и одноразового init-контейнера.
+# В проде образ приходит из GHCR (деплой-скрипт задаёт IMAGE_TAG), а build
+# остаётся для локальной разработки: `docker compose up -d --build`.
 x-image: &image
   build:
     context: .
-  image: content-factory:0.1.0
+  image: ghcr.io/slaid098/content-factory:${IMAGE_TAG:-latest}
 
 # Фиксированный шлюз нужен, чтобы сервисы на хосте (Prefect, BitBrowser, MCP)
 # слушали конкретный адрес, а не 0.0.0.0. host.docker.internal указывает сюда.

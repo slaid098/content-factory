@@ -18,8 +18,8 @@ src/content_factory/
   services/     # доменные капсулы: поставщик, сток, алерты
   flows/        # Prefect flow stock_topup
 app_data/       # рантайм, не в git
-deploy/         # runbook Linux 1 и SFTP
-scripts/        # бэкап конфига и запросов
+deploy/         # runbook Linux 1, GHCR и SFTP
+scripts/        # деплой и бэкап конфига и запросов
 main.py         # ASGI-точка входа
 ```
 
@@ -50,12 +50,18 @@ uvicorn main:app --host 127.0.0.1 --port 8000
 
 Прод — Linux 1: `docker compose` поднимает `api` и Prefect-воркер, общий том
 `./app_data` переживает пересоздание контейнеров, партнёр забирает файлы по
-SFTP, конфиг и запросы уходят в ночной бэкап.
+SFTP, конфиг и запросы уходят в ночной бэкап. Образ собирается в CI и
+публикуется в GHCR (`ghcr.io/slaid098/content-factory`), деплой на Linux 1
+идёт автоматически после зелёного `main`.
 
 ```bash
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 curl -f http://127.0.0.1:8000/api/v1/stock
 ```
+
+Для локальной разработки образ собирается на месте:
+`docker compose up -d --build`.
 
 Перед первым production-запуском создайте пользователя и каталоги языков:
 приложение не может писать в root-овый `content/`. Пошаговая инструкция
