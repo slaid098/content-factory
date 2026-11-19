@@ -7,8 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from content_factory.db.connection import connect
-from content_factory.db.runtime_state import ensure_schema, load_state, save_state
+from content_factory.db.connection import connect, connect_readonly
+from content_factory.db.runtime_state import (
+    ensure_schema,
+    load_state,
+    read_state,
+    save_state,
+)
 from content_factory.schemas.state.state import RuntimeState
 
 
@@ -103,3 +108,40 @@ def test_empty_state_has_zero_counters() -> None:
     assert state.captcha_streak == 0
     assert state.zero_runs == 0
     assert state.updated_at.utcoffset() == timedelta(0)
+
+
+def test_read_state_without_schema_returns_empty(tmp_path: Path) -> None:
+    connection = connect(tmp_path / "db" / "db.sqlite3")
+    try:
+        state = read_state(connection)
+        tables = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+
+        assert state.last_production_at is None
+        assert state.captcha_streak == 0
+        assert tables == []
+    finally:
+        connection.close()
+
+
+def test_connect_readonly_reads_existing_database(tmp_path: Path) -> None:
+    db_path = tmp_path / "db" / "db.sqlite3"
+    connection = connect(db_path)
+    try:
+        save_state(connection, RuntimeState.empty())
+    finally:
+        connection.close()
+
+    readonly = connect_readonly(db_path)
+    try:
+        assert read_state(readonly).captcha_streak == 0
+        with pytest.raises(sqlite3.OperationalError):
+            readonly.execute("DELETE FROM runtime_state")
+    finally:
+        readonly.close()
+
+
+def test_connect_readonly_missing_database_raises(tmp_path: Path) -> None:
+    with pytest.raises(sqlite3.OperationalError):
+        connect_readonly(tmp_path / "missing" / "db.sqlite3")

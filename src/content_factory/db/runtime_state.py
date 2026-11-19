@@ -31,6 +31,13 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 def load_state(conn: sqlite3.Connection) -> RuntimeState:
     """Load the saved state, or an empty state when nothing was saved yet."""
     ensure_schema(conn)
+    return read_state(conn)
+
+
+def read_state(conn: sqlite3.Connection) -> RuntimeState:
+    """Read the saved state without creating or changing the schema."""
+    if not _state_table_exists(conn):
+        return RuntimeState.empty()
     row = conn.execute(
         """
         SELECT last_production_at, captcha_blocked_until, captcha_streak,
@@ -50,6 +57,14 @@ def load_state(conn: sqlite3.Connection) -> RuntimeState:
         last_alert_kind=row["last_alert_kind"],
         updated_at=cast(datetime, _parse_time(row["updated_at"])),
     )
+
+
+def _state_table_exists(conn: sqlite3.Connection) -> bool:
+    """Return whether the state table has been created yet."""
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runtime_state'"
+    ).fetchone()
+    return row is not None
 
 
 def save_state(conn: sqlite3.Connection, state: RuntimeState) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 CONFIG_DIR = "config"
+CONFIG_FILENAME = "config.yaml"
 DB_DIR = "db"
 CONTENT_DIR = "content"
 QUERIES_DIR = "queries"

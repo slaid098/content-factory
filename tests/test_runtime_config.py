@@ -238,3 +238,19 @@ def test_read_filesystem_error_is_wrapped(tmp_path: Path, monkeypatch: pytest.Mo
 
     with pytest.raises(ConfigError, match="не удалось прочитать"):
         load_runtime_config(path)
+
+
+def test_read_without_seed_uses_defaults_and_writes_nothing(tmp_path: Path) -> None:
+    path = tmp_path / "config" / "config.yaml"
+
+    config = load_runtime_config(path, seed=False)
+
+    assert config == default_config()
+    assert not path.exists()
+    assert not path.parent.exists()
+
+
+def test_read_without_seed_reads_existing_file(tmp_path: Path) -> None:
+    path = _write(tmp_path / "config.yaml", "run:\n  batch: 3\n")
+
+    assert load_runtime_config(path, seed=False).run.batch == 3

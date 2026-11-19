@@ -1,0 +1,1 @@
+"""Critical alerts over Telegram."""
