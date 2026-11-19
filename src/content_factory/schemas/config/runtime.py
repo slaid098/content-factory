@@ -9,7 +9,8 @@ from dataclasses import dataclass
 class RunConfig:
     """Production limits for one scheduled tick.
 
-    Durations are stored in seconds.
+    Durations are stored in seconds. ``max_duration`` is a soft cap checked
+    between pipeline steps, not inside a single long stage.
     """
 
     batch: int
@@ -20,7 +21,10 @@ class RunConfig:
 
 @dataclass(frozen=True, slots=True)
 class SearchConfig:
-    """Search stage limits and pacing."""
+    """Search stage limits and pacing.
+
+    ``max_queries`` is a run-wide budget shared by all languages.
+    """
 
     max_queries: int
     pause: float
@@ -28,7 +32,11 @@ class SearchConfig:
 
 @dataclass(frozen=True, slots=True)
 class FilterConfig:
-    """Filter stage limits and pacing."""
+    """Filter stage limits and pacing.
+
+    ``max`` is a run-wide budget shared by all languages; ``pause`` is applied
+    inside every probe worker.
+    """
 
     max: int
     pause: float
@@ -36,7 +44,10 @@ class FilterConfig:
 
 @dataclass(frozen=True, slots=True)
 class DownloadConfig:
-    """Download stage limits and pacing."""
+    """Download stage limits and pacing.
+
+    ``pause`` is applied inside every worker after its download.
+    """
 
     workers: int
     pause: float

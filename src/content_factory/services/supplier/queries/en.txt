@@ -1,0 +1,10 @@
+# English supplier search queries.
+# One line = one query. Comments and blank lines are ignored.
+# The full list lives on the server in app_data/queries/en.txt.
+
+neighbour drilling
+elevator broken
+tap leaking
+door squeaking
+lock jammed
+tile cracked
