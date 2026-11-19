@@ -8,7 +8,6 @@ import pytest
 
 from content_factory.config.settings import Settings
 from content_factory.schemas.notify.alert import AlertKind
-from content_factory.schemas.state.state import RuntimeState
 from content_factory.services.notify import service
 
 _NOW = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
@@ -55,12 +54,6 @@ def _patch_post(
     return calls
 
 
-def _state(**overrides: object) -> RuntimeState:
-    from dataclasses import replace
-
-    return replace(RuntimeState.empty(), **overrides)
-
-
 def test_without_credentials_is_a_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _patch_post(monkeypatch)
 
@@ -68,7 +61,7 @@ def test_without_credentials_is_a_noop(monkeypatch: pytest.MonkeyPatch) -> None:
         AlertKind.SUPPLIER_CRASH,
         "boom",
         settings=_settings(telegram_bot_token=None),
-        state=_state(),
+        last_sent={},
         cooldown=3600.0,
         now=_NOW,
     )
@@ -77,21 +70,19 @@ def test_without_credentials_is_a_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == []
 
 
-def test_sends_first_alert_and_stamps_state(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sends_first_alert_and_returns_send_time(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _patch_post(monkeypatch)
 
     result = service.send_critical(
         AlertKind.CAPTCHA_STREAK,
         "капча",
         settings=_settings(),
-        state=_state(),
+        last_sent={},
         cooldown=3600.0,
         now=_NOW,
     )
 
-    assert result is not None
-    assert result.last_alert_at == _NOW
-    assert result.last_alert_kind == "captcha_streak"
+    assert result == _NOW
     assert len(calls) == 1
     assert calls[0]["url"] == "https://api.telegram.org/bottoken/sendMessage"
     payload = calls[0]["json"]
@@ -103,16 +94,13 @@ def test_sends_first_alert_and_stamps_state(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_same_kind_within_cooldown_is_suppressed(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _patch_post(monkeypatch)
-    state = _state(
-        last_alert_at=_NOW - timedelta(hours=1),
-        last_alert_kind="captcha_streak",
-    )
+    last_sent = {"captcha_streak": _NOW - timedelta(hours=1)}
 
     result = service.send_critical(
         AlertKind.CAPTCHA_STREAK,
         "капча",
         settings=_settings(),
-        state=state,
+        last_sent=last_sent,
         cooldown=6 * 3600.0,
         now=_NOW,
     )
@@ -123,59 +111,71 @@ def test_same_kind_within_cooldown_is_suppressed(monkeypatch: pytest.MonkeyPatch
 
 def test_cooldown_boundary_allows_send(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _patch_post(monkeypatch)
-    state = _state(
-        last_alert_at=_NOW - timedelta(hours=6),
-        last_alert_kind="captcha_streak",
-    )
+    last_sent = {"captcha_streak": _NOW - timedelta(hours=6)}
 
     result = service.send_critical(
         AlertKind.CAPTCHA_STREAK,
         "капча",
         settings=_settings(),
-        state=state,
+        last_sent=last_sent,
         cooldown=6 * 3600.0,
         now=_NOW,
     )
 
-    assert result is not None
+    assert result == _NOW
     assert len(calls) == 1
 
 
 def test_other_kind_bypasses_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _patch_post(monkeypatch)
-    state = _state(
-        last_alert_at=_NOW - timedelta(minutes=1),
-        last_alert_kind="zero_production",
-    )
+    last_sent = {"zero_production": _NOW - timedelta(minutes=1)}
 
     result = service.send_critical(
         AlertKind.CAPTCHA_STREAK,
         "капча",
         settings=_settings(),
-        state=state,
+        last_sent=last_sent,
         cooldown=6 * 3600.0,
         now=_NOW,
     )
 
-    assert result is not None
-    assert result.last_alert_kind == "captcha_streak"
+    assert result == _NOW
     assert len(calls) == 1
+
+
+def test_alternating_kinds_do_not_reset_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _patch_post(monkeypatch)
+    last_sent = {
+        "captcha_streak": _NOW - timedelta(hours=1),
+        "supplier_crash": _NOW - timedelta(minutes=10),
+    }
+
+    result = service.send_critical(
+        AlertKind.CAPTCHA_STREAK,
+        "капча",
+        settings=_settings(),
+        last_sent=last_sent,
+        cooldown=6 * 3600.0,
+        now=_NOW,
+    )
+
+    assert result is None
+    assert calls == []
 
 
 def test_kind_without_timestamp_allows_send(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _patch_post(monkeypatch)
-    state = _state(last_alert_kind="captcha_streak", last_alert_at=None)
 
     result = service.send_critical(
         AlertKind.CAPTCHA_STREAK,
         "капча",
         settings=_settings(),
-        state=state,
+        last_sent={"supplier_crash": _NOW - timedelta(minutes=1)},
         cooldown=6 * 3600.0,
         now=_NOW,
     )
 
-    assert result is not None
+    assert result == _NOW
     assert len(calls) == 1
 
 
@@ -194,7 +194,7 @@ def test_network_error_is_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
         AlertKind.SUPPLIER_CRASH,
         "boom",
         settings=_settings(),
-        state=_state(),
+        last_sent={},
         cooldown=3600.0,
         now=_NOW,
     )
@@ -209,7 +209,7 @@ def test_http_error_is_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
         AlertKind.SUPPLIER_CRASH,
         "boom",
         settings=_settings(),
-        state=_state(),
+        last_sent={},
         cooldown=3600.0,
         now=_NOW,
     )
@@ -232,7 +232,7 @@ def test_unexpected_send_error_is_swallowed(monkeypatch: pytest.MonkeyPatch) -> 
         AlertKind.SUPPLIER_CRASH,
         "boom",
         settings=_settings(),
-        state=_state(),
+        last_sent={},
         cooldown=3600.0,
         now=_NOW,
     )

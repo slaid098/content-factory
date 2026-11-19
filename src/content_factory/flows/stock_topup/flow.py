@@ -20,7 +20,12 @@ from content_factory.constants import (
     DB_FILENAME,
 )
 from content_factory.db.connection import connect
-from content_factory.db.runtime_state import load_state, save_state
+from content_factory.db.runtime_state import (
+    load_alert_times,
+    load_state,
+    save_alert_time,
+    save_state,
+)
 from content_factory.schemas.config.runtime import RuntimeConfig
 from content_factory.schemas.notify.alert import AlertKind
 from content_factory.schemas.state.state import RuntimeState
@@ -105,6 +110,23 @@ def _run_supplier(
     logger.bind(plan=plan, captcha_retry=retry).info("Старт производства")
     try:
         supplier_settings = load_supplier_settings()
+    except Exception as ex:
+        logger.bind(error=ex, error_type=type(ex).__name__).error(
+            "Настройки поставщика не загрузились"
+        )
+        state = _alert(
+            connection,
+            AlertKind.SUPPLIER_CRASH,
+            f"настройки поставщика: {type(ex).__name__}",
+            state,
+            settings,
+            runtime,
+            now,
+        )
+        save_state(connection, state)
+        return "supplier_error"
+
+    try:
         result = produce(
             plan,
             runtime=runtime,
@@ -115,21 +137,19 @@ def _run_supplier(
         logger.bind(error=ex, error_type=type(ex).__name__).error("Поставщик упал")
         state = replace(state, last_production_at=now)
         state = _alert(
-            AlertKind.SUPPLIER_CRASH,
+            connection,
+            _classify_crash(ex),
             f"поставщик упал: {type(ex).__name__}",
             state,
             settings,
             runtime,
             now,
         )
-        specific = _classify_crash(ex)
-        if specific is not AlertKind.SUPPLIER_CRASH:
-            state = _alert(specific, f"причина: {type(ex).__name__}", state, settings, runtime, now)
         save_state(connection, state)
         return "supplier_error"
 
     state = _apply_result(state, result, runtime, now)
-    state = _alert_result(state, result, settings, runtime, now)
+    state = _alert_result(connection, state, result, settings, runtime, now)
     save_state(connection, state)
     if result.stop_reason is StopReason.CAPTCHA:
         return "captcha"
@@ -173,16 +193,18 @@ def _blocked_until(value: str | None, fallback_seconds: float, now: datetime) ->
 
 
 def _alert_result(
+    connection: sqlite3.Connection,
     state: RuntimeState,
     result: ProduceResult,
     settings: Settings,
     runtime: RuntimeConfig,
     now: datetime,
 ) -> RuntimeState:
-    """Send alerts for critical supplier outcomes."""
+    """Send at most one alert for the most actionable critical outcome."""
     if result.stop_reason is StopReason.CAPTCHA:
         if state.captcha_streak >= runtime.captcha.streak:
-            state = _alert(
+            return _alert(
+                connection,
                 AlertKind.CAPTCHA_STREAK,
                 f"капча {state.captcha_streak} раз подряд",
                 state,
@@ -193,7 +215,8 @@ def _alert_result(
         return state
 
     if result.stop_reason is StopReason.NO_QUERIES:
-        state = _alert(
+        return _alert(
+            connection,
             AlertKind.NO_QUERIES,
             "нет поисковых запросов ни для одного языка",
             state,
@@ -202,7 +225,8 @@ def _alert_result(
             now,
         )
     if result.stop_reason is StopReason.NO_PROGRESS:
-        state = _alert(
+        return _alert(
+            connection,
             AlertKind.ALL_DOWNLOADS_FAILED,
             "ни одного скачивания за прогон",
             state,
@@ -211,7 +235,8 @@ def _alert_result(
             now,
         )
     if state.zero_runs >= _ZERO_RUNS_ALERT:
-        state = _alert(
+        return _alert(
+            connection,
             AlertKind.ZERO_PRODUCTION,
             f"{state.zero_runs} прогонов подряд без новых видео",
             state,
@@ -223,6 +248,7 @@ def _alert_result(
 
 
 def _alert(
+    connection: sqlite3.Connection,
     kind: AlertKind,
     text: str,
     state: RuntimeState,
@@ -230,16 +256,19 @@ def _alert(
     runtime: RuntimeConfig,
     now: datetime,
 ) -> RuntimeState:
-    """Send one alert and return the state with its cooldown stamp."""
-    updated = send_critical(
+    """Send one alert, persist its cooldown and stamp the state."""
+    sent_at = send_critical(
         kind,
         text,
         settings=settings,
-        state=state,
+        last_sent=load_alert_times(connection),
         cooldown=runtime.alerts.cooldown,
         now=now,
     )
-    return state if updated is None else updated
+    if sent_at is None:
+        return state
+    save_alert_time(connection, kind.value, sent_at)
+    return replace(state, last_alert_at=sent_at, last_alert_kind=kind.value)
 
 
 def _classify_crash(error: Exception) -> AlertKind:

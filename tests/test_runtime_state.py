@@ -10,8 +10,10 @@ import pytest
 from content_factory.db.connection import connect, connect_readonly
 from content_factory.db.runtime_state import (
     ensure_schema,
+    load_alert_times,
     load_state,
     read_state,
+    save_alert_time,
     save_state,
 )
 from content_factory.schemas.state.state import RuntimeState
@@ -145,3 +147,23 @@ def test_connect_readonly_reads_existing_database(tmp_path: Path) -> None:
 def test_connect_readonly_missing_database_raises(tmp_path: Path) -> None:
     with pytest.raises(sqlite3.OperationalError):
         connect_readonly(tmp_path / "missing" / "db.sqlite3")
+
+
+def test_load_alert_times_without_rows_returns_empty(
+    connection: sqlite3.Connection,
+) -> None:
+    assert load_alert_times(connection) == {}
+
+
+def test_save_alert_time_upserts_per_kind(connection: sqlite3.Connection) -> None:
+    first = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+    second = datetime(2026, 5, 1, 13, 0, tzinfo=UTC)
+
+    save_alert_time(connection, "captcha_streak", first)
+    save_alert_time(connection, "supplier_crash", first)
+    save_alert_time(connection, "captcha_streak", second)
+
+    assert load_alert_times(connection) == {
+        "captcha_streak": second,
+        "supplier_crash": first,
+    }

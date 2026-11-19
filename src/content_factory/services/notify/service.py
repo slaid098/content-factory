@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -10,7 +10,6 @@ from loguru import logger
 
 from content_factory.config.settings import Settings
 from content_factory.schemas.notify.alert import AlertKind
-from content_factory.schemas.state.state import RuntimeState
 
 _API = "https://api.telegram.org/bot{token}/sendMessage"
 _TIMEOUT = 10.0
@@ -21,10 +20,10 @@ def send_critical(
     text: str,
     *,
     settings: Settings,
-    state: RuntimeState,
+    last_sent: Mapping[str, datetime],
     cooldown: float,
     now: datetime | None = None,
-) -> RuntimeState | None:
+) -> datetime | None:
     """Отправить критичный алерт, если кулдаун этого вида истёк.
 
     Без ``TELEGRAM_BOT_TOKEN`` и ``TELEGRAM_CHAT_ID`` отправка выключена.
@@ -34,34 +33,33 @@ def send_critical(
         kind: Вид алерта; кулдаун считается отдельно для каждого вида.
         text: Текст сообщения без секретов.
         settings: Настройки с токеном бота и чатом.
-        state: Текущее состояние с последним отправленным алертом.
+        last_sent: Время последней успешной отправки по каждому виду.
         cooldown: Минимальный интервал между одинаковыми видами, секунды.
         now: Момент проверки; по умолчанию текущее UTC-время.
 
     Returns:
-        Состояние с обновлённым ``last_alert_*`` после успешной отправки,
-        иначе ``None`` — алерт подавлен или доставка недоступна.
+        Момент успешной отправки, иначе ``None`` — алерт подавлен или
+        доставка недоступна.
     """
     if not settings.telegram_bot_token or not settings.telegram_chat_id:
         return None
     moment = now or datetime.now(UTC)
-    if _in_cooldown(kind, state, cooldown, moment):
+    if _in_cooldown(kind, last_sent, cooldown, moment):
         return None
     if not _send(settings, kind, text):
         return None
-    return replace(state, last_alert_at=moment, last_alert_kind=kind.value)
+    return moment
 
 
 def _in_cooldown(
     kind: AlertKind,
-    state: RuntimeState,
+    last_sent: Mapping[str, datetime],
     cooldown: float,
     now: datetime,
 ) -> bool:
     """Return whether the same alert kind was sent too recently."""
-    if state.last_alert_kind != kind.value or state.last_alert_at is None:
-        return False
-    return now - state.last_alert_at < timedelta(seconds=cooldown)
+    last = last_sent.get(kind.value)
+    return last is not None and now - last < timedelta(seconds=cooldown)
 
 
 def _send(settings: Settings, kind: AlertKind, text: str) -> bool:

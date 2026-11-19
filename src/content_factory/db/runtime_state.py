@@ -21,10 +21,18 @@ CREATE TABLE IF NOT EXISTS runtime_state (
 )
 """
 
+_ALERT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS alert_cooldowns (
+    kind TEXT PRIMARY KEY,
+    sent_at TEXT NOT NULL
+)
+"""
+
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create the single-row ``runtime_state`` table when missing."""
+    """Create the state and alert cooldown tables when missing."""
     conn.execute(_SCHEMA)
+    conn.execute(_ALERT_SCHEMA)
     conn.commit()
 
 
@@ -102,6 +110,26 @@ def save_state(conn: sqlite3.Connection, state: RuntimeState) -> None:
 def _format_time(value: datetime | None) -> str | None:
     """Serialize an aware datetime to ISO 8601."""
     return value.isoformat() if value is not None else None
+
+
+def load_alert_times(conn: sqlite3.Connection) -> dict[str, datetime]:
+    """Load the last successful send time of every alert kind."""
+    ensure_schema(conn)
+    rows = conn.execute("SELECT kind, sent_at FROM alert_cooldowns").fetchall()
+    return {row["kind"]: cast(datetime, _parse_time(row["sent_at"])) for row in rows}
+
+
+def save_alert_time(conn: sqlite3.Connection, kind: str, sent_at: datetime) -> None:
+    """Persist the last successful send time of one alert kind."""
+    ensure_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO alert_cooldowns (kind, sent_at) VALUES (?, ?)
+        ON CONFLICT(kind) DO UPDATE SET sent_at = excluded.sent_at
+        """,
+        (kind, sent_at.isoformat()),
+    )
+    conn.commit()
 
 
 def _parse_time(value: str | None) -> datetime | None:

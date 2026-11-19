@@ -11,7 +11,7 @@ from content_factory.config.defaults import default_config
 from content_factory.config.settings import Settings, SupplierSettings
 from content_factory.db.connection import connect
 from content_factory.db.runtime_state import load_state, save_state
-from content_factory.exceptions.errors import SupplierError
+from content_factory.exceptions.errors import ConfigError, SupplierError
 from content_factory.flows.stock_topup import flow as stock_flow
 from content_factory.flows.stock_topup.flow import stock_topup
 from content_factory.schemas.config.runtime import LanguageConfig, RuntimeConfig
@@ -58,13 +58,13 @@ class _Alerts:
         text: str,
         *,
         settings: Settings,
-        state: RuntimeState,
+        last_sent: dict[str, datetime],
         cooldown: float,
         now: datetime | None = None,
-    ) -> RuntimeState:
-        del text, settings, cooldown
+    ) -> datetime:
+        del text, settings, last_sent, cooldown
         self.kinds.append(kind)
-        return replace(state, last_alert_at=now, last_alert_kind=kind.value)
+        return now or datetime.now(UTC)
 
 
 class _SuppressedAlerts:
@@ -74,11 +74,11 @@ class _SuppressedAlerts:
         text: str,
         *,
         settings: Settings,
-        state: RuntimeState,
+        last_sent: dict[str, datetime],
         cooldown: float,
         now: datetime | None = None,
     ) -> None:
-        del kind, text, settings, state, cooldown, now
+        del kind, text, settings, last_sent, cooldown, now
         return None
 
 
@@ -387,6 +387,34 @@ def test_no_progress_result_alerts_all_downloads_failed(
     assert alerts.kinds == [AlertKind.ALL_DOWNLOADS_FAILED]
 
 
+def test_no_queries_takes_priority_over_zero_production_alert(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _, alerts = _patch(monkeypatch, ProduceResult({}, 0, StopReason.NO_QUERIES))
+    state = _empty_state(zero_runs=2)
+
+    _, loaded = _run(tmp_path, state=state)
+
+    assert alerts.kinds == [AlertKind.NO_QUERIES]
+    assert loaded.zero_runs == 3
+    assert loaded.last_alert_kind == "no_queries"
+
+
+def test_no_progress_takes_priority_over_zero_production_alert(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _, alerts = _patch(monkeypatch, ProduceResult({}, 0, StopReason.NO_PROGRESS))
+    state = _empty_state(zero_runs=2)
+
+    _, loaded = _run(tmp_path, state=state)
+
+    assert alerts.kinds == [AlertKind.ALL_DOWNLOADS_FAILED]
+    assert loaded.zero_runs == 3
+    assert loaded.last_alert_kind == "all_downloads_failed"
+
+
 def test_supplier_exception_alerts_and_moves_last_production(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -399,7 +427,7 @@ def test_supplier_exception_alerts_and_moves_last_production(
     assert loaded.last_production_at == _NOW
 
 
-def test_supplier_exception_sends_crash_and_bitbrowser_alerts(
+def test_supplier_exception_sends_bitbrowser_alert(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -407,14 +435,11 @@ def test_supplier_exception_sends_crash_and_bitbrowser_alerts(
 
     _, loaded = _run(tmp_path)
 
-    assert alerts.kinds == [
-        AlertKind.SUPPLIER_CRASH,
-        AlertKind.BITBROWSER_UNAVAILABLE,
-    ]
+    assert alerts.kinds == [AlertKind.BITBROWSER_UNAVAILABLE]
     assert loaded.last_alert_kind == "bitbrowser_unavailable"
 
 
-def test_storage_exception_adds_storage_alert(
+def test_storage_exception_sends_storage_alert(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -422,7 +447,28 @@ def test_storage_exception_adds_storage_alert(
 
     _run(tmp_path)
 
-    assert alerts.kinds == [AlertKind.SUPPLIER_CRASH, AlertKind.STORAGE_ERROR]
+    assert alerts.kinds == [AlertKind.STORAGE_ERROR]
+
+
+def test_supplier_settings_failure_does_not_move_last_production(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    produce, _ = _patch(monkeypatch, ProduceResult({}, 0, StopReason.ENOUGH_STOCK))
+
+    def broken_settings() -> object:
+        raise ConfigError("SUPPLIER_PROXY не задан")
+
+    monkeypatch.setattr(stock_flow, "load_supplier_settings", broken_settings)
+    alerts = _Alerts()
+    monkeypatch.setattr(stock_flow, "send_critical", alerts)
+
+    code, loaded = _run(tmp_path)
+
+    assert code == "supplier_error"
+    assert produce.calls == []
+    assert alerts.kinds == [AlertKind.SUPPLIER_CRASH]
+    assert loaded.last_production_at is None
 
 
 def test_generic_exception_sends_only_crash_alert(
