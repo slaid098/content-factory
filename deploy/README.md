@@ -169,7 +169,71 @@ gh secret list
 `ssh-keyscan`. Оба значения передаются только через Secrets и не печатаются
 в логах workflow.
 
-## 4. Переменные окружения
+## 4. Клон и каталоги
+
+Клонируйте репозиторий от root: деплой-скрипт делает `git fetch` и
+`git reset --hard`, поэтому рабочая копия должна быть root-овой.
+
+```bash
+sudo install -d -m 0755 /root/dockers
+sudo git clone https://github.com/slaid098/content-factory.git \
+  /root/dockers/content-factory
+sudo chown -R root:root /root/dockers/content-factory
+```
+
+Если репозиторий приватный, настройте для root read-доступ (deploy key или
+credential helper) до первого `git fetch`. Ключ не храните в репозитории.
+
+### 4.1 Каталоги chroot
+
+sshd требует, чтобы **каждый** компонент пути `ChrootDirectory` принадлежал
+root и не был доступен на запись группе и остальным. `/root` имеет режим
+`0700` — для chroot это допустимо, sshd заходит в путь от root. Корень
+репозитория, `app_data` и `app_data/content` — `root:root 0755`:
+
+```bash
+sudo chown root:root /root/dockers/content-factory
+sudo chmod 0755 /root/dockers/content-factory
+sudo install -d -o root -g root -m 0755 \
+  /root/dockers/content-factory/app_data \
+  /root/dockers/content-factory/app_data/content
+namei -l /root/dockers/content-factory/app_data/content
+```
+
+Последняя команда должна показать `root root` на всех компонентах и
+отсутствие права записи для group/other. `/root` при этом остаётся
+`drwx------`.
+
+`app_data/config`, `app_data/db` и `app_data/queries` принадлежат `10001`
+(пользователь `app` в контейнере) и закрыты от остальных (`0750`); это делает
+одноразовый сервис `init` при каждом `docker compose up`.
+
+### 4.2 Каталоги языков
+
+Приложение не может писать в root-овый `content`, поэтому каталоги активных
+языков создаются заранее:
+
+```bash
+sudo install -d -o 10001 -g content-partner -m 2770 \
+  /root/dockers/content-factory/app_data/content/ru
+```
+
+`setgid` (`2770`) заставляет новые файлы наследовать группу
+`content-partner`, поэтому партнёр читает их. Файлы поставщик создаёт с umask
+`022`, то есть `0644`: группа получает только чтение. Не делайте файлы
+group-writable: `-P write` запрещает SFTP-запрос `write`, но `open` с
+`O_TRUNC` остаётся доступен, и такой файл можно обнулить. Проверка:
+
+```bash
+sudo find /root/dockers/content-factory/app_data/content -perm /022 -print
+```
+
+Вывод должен быть пустым.
+
+Если включаете ещё язык, создайте для него такой же каталог и добавьте его в
+`config.yaml`. Выключенные языки каталогов не получают и партнёру не видны.
+
+## 5. Переменные окружения
 
 Compose читает `.env` из корня проекта: значения подставляются в
 `compose.yaml`, а сервис `worker` получает файл целиком через `env_file`.
@@ -250,70 +314,6 @@ sudo env IMAGE_TAG="$(sudo cat .deploy-image-tag)" docker compose up -d worker
 
 Без `IMAGE_TAG` compose подставит `latest` и может поднять не тот образ,
 который задеплоен (а при отсутствии `latest` — собрать локальный из `build: .`).
-
-## 5. Клон и каталоги
-
-Клонируйте репозиторий от root: деплой-скрипт делает `git fetch` и
-`git reset --hard`, поэтому рабочая копия должна быть root-овой.
-
-```bash
-sudo install -d -m 0755 /root/dockers
-sudo git clone https://github.com/slaid098/content-factory.git \
-  /root/dockers/content-factory
-sudo chown -R root:root /root/dockers/content-factory
-```
-
-Если репозиторий приватный, настройте для root read-доступ (deploy key или
-credential helper) до первого `git fetch`. Ключ не храните в репозитории.
-
-### 5.1 Каталоги chroot
-
-sshd требует, чтобы **каждый** компонент пути `ChrootDirectory` принадлежал
-root и не был доступен на запись группе и остальным. `/root` имеет режим
-`0700` — для chroot это допустимо, sshd заходит в путь от root. Корень
-репозитория, `app_data` и `app_data/content` — `root:root 0755`:
-
-```bash
-sudo chown root:root /root/dockers/content-factory
-sudo chmod 0755 /root/dockers/content-factory
-sudo install -d -o root -g root -m 0755 \
-  /root/dockers/content-factory/app_data \
-  /root/dockers/content-factory/app_data/content
-namei -l /root/dockers/content-factory/app_data/content
-```
-
-Последняя команда должна показать `root root` на всех компонентах и
-отсутствие права записи для group/other. `/root` при этом остаётся
-`drwx------`.
-
-`app_data/config`, `app_data/db` и `app_data/queries` принадлежат `10001`
-(пользователь `app` в контейнере) и закрыты от остальных (`0750`); это делает
-одноразовый сервис `init` при каждом `docker compose up`.
-
-### 5.2 Каталоги языков
-
-Приложение не может писать в root-овый `content`, поэтому каталоги активных
-языков создаются заранее:
-
-```bash
-sudo install -d -o 10001 -g content-partner -m 2770 \
-  /root/dockers/content-factory/app_data/content/ru
-```
-
-`setgid` (`2770`) заставляет новые файлы наследовать группу
-`content-partner`, поэтому партнёр читает их. Файлы поставщик создаёт с umask
-`022`, то есть `0644`: группа получает только чтение. Не делайте файлы
-group-writable: `-P write` запрещает SFTP-запрос `write`, но `open` с
-`O_TRUNC` остаётся доступен, и такой файл можно обнулить. Проверка:
-
-```bash
-sudo find /root/dockers/content-factory/app_data/content -perm /022 -print
-```
-
-Вывод должен быть пустым.
-
-Если включаете ещё язык, создайте для него такой же каталог и добавьте его в
-`config.yaml`. Выключенные языки каталогов не получают и партнёру не видны.
 
 ## 6. sshd
 
