@@ -78,7 +78,7 @@ class SupplierSettings(BaseSettings):
     min_age_days: int = Field(default=5, ge=0)
     # The engine enforces one video per author; the donor env key stays accepted
     # only with the single valid value.
-    max_videos_per_author: Literal[1] = 1
+    max_videos_per_author: int = Field(default=1, ge=1, le=1)
     scrolls_min: int = Field(default=5, ge=0)
     scrolls_max: int = Field(default=8, ge=0)
     queries_per_session_min: int = Field(default=12, ge=0)
@@ -154,6 +154,7 @@ def _validation_message(error: ValidationError) -> str:
 
 def _validate_proxy(proxy: str) -> None:
     """Reject proxies with an unknown scheme or an unparsable host."""
+    proxy = proxy.strip()
     if not proxy:
         return
     if any(char.isspace() for char in proxy):
@@ -176,7 +177,6 @@ def build_supplier_config(
     runtime: RuntimeConfig,
     *,
     db_path: Path,
-    queries_dir: Path,
     content_dir: Path,
     language: str,
 ) -> SupplierConfig:
@@ -208,7 +208,6 @@ def build_supplier_config(
         download_workers=runtime.download.workers,
         download_pause=runtime.download.pause,
         db_path=db_path,
-        queries_dir=queries_dir,
         content_dir=content_dir,
         proxy=supplier.proxy.strip(),
         language=language,

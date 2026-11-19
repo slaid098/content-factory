@@ -216,6 +216,15 @@ def test_supplier_range_pairs_are_checked(
         load_supplier_settings()
 
 
+def test_supplier_accepts_single_video_per_author(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_supplier_env(monkeypatch)
+    monkeypatch.setenv("SUPPLIER_MAX_VIDEOS_PER_AUTHOR", "1")
+
+    assert load_supplier_settings().max_videos_per_author == 1
+
+
 def test_supplier_rejects_more_than_one_video_per_author(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -234,6 +243,15 @@ def test_supplier_rejects_proxy_with_whitespace(
 
     with pytest.raises(ConfigError, match="пробелы"):
         load_supplier_settings()
+
+
+def test_supplier_accepts_proxy_with_surrounding_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_supplier_env(monkeypatch)
+    monkeypatch.setenv("SUPPLIER_PROXY", "  http://127.0.0.1:8080  ")
+
+    assert load_supplier_settings().proxy.strip() == "http://127.0.0.1:8080"
 
 
 def test_supplier_validation_hides_raw_values(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -299,7 +317,6 @@ def test_build_supplier_config_merges_env_runtime_and_paths(tmp_path: Path) -> N
         supplier,
         runtime,
         db_path=tmp_path / "db.sqlite3",
-        queries_dir=tmp_path / "queries",
         content_dir=tmp_path / "content" / "ru",
         language="ru",
     )
@@ -314,6 +331,5 @@ def test_build_supplier_config_merges_env_runtime_and_paths(tmp_path: Path) -> N
     assert cfg.download_pause == 0.25
     assert cfg.proxy == "http://proxy:8080"
     assert cfg.db_path == tmp_path / "db.sqlite3"
-    assert cfg.queries_dir == tmp_path / "queries"
     assert cfg.content_dir == tmp_path / "content" / "ru"
     assert cfg.language == "ru"

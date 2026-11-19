@@ -49,7 +49,6 @@ def make_config(tmp_path: Path, **overrides: object) -> SupplierConfig:
         download_workers=1,
         download_pause=0.0,
         db_path=tmp_path / "app_data" / "db" / "db.sqlite3",
-        queries_dir=tmp_path / "app_data" / "queries",
         content_dir=tmp_path / "app_data" / "content" / "ru",
         proxy="http://127.0.0.1:8080",
         language="ru",

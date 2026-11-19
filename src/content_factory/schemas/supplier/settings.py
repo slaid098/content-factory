@@ -36,7 +36,6 @@ class SupplierConfig:
     download_workers: int
     download_pause: float
     db_path: Path
-    queries_dir: Path
     content_dir: Path
     proxy: str
     language: str

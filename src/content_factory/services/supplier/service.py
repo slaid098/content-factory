@@ -8,6 +8,7 @@ import shutil
 import tempfile
 import time
 from collections.abc import Mapping
+from contextlib import suppress
 from pathlib import Path
 
 from loguru import logger
@@ -156,7 +157,6 @@ def _run_languages(
             supplier_settings,
             runtime,
             db_path=db_path,
-            queries_dir=queries_dir,
             content_dir=content_dir / language,
             language=language,
         )
@@ -197,6 +197,23 @@ def _run_languages(
     return produced, results
 
 
+def _copy_without_overwrite(source: Path, destination: Path) -> None:
+    """Copy a file only when the destination does not exist."""
+    try:
+        writer = destination.open("xb")
+    except FileExistsError:
+        return
+    completed = False
+    try:
+        with writer, source.open("rb") as reader:
+            shutil.copyfileobj(reader, writer)
+        completed = True
+    finally:
+        if not completed:
+            with suppress(OSError):
+                destination.unlink(missing_ok=True)
+
+
 def _seed_queries(queries_dir: Path, language: str) -> None:
     """Скопировать сид запросов атомарно, не перезаписывая существующий файл."""
     destination = queries_dir / f"{language}.txt"
@@ -204,29 +221,39 @@ def _seed_queries(queries_dir: Path, language: str) -> None:
     if destination.exists() or not source.is_file():
         return
     _ensure_directory(queries_dir)
-    descriptor, tmp_name = tempfile.mkstemp(
-        prefix=f".{language}.",
-        suffix=".tmp",
-        dir=queries_dir,
-    )
+    try:
+        descriptor, tmp_name = tempfile.mkstemp(
+            prefix=f".{language}.",
+            suffix=".tmp",
+            dir=queries_dir,
+        )
+    except OSError as ex:
+        raise SupplierError(f"не удалось создать файл запросов {destination}: {ex}") from ex
     try:
         with os.fdopen(descriptor, "wb") as writer, source.open("rb") as reader:
             shutil.copyfileobj(reader, writer)
-        os.link(tmp_name, destination)
-    except FileExistsError:
-        return
+        try:
+            os.link(tmp_name, destination)
+        except FileExistsError:
+            return
+        except OSError:
+            # Some filesystems do not support hard links; fall back to an
+            # exclusive copy so an existing file is still never overwritten.
+            _copy_without_overwrite(Path(tmp_name), destination)
     except OSError as ex:
         raise SupplierError(f"не удалось создать файл запросов {destination}: {ex}") from ex
     finally:
-        Path(tmp_name).unlink(missing_ok=True)
+        with suppress(OSError):
+            Path(tmp_name).unlink(missing_ok=True)
 
 
 def _sweep_stale_tmp(content_dir: Path) -> None:
     """Remove temporary files older than a day from one language directory."""
     now = time.time()
+    tmp_dir = content_dir / ".tmp"
     try:
-        candidates = list(content_dir.glob("*.tmp"))
-        candidates.extend((content_dir / ".tmp").glob("*"))
+        candidates = [path for path in content_dir.glob("*.tmp") if path != tmp_dir]
+        candidates.extend(tmp_dir.glob("*"))
     except OSError as ex:
         logger.bind(path=str(content_dir), error=ex, error_type=type(ex).__name__).warning(
             "Не удалось прочитать временные файлы {}", content_dir

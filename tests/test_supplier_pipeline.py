@@ -351,6 +351,23 @@ def test_exhausted_filter_budget_returns_stock_shortfall(tmp_path: Path) -> None
     assert result == LanguageResult(downloaded=0, stop_reason=StopReason.STOCK_SHORTFALL)
 
 
+def test_no_queries_wins_over_exhausted_filter_budget(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+
+    result = run_language(
+        make_config(tmp_path),
+        repo=repo,
+        mcp=object(),
+        queries=[],
+        target=1,
+        budget=Budget(queries=10, filters=0),
+        deadline=time.monotonic() + 60,
+        no_queries=True,
+    )
+
+    assert result == LanguageResult(downloaded=0, stop_reason=StopReason.NO_QUERIES)
+
+
 def test_no_queries_returns_queries_exhausted(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
 

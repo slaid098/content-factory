@@ -494,6 +494,29 @@ def test_stale_tmp_files_are_swept(
     assert fresh.exists()
 
 
+def test_stale_tmp_sweep_skips_tmp_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = tmp_path / "content"
+    tmp_dir = content / ".tmp"
+    tmp_dir.mkdir(parents=True)
+    old_time = time.time() - 2 * 24 * 60 * 60
+    os.utime(tmp_dir, (old_time, old_time))
+    removed: list[Path] = []
+    real_unlink = Path.unlink
+
+    def record(self: Path, *args: object, **kwargs: object) -> None:
+        removed.append(self)
+        real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", record)
+
+    service._sweep_stale_tmp(content)
+
+    assert tmp_dir not in removed
+
+
 def test_stale_tmp_sweep_logs_filesystem_errors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -646,6 +669,66 @@ def test_seed_queries_ignores_a_race(
 
     assert not (tmp_path / "queries" / "ru.txt").exists()
     assert list((tmp_path / "queries").glob(".*.tmp")) == []
+
+
+def test_seed_queries_wraps_tempfile_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*args: object, **kwargs: object) -> None:
+        raise OSError("no space")
+
+    monkeypatch.setattr(service.tempfile, "mkstemp", fail)
+
+    with pytest.raises(SupplierError, match="не удалось создать файл запросов"):
+        service._seed_queries(tmp_path / "queries", "ru")
+
+
+def test_seed_queries_falls_back_without_hardlinks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unsupported(*args: object, **kwargs: object) -> None:
+        raise OSError("hard links are not supported")
+
+    monkeypatch.setattr(service.os, "link", unsupported)
+    queries_dir = tmp_path / "queries"
+
+    service._seed_queries(queries_dir, "ru")
+
+    seed = (service._SEED_QUERIES_DIR / "ru.txt").read_text(encoding="utf-8")
+    assert (queries_dir / "ru.txt").read_text(encoding="utf-8") == seed
+    assert list(queries_dir.glob(".*.tmp")) == []
+
+
+def test_copy_without_overwrite_ignores_existing_file(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.write_bytes(b"new")
+    destination.write_bytes(b"old")
+
+    service._copy_without_overwrite(source, destination)
+
+    assert destination.read_bytes() == b"old"
+
+
+def test_copy_without_overwrite_removes_partial_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.write_bytes(b"new")
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(service.shutil, "copyfileobj", fail)
+
+    with pytest.raises(OSError, match="disk full"):
+        service._copy_without_overwrite(source, destination)
+
+    assert not destination.exists()
 
 
 def test_ensure_directory_reports_filesystem_errors(

@@ -158,10 +158,10 @@ def run_language(
 
         if need <= 0:
             return counters.result(StopReason.TARGET_REACHED)
-        if budget.filters <= 0:
-            return counters.result(StopReason.STOCK_SHORTFALL)
         if index >= len(queries) or budget.queries <= 0:
             return counters.result(_exhausted_reason(counters, no_queries))
+        if budget.filters <= 0:
+            return counters.result(StopReason.STOCK_SHORTFALL)
 
         if _expired(deadline):
             return counters.result(StopReason.DURATION_EXCEEDED)
