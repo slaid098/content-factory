@@ -77,9 +77,9 @@ read-only настройке `GITHUB_TOKEN` не сможет запушить �
 код из этого коммита, поэтому в неё не должно попадать ничего в обход
 зелёного `ci`.
 
-## 3. Пользователь deploy, ключ и sudoers
+## 3. Пользователи, ключи и sudoers
 
-### 3.1 Пользователь и ключ
+### 3.1 Пользователи и ключи
 
 На Linux 1:
 
@@ -108,6 +108,25 @@ PTY и пересылки, но оставляет выполнение кома
 
 Приватный ключ и `known_hosts` попадут только в GitHub Secrets (см. §3.3).
 Не коммитьте их и не копируйте в `/root/dockers/content-factory`.
+
+Для SFTP нужен отдельный системный пользователь `content-partner`, которому
+принадлежит `app_data/content/ru`. Создайте его и положите публичный ключ
+партнёра:
+
+```bash
+sudo groupadd --system content-partner
+sudo useradd --system --gid content-partner \
+  --home-dir /var/lib/content-partner --shell /usr/sbin/nologin content-partner
+sudo install -d -m 700 -o content-partner -g content-partner /var/lib/content-partner
+sudo install -d -m 700 -o content-partner -g content-partner /var/lib/content-partner/.ssh
+sudo install -m 600 -o content-partner -g content-partner \
+  partner-key.pub /var/lib/content-partner/.ssh/authorized_keys
+```
+
+Ключ можно дополнительно ограничить префиксом `restrict` в `authorized_keys`:
+он запрещает PTY и пересылки на уровне ключа. Не путайте `content-partner` с
+пользователем `deploy`: первый читает готовые файлы по SFTP, второй только
+запускает деплой через sudo.
 
 ### 3.2 sudoers
 
@@ -220,12 +239,17 @@ EOF
 
 </details>
 
-После изменения `.env` пересоздайте воркер:
+После первого деплоя пересоздайте воркер на том же образе, что API. Тег
+берётся из `.deploy-image-tag`, который пишет деплой-скрипт:
 
 ```bash
 cd /root/dockers/content-factory
-sudo docker compose up -d worker
+sudo env IMAGE_TAG="$(sudo cat .deploy-image-tag)" docker compose pull worker
+sudo env IMAGE_TAG="$(sudo cat .deploy-image-tag)" docker compose up -d worker
 ```
+
+Без `IMAGE_TAG` compose подставит `latest` и может поднять не тот образ,
+который задеплоен (а при отсутствии `latest` — собрать локальный из `build: .`).
 
 ## 5. Клон и каталоги
 
@@ -562,8 +586,15 @@ sudo tar -tzf /var/backups/content-factory/content-factory-config-queries-*.tar.
 ```
 
 Восстановление: остановите `worker`, распакуйте архив в `app_data/`, затем
-запустите `docker compose up -d worker` — `init` выставит владельца файлов
-`10001`.
+поднимите воркер на задеплоенном образе (тег лежит в `.deploy-image-tag`):
+
+```bash
+cd /root/dockers/content-factory
+sudo env IMAGE_TAG="$(sudo cat .deploy-image-tag)" docker compose pull worker
+sudo env IMAGE_TAG="$(sudo cat .deploy-image-tag)" docker compose up -d worker
+```
+
+`init` выставит владельца файлов `10001`.
 
 ## 11. Обновление и обслуживание
 
