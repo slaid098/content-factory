@@ -19,6 +19,8 @@ dependencies = [
   "pydantic>=2.9",
   "pydantic-settings>=2.6",
   "loguru>=0.7.2",
+  "yt-dlp[default,curl-cffi]>=2024.12.13",
+  "curl_cffi>=0.7",
 ]
 
 [project.optional-dependencies]
@@ -52,6 +54,10 @@ warn_return_any = true
 warn_unused_configs = true
 pretty = true
 
+[[tool.mypy.overrides]]
+module = ["yt_dlp.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
@@ -70,6 +76,7 @@ exclude_lines = [
   "pragma: no cover",
   "if TYPE_CHECKING:",
   "raise NotImplementedError",
+  "^\\s*\\.\\.\\.\\s*$",
 ]
 
 [tool.audit]
@@ -83,4 +90,15 @@ reason = "служебный runbook, не продуктовая витрина
 
 # ConfigError наследует ContentFactoryError — осознанная иерархия ошибок
 # сервиса, чтобы вызывающий код мог ловить общий тип.
-inheritance_allowlist = ["content_factory.exceptions.errors.ContentFactoryError"]
+inheritance_allowlist = [
+  "content_factory.exceptions.errors.ContentFactoryError",
+  "content_factory.exceptions.errors.SupplierError",
+]
+
+# Конструкторы этапов (download/filter/mcp_session) совпадают по форме: два
+# поля и их присваивание. Общий базовый класс ради четырёх строк добавил бы
+# наследование в доменное ядро без выгоды; этапы компонуются оркестратором.
+[[tool.audit.ignore]]
+check_id = "duplicate_code"
+path = "src/content_factory/services/supplier/downloader.py"
+reason = "совпадение тривиальных конструкторов этапов, база была бы оверинжинирингом"

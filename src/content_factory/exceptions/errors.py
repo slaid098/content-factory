@@ -9,3 +9,7 @@ class ContentFactoryError(Exception):
 
 class ConfigError(ContentFactoryError):
     """Raised when configuration cannot be read, created or validated."""
+
+
+class SupplierError(ContentFactoryError):
+    """Raised when the TikTok supplier engine cannot complete a stage."""
