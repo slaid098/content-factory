@@ -17,7 +17,7 @@ from content_factory.constants import ARCHIVE_DIR, CONTENT_DIR
 from content_factory.exceptions import ArchiveTooLargeError, DeliveryError, UploadError
 from content_factory.schemas.content.delivery import DeliveryJobInfo
 from content_factory.services.delivery.sidecars import save_job
-from delivery_helpers import REQUEST_ID, REQUEST_ID_TEXT, touch_mp4
+from delivery_helpers import REQUEST_ID, REQUEST_ID_TEXT, add_title, touch_mp4
 
 _TOKEN = "delivery-secret"
 _SECOND_ID = UUID("22222222-2222-4222-8222-222222222222")
@@ -110,6 +110,7 @@ def test_link_returns_building_then_ready_and_removes_zip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"), b"video")
+    add_title(data_dir / "db" / "db.sqlite3", "a" * 64, "Название видео")
     url = "https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip"
     monkeypatch.setattr(
         "content_factory.services.delivery.jobs.upload_archive",
@@ -152,6 +153,7 @@ def test_successful_upload_url_is_not_logged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"), b"video")
+    add_title(data_dir / "db" / "db.sqlite3", "a" * 64, "Название видео")
     url = "https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip"
     monkeypatch.setattr(
         "content_factory.services.delivery.jobs.upload_archive",
@@ -174,6 +176,7 @@ def test_upload_failure_keeps_zip_and_returns_ready_local(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"), b"video")
+    add_title(data_dir / "db" / "db.sqlite3", "a" * 64, "Название видео")
 
     def _fail(_archive: Path) -> str:
         raise UploadError("Filebin недоступен")
@@ -196,6 +199,7 @@ def test_upload_too_large_falls_back_to_ready_local(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"), b"video")
+    add_title(data_dir / "db" / "db.sqlite3", "a" * 64, "Название видео")
 
     def _too_large(_archive: Path) -> str:
         raise ArchiveTooLargeError("архив больше 1 ГБ")
@@ -216,6 +220,7 @@ def test_large_archive_skips_upload_attempt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"), b"video")
+    add_title(data_dir / "db" / "db.sqlite3", "a" * 64, "Название видео")
     monkeypatch.setattr("content_factory.services.delivery.upload.MAX_ARCHIVE_BYTES", 1)
     called = False
 
@@ -240,6 +245,7 @@ def test_unexpected_upload_error_falls_back_to_ready_local(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"), b"video")
+    add_title(data_dir / "db" / "db.sqlite3", "a" * 64, "Название видео")
 
     def _fail(_archive: Path) -> str:
         raise RuntimeError("unexpected")
@@ -266,11 +272,26 @@ def test_link_without_stock_returns_empty(data_dir: Path) -> None:
     assert not (data_dir / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.zip").exists()
 
 
+def test_link_with_untitled_stock_returns_empty(data_dir: Path) -> None:
+    source = touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"), b"video")
+    client = _client()
+
+    assert _post(client).status_code == 202
+    final = _wait(client, REQUEST_ID_TEXT, "empty")
+
+    assert final["files"] == 0
+    assert final["size"] == 0
+    assert final["url"] is None
+    assert source.is_file()
+    assert not (data_dir / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.zip").exists()
+
+
 def test_build_error_returns_failed_job(
     data_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"), b"video")
+    add_title(data_dir / "db" / "db.sqlite3", "a" * 64, "Название видео")
 
     def _fail(*args: object, **kwargs: object) -> None:
         raise DeliveryError("boom")
@@ -320,6 +341,7 @@ def test_repeated_post_for_ready_job_keeps_stock_and_status(
 ) -> None:
     directory = data_dir / CONTENT_DIR / "ru"
     touch_mp4(directory / ("a" * 64 + ".mp4"), b"first")
+    add_title(data_dir / "db" / "db.sqlite3", "a" * 64, "Название старого видео")
     url = "https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip"
     monkeypatch.setattr(
         "content_factory.services.delivery.jobs.upload_archive",
@@ -329,6 +351,7 @@ def test_repeated_post_for_ready_job_keeps_stock_and_status(
     assert _post(client).status_code == 202
     _wait(client, REQUEST_ID_TEXT, "ready")
     fresh = touch_mp4(directory / ("b" * 64 + ".mp4"), b"second")
+    add_title(data_dir / "db" / "db.sqlite3", "b" * 64, "Название нового видео")
 
     repeated = _post(client)
 
@@ -374,6 +397,7 @@ def test_startup_marks_building_as_failed_and_repeat_rebuilds(
     now = datetime.now(UTC)
     _job(data_dir, status="building", created_at=now, expires_at=now + timedelta(hours=24))
     touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"), b"video")
+    add_title(data_dir / "db" / "db.sqlite3", "a" * 64, "Название видео")
     url = "https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip"
     monkeypatch.setattr(
         "content_factory.services.delivery.jobs.upload_archive",

@@ -13,11 +13,11 @@ from uuid import UUID
 from loguru import logger
 
 from content_factory.constants import ARCHIVE_DIR, CONTENT_DIR, DB_DIR, DB_FILENAME
+from content_factory.db.titles import load_titles
 from content_factory.exceptions.errors import DeliveryError
 from content_factory.services.delivery.archives import is_archive_expired
 from content_factory.services.delivery.metadata import VideoMeta, load_video_meta
 from content_factory.services.delivery.sidecars import read_job_file
-from content_factory.services.delivery.titles import load_descriptions, normalize_title
 
 _DELIVERY_LOCK = threading.Lock()
 _ZIP_SUFFIX = ".zip"
@@ -51,7 +51,7 @@ def deliver(
         now: Moment used to test archive freshness; defaults to UTC now.
 
     Returns:
-        Path to the stored archive, or ``None`` when no mp4 matches.
+        Path to the stored archive, or ``None`` when no titled mp4 matches.
 
     Raises:
         DeliveryError: The archive directory or zip cannot be written.
@@ -78,11 +78,11 @@ def deliver(
             if not sources:
                 return None
             archive_dir.mkdir(parents=True, exist_ok=True)
-            descriptions = load_descriptions(
+            titles = load_titles(
                 data_dir / DB_DIR / DB_FILENAME,
                 [source.stem for source in sources],
             )
-            _build_archive(archive_path, sources, descriptions, language)
+            _build_archive(archive_path, sources, titles)
         except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as ex:
             _discard_tmp(archive_path)
             raise DeliveryError(f"не удалось собрать архив {request_id}") from ex
@@ -265,17 +265,19 @@ def _select_sources(
     db_path: Path,
     query: str | None = None,
 ) -> list[Path]:
-    """Pick up to ``count`` mp4 files in stable name order, optionally by topic."""
+    """Pick up to ``count`` titled mp4 files in stable name order, optionally by topic."""
     if not directory.is_dir():
         return []
     candidates = sorted(
         (path for path in directory.iterdir() if path.is_file() and path.suffix == ".mp4"),
         key=lambda path: path.name,
     )
+    titles = load_titles(db_path, [path.stem for path in candidates])
+    titled = [path for path in candidates if titles.get(path.stem)]
     if query is None:
-        return candidates[:count]
-    meta = load_video_meta(db_path, [path.stem for path in candidates])
-    return [path for path in candidates if _matches_query(meta, path.stem, query)][:count]
+        return titled[:count]
+    meta = load_video_meta(db_path, [path.stem for path in titled])
+    return [path for path in titled if _matches_query(meta, path.stem, query)][:count]
 
 
 def _matches_query(meta: Mapping[str, VideoMeta], sha256: str, query: str) -> bool:
@@ -287,8 +289,7 @@ def _matches_query(meta: Mapping[str, VideoMeta], sha256: str, query: str) -> bo
 def _build_archive(
     archive_path: Path,
     sources: Sequence[Path],
-    descriptions: Mapping[str, str],
-    language: str,
+    titles: Mapping[str, str],
 ) -> None:
     """Write the archive next to its final name and atomically replace it."""
     tmp_path = _tmp_path(archive_path)
@@ -297,10 +298,9 @@ def _build_archive(
         for index, source in enumerate(sources, start=1):
             prefix = f"{index:03d}"
             archive.write(source, arcname=f"{prefix}.mp4")
-            title = normalize_title(descriptions.get(source.stem), language)
             archive.writestr(
                 f"{prefix}.json",
-                json.dumps({"title": title}, ensure_ascii=False),
+                json.dumps({"title": titles[source.stem]}, ensure_ascii=False),
             )
     tmp_path.replace(archive_path)
 

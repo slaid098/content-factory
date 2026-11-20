@@ -91,7 +91,7 @@ def _check_delivery_limit(request: DeliveryRequest, settings: Settings) -> None:
             "description": "Zip archive with NNN.mp4 and NNN.json entries",
             "content": {"application/zip": {}},
         },
-        status.HTTP_204_NO_CONTENT: {"description": "The language has no mp4 files"},
+        status.HTTP_204_NO_CONTENT: {"description": "The language has no titled mp4 files"},
         status.HTTP_401_UNAUTHORIZED: {"description": "Missing or invalid token"},
         status.HTTP_503_SERVICE_UNAVAILABLE: {"description": "Delivery is disabled"},
     },
