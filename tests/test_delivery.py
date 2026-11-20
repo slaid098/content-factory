@@ -6,13 +6,17 @@ import os
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
 from content_factory.constants import ARCHIVE_DIR, CONTENT_DIR
 from content_factory.exceptions import DeliveryError
+from content_factory.services.delivery.archives import find_archive, list_archives
+from content_factory.services.delivery.metadata import VideoMeta, load_video_meta
 from content_factory.services.delivery.service import cleanup_expired_archives, deliver
 from content_factory.services.delivery.titles import load_descriptions, normalize_title
+from content_factory.services.delivery.topics import collect_topics
 from delivery_helpers import REQUEST_ID, add_downloaded_video, touch_mp4
 
 _MOMENT = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
@@ -20,6 +24,21 @@ _MOMENT = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
 
 def _archive_path(data_dir: Path, language: str = "ru") -> Path:
     return data_dir / ARCHIVE_DIR / language / f"{REQUEST_ID}.zip"
+
+
+def _touch_archive(
+    data_dir: Path,
+    *,
+    language: str = "ru",
+    request_id: UUID = REQUEST_ID,
+    data: bytes = b"zip",
+    created_at: datetime = _MOMENT,
+) -> Path:
+    path = data_dir / ARCHIVE_DIR / language / f"{request_id}.zip"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    os.utime(path, (created_at.timestamp(), created_at.timestamp()))
+    return path
 
 
 def _zip_entries(data: bytes) -> list[str]:
@@ -350,3 +369,266 @@ def test_cleanup_skips_archive_removed_by_race(
     monkeypatch.setattr(Path, "stat", _missing_stat)
 
     assert cleanup_expired_archives(tmp_path, 24, now=_MOMENT) == 0
+
+
+def test_load_video_meta_maps_description_and_query(tmp_path: Path) -> None:
+    db_path = tmp_path / "db" / "db.sqlite3"
+    add_downloaded_video(db_path, "a" * 64, "Описание", query="курятник")
+
+    meta = load_video_meta(db_path, ["a" * 64, "missing"])
+
+    assert meta == {"a" * 64: VideoMeta(description="Описание", query="курятник")}
+
+
+def test_collect_topics_counts_by_query_and_unclassified(tmp_path: Path) -> None:
+    db_path = tmp_path / "db" / "db.sqlite3"
+    directory = tmp_path / CONTENT_DIR / "ru"
+    for sha256, query in (
+        ("a" * 64, "курятник"),
+        ("b" * 64, "курятник"),
+        ("c" * 64, "заправка"),
+        ("d" * 64, ""),
+    ):
+        touch_mp4(directory / f"{sha256}.mp4")
+        add_downloaded_video(db_path, sha256, "Описание", query=query)
+    touch_mp4(directory / ("e" * 64 + ".mp4"))
+
+    result = collect_topics(tmp_path, "ru")
+
+    assert result.language == "ru"
+    assert [(topic.query, topic.count) for topic in result.topics] == [
+        ("заправка", 1),
+        ("курятник", 2),
+    ]
+    assert result.unclassified == 2
+
+
+def test_collect_topics_without_language_directory_returns_empty(tmp_path: Path) -> None:
+    result = collect_topics(tmp_path, "ru")
+
+    assert result.topics == ()
+    assert result.unclassified == 0
+
+
+def test_collect_topics_with_broken_database_classifies_everything(tmp_path: Path) -> None:
+    touch_mp4(tmp_path / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"))
+    db_path = tmp_path / "db" / "db.sqlite3"
+    db_path.parent.mkdir(parents=True)
+    db_path.write_bytes(b"not a database")
+
+    result = collect_topics(tmp_path, "ru")
+
+    assert result.topics == ()
+    assert result.unclassified == 1
+
+
+def test_deliver_with_query_keeps_other_topics_in_stock(tmp_path: Path) -> None:
+    db_path = tmp_path / "db" / "db.sqlite3"
+    first_hash = "a" * 64
+    second_hash = "b" * 64
+    other_hash = "c" * 64
+    first = touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{first_hash}.mp4", b"first")
+    second = touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{second_hash}.mp4", b"second")
+    other = touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{other_hash}.mp4", b"other")
+    add_downloaded_video(db_path, first_hash, "Первое", query="курятник")
+    add_downloaded_video(db_path, second_hash, "Второе", query="курятник")
+    add_downloaded_video(db_path, other_hash, "Другое", query="заправка")
+
+    archive = deliver(tmp_path, "ru", 10, REQUEST_ID, "курятник", retention_hours=24)
+
+    assert archive is not None
+    data = archive.read_bytes()
+    assert _zip_bytes(data, "001.mp4") == b"first"
+    assert _zip_bytes(data, "002.mp4") == b"second"
+    assert sorted(_zip_entries(data)) == ["001.json", "001.mp4", "002.json", "002.mp4"]
+    assert not first.exists()
+    assert not second.exists()
+    assert other.is_file()
+
+
+def test_deliver_query_is_case_sensitive(tmp_path: Path) -> None:
+    sha256 = "a" * 64
+    source = touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{sha256}.mp4")
+    add_downloaded_video(
+        tmp_path / "db" / "db.sqlite3",
+        sha256,
+        "Описание",
+        query="Курятник",
+    )
+
+    assert deliver(tmp_path, "ru", 1, REQUEST_ID, "курятник", retention_hours=24) is None
+    assert source.is_file()
+
+
+def test_deliver_returns_none_when_query_has_no_matches(tmp_path: Path) -> None:
+    sha256 = "a" * 64
+    source = touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{sha256}.mp4")
+    add_downloaded_video(
+        tmp_path / "db" / "db.sqlite3",
+        sha256,
+        "Описание",
+        query="заправка",
+    )
+
+    assert deliver(tmp_path, "ru", 1, REQUEST_ID, "курятник", retention_hours=24) is None
+    assert source.is_file()
+    assert not _archive_path(tmp_path).exists()
+
+
+def test_deliver_with_query_and_missing_database_returns_none(tmp_path: Path) -> None:
+    source = touch_mp4(tmp_path / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"))
+
+    assert deliver(tmp_path, "ru", 1, REQUEST_ID, "курятник", retention_hours=24) is None
+    assert source.is_file()
+
+
+def test_list_archives_returns_live_entries_newest_first(tmp_path: Path) -> None:
+    older = _touch_archive(tmp_path, data=b"older")
+    newer = _touch_archive(
+        tmp_path,
+        language="en",
+        data=b"newer",
+        created_at=_MOMENT + timedelta(hours=1),
+    )
+
+    archives = list_archives(tmp_path, 24, now=_MOMENT + timedelta(hours=2))
+
+    assert [archive.language for archive in archives] == ["en", "ru"]
+    assert archives[0].request_id == REQUEST_ID
+    assert archives[0].size == len(b"newer")
+    assert archives[0].created_at == _MOMENT + timedelta(hours=1)
+    assert archives[0].expires_at == _MOMENT + timedelta(hours=25)
+    assert archives[1].size == len(b"older")
+    assert older.is_file()
+    assert newer.is_file()
+
+
+def test_list_archives_skips_expired_tmp_and_non_uuid_files(tmp_path: Path) -> None:
+    fresh = _touch_archive(tmp_path, data=b"fresh")
+    expired = _touch_archive(
+        tmp_path,
+        request_id=UUID(int=2),
+        data=b"expired",
+        created_at=_MOMENT - timedelta(hours=25),
+    )
+    directory = fresh.parent
+    tmp_file = directory / f"{REQUEST_ID}.zip.tmp"
+    tmp_file.write_bytes(b"tmp")
+    invalid = directory / "not-a-uuid.zip"
+    invalid.write_bytes(b"invalid")
+    notes = directory / "notes.txt"
+    notes.write_text("keep", encoding="utf-8")
+
+    archives = list_archives(tmp_path, 24, now=_MOMENT)
+
+    assert [archive.request_id for archive in archives] == [REQUEST_ID]
+    assert fresh.is_file()
+    assert expired.is_file()
+    assert tmp_file.is_file()
+    assert invalid.is_file()
+    assert notes.is_file()
+
+
+def test_list_archives_without_archive_directory_returns_empty(tmp_path: Path) -> None:
+    assert list_archives(tmp_path, 24, now=_MOMENT) == ()
+
+
+def test_list_archives_logs_archive_directory_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / ARCHIVE_DIR
+    archive_root.mkdir()
+    original_iterdir = Path.iterdir
+
+    def _deny_archive(self: Path) -> object:
+        if self == archive_root:
+            raise PermissionError("permission denied")
+        return original_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", _deny_archive)
+
+    assert list_archives(tmp_path, 24, now=_MOMENT) == ()
+
+
+def test_list_archives_logs_language_directory_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    directory = tmp_path / ARCHIVE_DIR / "ru"
+    directory.mkdir(parents=True)
+    original_glob = Path.glob
+
+    def _deny_language(self: Path, pattern: str) -> object:
+        if self == directory:
+            raise PermissionError("permission denied")
+        return original_glob(self, pattern)
+
+    monkeypatch.setattr(Path, "glob", _deny_language)
+
+    assert list_archives(tmp_path, 24, now=_MOMENT) == ()
+
+
+def test_list_archives_skips_archive_with_unreadable_stat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = _touch_archive(tmp_path)
+    original_is_file = Path.is_file
+    original_stat = Path.stat
+
+    def _present(self: Path) -> bool:
+        if self == archive:
+            return True
+        return original_is_file(self)
+
+    def _deny_stat(self: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if self == archive:
+            raise PermissionError("permission denied")
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_file", _present)
+    monkeypatch.setattr(Path, "stat", _deny_stat)
+
+    assert list_archives(tmp_path, 24, now=_MOMENT) == ()
+
+
+def test_find_archive_returns_fresh_file(tmp_path: Path) -> None:
+    archive = _touch_archive(tmp_path)
+
+    found = find_archive(tmp_path, "ru", REQUEST_ID, 24, now=_MOMENT)
+
+    assert found == archive
+
+
+def test_find_archive_returns_none_for_missing_or_expired_file(tmp_path: Path) -> None:
+    assert find_archive(tmp_path, "ru", REQUEST_ID, 24, now=_MOMENT) is None
+
+    archive = _touch_archive(tmp_path, created_at=_MOMENT - timedelta(hours=25))
+
+    assert find_archive(tmp_path, "ru", REQUEST_ID, 24, now=_MOMENT) is None
+    assert archive.is_file()
+
+
+def test_find_archive_rejects_invalid_language(tmp_path: Path) -> None:
+    _touch_archive(tmp_path)
+
+    assert find_archive(tmp_path, "../ru", REQUEST_ID, 24, now=_MOMENT) is None
+
+
+def test_find_archive_returns_none_when_stat_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = _touch_archive(tmp_path)
+    original_stat = Path.stat
+
+    def _deny(self: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if self == archive:
+            raise PermissionError("permission denied")
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_file", lambda _path: True)
+    monkeypatch.setattr(Path, "stat", _deny)
+
+    assert find_archive(tmp_path, "ru", REQUEST_ID, 24, now=_MOMENT) is None

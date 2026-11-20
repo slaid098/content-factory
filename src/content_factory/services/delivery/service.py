@@ -6,7 +6,7 @@ import json
 import threading
 import zipfile
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -14,12 +14,13 @@ from loguru import logger
 
 from content_factory.constants import ARCHIVE_DIR, CONTENT_DIR, DB_DIR, DB_FILENAME
 from content_factory.exceptions.errors import DeliveryError
+from content_factory.services.delivery.archives import is_archive_expired
+from content_factory.services.delivery.metadata import VideoMeta, load_video_meta
 from content_factory.services.delivery.titles import load_descriptions, normalize_title
 
 _DELIVERY_LOCK = threading.Lock()
 _ZIP_SUFFIX = ".zip"
 _TMP_SUFFIX = ".tmp"
-_SECONDS_PER_HOUR = 3600
 
 
 def deliver(
@@ -27,6 +28,7 @@ def deliver(
     language: str,
     count: int,
     request_id: UUID,
+    query: str | None = None,
     *,
     retention_hours: int,
     now: datetime | None = None,
@@ -43,11 +45,12 @@ def deliver(
         language: Validated two-letter language code.
         count: Maximum number of videos to deliver.
         request_id: Client request identifier, also the archive file name.
+        query: Exact ``videos.query`` topic; ``None`` selects every topic.
         retention_hours: How long the archive stays idempotent before expiry.
         now: Moment used to test archive freshness; defaults to UTC now.
 
     Returns:
-        Path to the stored archive, or ``None`` when the language has no mp4.
+        Path to the stored archive, or ``None`` when no mp4 matches.
 
     Raises:
         DeliveryError: The archive directory or zip cannot be written.
@@ -65,7 +68,12 @@ def deliver(
 
         try:
             _remove_stale(archive_path)
-            sources = _select_sources(data_dir / CONTENT_DIR / language, count)
+            sources = _select_sources(
+                data_dir / CONTENT_DIR / language,
+                count,
+                db_path=data_dir / DB_DIR / DB_FILENAME,
+                query=query,
+            )
             if not sources:
                 return None
             archive_dir.mkdir(parents=True, exist_ok=True)
@@ -109,7 +117,6 @@ def cleanup_expired_archives(
         Number of removed zip files.
     """
     moment = now or datetime.now(UTC)
-    cutoff = moment.timestamp() - retention_hours * _SECONDS_PER_HOUR
     removed = 0
     with _DELIVERY_LOCK:
         archive_root = data_dir / ARCHIVE_DIR
@@ -125,12 +132,12 @@ def cleanup_expired_archives(
             ).warning("Не удалось прочитать каталог архивов")
             return 0
         for directory in language_dirs:
-            removed += _cleanup_directory(directory, cutoff)
+            removed += _cleanup_directory(directory, moment, retention_hours)
     logger.bind(removed=removed).info("Очистка архива выдач: удалено {} zip", removed)
     return removed
 
 
-def _cleanup_directory(directory: Path, cutoff: float) -> int:
+def _cleanup_directory(directory: Path, now: datetime, retention_hours: int) -> int:
     """Remove expired zips of one language directory."""
     try:
         archives = list(directory.glob(f"*{_ZIP_SUFFIX}"))
@@ -143,7 +150,8 @@ def _cleanup_directory(directory: Path, cutoff: float) -> int:
     removed = 0
     for archive in archives:
         try:
-            if archive.stat().st_mtime >= cutoff:
+            stored_at = datetime.fromtimestamp(archive.stat().st_mtime, tz=UTC)
+            if not is_archive_expired(stored_at, retention_hours, now=now):
                 continue
             archive.unlink()
             removed += 1
@@ -163,7 +171,7 @@ def _is_fresh(path: Path, now: datetime, retention_hours: int) -> bool:
         stored_at = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
     except FileNotFoundError:
         return False
-    return now - stored_at < timedelta(hours=retention_hours)
+    return not is_archive_expired(stored_at, retention_hours, now=now)
 
 
 def _remove_stale(path: Path) -> None:
@@ -174,15 +182,30 @@ def _remove_stale(path: Path) -> None:
         return
 
 
-def _select_sources(directory: Path, count: int) -> list[Path]:
-    """Pick up to ``count`` mp4 files in stable name order."""
+def _select_sources(
+    directory: Path,
+    count: int,
+    *,
+    db_path: Path,
+    query: str | None = None,
+) -> list[Path]:
+    """Pick up to ``count`` mp4 files in stable name order, optionally by topic."""
     if not directory.is_dir():
         return []
     candidates = sorted(
         (path for path in directory.iterdir() if path.is_file() and path.suffix == ".mp4"),
         key=lambda path: path.name,
     )
-    return candidates[:count]
+    if query is None:
+        return candidates[:count]
+    meta = load_video_meta(db_path, [path.stem for path in candidates])
+    return [path for path in candidates if _matches_query(meta, path.stem, query)][:count]
+
+
+def _matches_query(meta: Mapping[str, VideoMeta], sha256: str, query: str) -> bool:
+    """Return whether a stock file belongs to the requested topic."""
+    item = meta.get(sha256)
+    return item is not None and item.query == query
 
 
 def _build_archive(

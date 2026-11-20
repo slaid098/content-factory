@@ -6,6 +6,7 @@ import os
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import UUID
 
 import httpx
 import pytest
@@ -40,6 +41,34 @@ def _client() -> TestClient:
     return TestClient(create_app())
 
 
+def _headers(token: str | None = _TOKEN) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"} if token is not None else {}
+
+
+def _get(
+    client: TestClient,
+    path: str,
+    *,
+    token: str | None = _TOKEN,
+) -> httpx.Response:
+    return client.get(path, headers=_headers(token))
+
+
+def _touch_archive(
+    data_dir: Path,
+    request_id: UUID,
+    data: bytes,
+    created_at: datetime,
+    *,
+    language: str = "ru",
+) -> Path:
+    path = data_dir / ARCHIVE_DIR / language / f"{request_id}.zip"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    os.utime(path, (created_at.timestamp(), created_at.timestamp()))
+    return path
+
+
 def _body(**overrides: object) -> dict[str, object]:
     body: dict[str, object] = {
         "language": "ru",
@@ -56,8 +85,11 @@ def _post(
     token: str | None = _TOKEN,
     **overrides: object,
 ) -> httpx.Response:
-    headers = {"Authorization": f"Bearer {token}"} if token is not None else {}
-    return client.post("/api/v1/content/deliveries", json=_body(**overrides), headers=headers)
+    return client.post(
+        "/api/v1/content/deliveries",
+        json=_body(**overrides),
+        headers=_headers(token),
+    )
 
 
 def test_delivery_without_configured_token_returns_503(
@@ -177,6 +209,8 @@ def test_delivery_uses_canonical_request_id_in_filename(data_dir: Path) -> None:
         {"count": 0},
         {"count": 11},
         {"request_id": "not-a-uuid"},
+        {"query": ""},
+        {"query": "x" * 201},
     ],
 )
 def test_delivery_rejects_invalid_body(data_dir: Path, overrides: dict[str, object]) -> None:
@@ -228,3 +262,268 @@ def test_lifespan_runs_startup_cleanup(data_dir: Path) -> None:
         assert not expired.exists()
         assert fresh.is_file()
         assert _post(client).status_code == 204
+
+
+_CONTENT_READ_ROUTES = [
+    "/api/v1/content/topics?language=ru",
+    "/api/v1/content/archives",
+    f"/api/v1/content/archives/ru/{REQUEST_ID}.zip",
+]
+
+
+@pytest.mark.parametrize("path", _CONTENT_READ_ROUTES)
+def test_content_read_routes_require_token(data_dir: Path, path: str) -> None:
+    response = _get(_client(), path, token=None)
+
+    assert response.status_code == 401
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+
+
+@pytest.mark.parametrize("path", _CONTENT_READ_ROUTES)
+def test_content_read_routes_without_configured_token_return_503(
+    data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    monkeypatch.delenv("CONTENT_FACTORY_DELIVERY_TOKEN")
+
+    response = _get(_client(), path)
+
+    assert response.status_code == 503
+
+
+def test_topics_returns_stock_breakdown(data_dir: Path) -> None:
+    db_path = data_dir / "db" / "db.sqlite3"
+    directory = data_dir / CONTENT_DIR / "ru"
+    first_hash = "a" * 64
+    second_hash = "b" * 64
+    other_hash = "c" * 64
+    touch_mp4(directory / f"{first_hash}.mp4")
+    touch_mp4(directory / f"{second_hash}.mp4")
+    touch_mp4(directory / f"{other_hash}.mp4")
+    add_downloaded_video(db_path, first_hash, "Первое", query="курятник")
+    add_downloaded_video(db_path, second_hash, "Второе", query="курятник")
+    add_downloaded_video(db_path, other_hash, "Третье", query="заправка")
+    touch_mp4(directory / ("d" * 64 + ".mp4"))
+
+    response = _get(_client(), "/api/v1/content/topics?language=ru")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "language": "ru",
+        "topics": [
+            {"query": "заправка", "count": 1},
+            {"query": "курятник", "count": 2},
+        ],
+        "unclassified": 1,
+    }
+
+
+def test_topics_without_stock_returns_empty_breakdown(data_dir: Path) -> None:
+    response = _get(_client(), "/api/v1/content/topics?language=en")
+
+    assert response.status_code == 200
+    assert response.json() == {"language": "en", "topics": [], "unclassified": 0}
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/v1/content/topics?language=RU",
+        "/api/v1/content/topics?language=r",
+        "/api/v1/content/topics?language=ru%2F..",
+        "/api/v1/content/archives/RU/" + REQUEST_ID_TEXT + ".zip",
+        "/api/v1/content/archives/ru/not-a-uuid.zip",
+    ],
+)
+def test_content_read_routes_reject_invalid_path_values(
+    data_dir: Path,
+    path: str,
+) -> None:
+    response = _get(_client(), path)
+
+    assert response.status_code == 422
+
+
+def test_archive_download_path_traversal_returns_404(data_dir: Path) -> None:
+    response = _get(
+        _client(),
+        "/api/v1/content/archives/ru/%2E%2E%2F%2E%2E%2Fdb%2Fdb.sqlite3.zip",
+    )
+
+    assert response.status_code in {404, 422}
+    assert response.status_code != 200
+
+
+def test_delivery_with_query_returns_only_matching_file(data_dir: Path) -> None:
+    first_hash = "a" * 64
+    second_hash = "b" * 64
+    first = touch_mp4(data_dir / CONTENT_DIR / "ru" / f"{first_hash}.mp4", b"first")
+    second = touch_mp4(data_dir / CONTENT_DIR / "ru" / f"{second_hash}.mp4", b"second")
+    add_downloaded_video(
+        data_dir / "db" / "db.sqlite3",
+        first_hash,
+        "Первое",
+        query="курятник",
+    )
+    add_downloaded_video(
+        data_dir / "db" / "db.sqlite3",
+        second_hash,
+        "Второе",
+        query="заправка",
+    )
+
+    response = _post(_client(), query="курятник")
+
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert archive.namelist() == ["001.mp4", "001.json"]
+        assert archive.read("001.mp4") == b"first"
+    assert not first.exists()
+    assert second.is_file()
+
+
+def test_delivery_with_query_without_matches_returns_204(data_dir: Path) -> None:
+    sha256 = "a" * 64
+    source = touch_mp4(data_dir / CONTENT_DIR / "ru" / f"{sha256}.mp4")
+    add_downloaded_video(
+        data_dir / "db" / "db.sqlite3",
+        sha256,
+        "Описание",
+        query="заправка",
+    )
+
+    response = _post(_client(), query="курятник")
+
+    assert response.status_code == 204
+    assert source.is_file()
+
+
+def test_delivery_with_query_and_broken_database_returns_204(data_dir: Path) -> None:
+    source = touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"))
+    db_path = data_dir / "db" / "db.sqlite3"
+    db_path.parent.mkdir(parents=True)
+    db_path.write_bytes(b"not a database")
+
+    response = _post(_client(), query="курятник")
+
+    assert response.status_code == 204
+    assert source.is_file()
+
+
+def test_archives_lists_created_archive_with_expiry(data_dir: Path) -> None:
+    touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"))
+    assert _post(_client()).status_code == 200
+    archive_path = data_dir / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.zip"
+
+    response = _get(_client(), "/api/v1/content/archives")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    item = body[0]
+    assert item["language"] == "ru"
+    assert item["request_id"] == REQUEST_ID_TEXT
+    assert item["size"] == archive_path.stat().st_size
+    created_at = datetime.fromisoformat(item["created_at"])
+    expires_at = datetime.fromisoformat(item["expires_at"])
+    assert expires_at - created_at == timedelta(hours=24)
+
+
+def test_archives_hides_expired_archive(data_dir: Path) -> None:
+    touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"))
+    assert _post(_client()).status_code == 200
+    expired_id = UUID(int=2)
+    expired = _touch_archive(
+        data_dir,
+        expired_id,
+        b"expired",
+        datetime.now(UTC) - timedelta(hours=25),
+    )
+
+    response = _get(_client(), "/api/v1/content/archives")
+
+    assert response.status_code == 200
+    assert [item["request_id"] for item in response.json()] == [REQUEST_ID_TEXT]
+    assert expired.is_file()
+
+
+def test_archives_without_directory_returns_empty_list(data_dir: Path) -> None:
+    response = _get(_client(), "/api/v1/content/archives")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_archives_lists_same_request_id_in_two_languages(data_dir: Path) -> None:
+    now = datetime.now(UTC)
+    _touch_archive(data_dir, REQUEST_ID, b"ru", now, language="ru")
+    _touch_archive(data_dir, REQUEST_ID, b"en", now, language="en")
+
+    response = _get(_client(), "/api/v1/content/archives")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert {item["language"] for item in body} == {"en", "ru"}
+    assert {item["request_id"] for item in body} == {REQUEST_ID_TEXT}
+
+
+def test_download_archive_returns_same_bytes(data_dir: Path) -> None:
+    touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"), b"video")
+    assert _post(_client()).status_code == 200
+    archive_path = data_dir / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.zip"
+    stored = archive_path.read_bytes()
+
+    response = _get(
+        _client(),
+        f"/api/v1/content/archives/ru/{REQUEST_ID}.zip",
+    )
+
+    assert response.status_code == 200
+    assert response.headers["Content-Type"] == "application/zip"
+    assert response.headers["Content-Disposition"] == (
+        f'attachment; filename="delivery-{REQUEST_ID}.zip"'
+    )
+    assert response.content == stored
+    assert archive_path.is_file()
+
+
+def test_download_archive_after_expiry_returns_404(data_dir: Path) -> None:
+    touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"))
+    assert _post(_client()).status_code == 200
+    archive_path = data_dir / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.zip"
+    stale = (datetime.now(UTC) - timedelta(hours=25)).timestamp()
+    os.utime(archive_path, (stale, stale))
+
+    response = _get(
+        _client(),
+        f"/api/v1/content/archives/ru/{REQUEST_ID}.zip",
+    )
+
+    assert response.status_code == 404
+
+
+def test_download_missing_archive_returns_404(data_dir: Path) -> None:
+    response = _get(
+        _client(),
+        f"/api/v1/content/archives/ru/{REQUEST_ID}.zip",
+    )
+
+    assert response.status_code == 404
+
+
+def test_download_archive_with_uppercase_request_id_uses_canonical_name(
+    data_dir: Path,
+) -> None:
+    now = datetime.now(UTC)
+    _touch_archive(data_dir, REQUEST_ID, b"zip", now)
+
+    response = _get(
+        _client(),
+        f"/api/v1/content/archives/ru/{REQUEST_ID_TEXT.upper()}.zip",
+    )
+
+    assert response.status_code == 200
+    assert response.headers["Content-Disposition"] == (
+        f'attachment; filename="delivery-{REQUEST_ID}.zip"'
+    )

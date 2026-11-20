@@ -25,8 +25,9 @@ def add_downloaded_video(
     description: str,
     *,
     video_id: str | None = None,
+    query: str = "",
 ) -> None:
-    """Insert a downloaded video row with its TikTok description."""
+    """Insert a downloaded video row with its TikTok description and topic."""
     Repository(db_path).init_schema()
     identifier = video_id or f"video-{sha256[:16]}"
     author = f"author-{sha256[:8]}"
@@ -35,13 +36,13 @@ def add_downloaded_video(
         connection.execute(
             """
             INSERT INTO videos (
-                video_id, language, url, author, description, status,
+                video_id, language, url, author, query, description, status,
                 discovered_at, updated_at
-            ) VALUES (?, 'ru', 'https://example.test/video', ?, ?,
+            ) VALUES (?, 'ru', 'https://example.test/video', ?, ?, ?,
                       'downloaded', '2026-05-01T00:00:00+00:00',
                       '2026-05-01T00:00:00+00:00')
             """,
-            (identifier, author, description),
+            (identifier, author, query, description),
         )
         connection.execute(
             """
