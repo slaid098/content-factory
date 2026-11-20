@@ -32,8 +32,8 @@ class DeliveryBusyError(DeliveryError):
 
 
 class UploadError(DeliveryError):
-    """Raised when a built archive cannot be published to Litterbox."""
+    """Raised when a built archive cannot be published to Filebin."""
 
 
 class ArchiveTooLargeError(UploadError):
-    """Raised when an archive exceeds the Litterbox upload limit."""
+    """Raised when an archive exceeds the 1 GiB upload limit."""

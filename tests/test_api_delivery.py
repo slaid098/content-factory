@@ -540,7 +540,7 @@ def test_archives_without_directory_returns_empty_list(data_dir: Path) -> None:
 
 
 def test_archives_lists_remote_sidecar_without_zip(data_dir: Path) -> None:
-    url = "https://litter.catbox.moe/example.zip"
+    url = "https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip"
     _sidecar(data_dir, status="ready", url=url, size=303, files=2)
 
     response = _get(_client(), "/api/v1/content/archives")
@@ -566,8 +566,8 @@ def test_archives_lists_legacy_local_archive_as_local(data_dir: Path) -> None:
     assert body[0]["files"] is None
 
 
-def test_download_remote_archive_redirects_to_litterbox(data_dir: Path) -> None:
-    url = "https://litter.catbox.moe/example.zip"
+def test_download_remote_archive_redirects_to_filebin(data_dir: Path) -> None:
+    url = "https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip"
     _sidecar(data_dir, status="ready", url=url, size=303, files=2)
 
     response = _client().get(

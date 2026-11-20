@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict
 
 
 class ArchiveInfo(BaseModel):
-    """One live delivery archive, stored locally or on Litterbox."""
+    """One live delivery archive, stored locally or on Filebin."""
 
     model_config = ConfigDict(frozen=True)
 

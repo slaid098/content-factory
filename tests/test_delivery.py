@@ -687,14 +687,17 @@ def test_list_archives_includes_remote_sidecar_without_zip(tmp_path: Path) -> No
         status="ready",
         size=303,
         files=2,
-        url="https://litter.catbox.moe/example.zip",
+        url="https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip",
     )
 
     archives = list_archives(tmp_path, 24, now=_MOMENT)
 
     assert len(archives) == 1
     assert archives[0].storage == "remote"
-    assert archives[0].url == "https://litter.catbox.moe/example.zip"
+    assert (
+        archives[0].url
+        == "https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip"
+    )
     assert archives[0].size == 303
     assert archives[0].files == 2
     assert archives[0].created_at == _MOMENT
@@ -726,7 +729,7 @@ def test_list_archives_prefers_remote_sidecar_over_local_zip(tmp_path: Path) -> 
         status="ready",
         size=10,
         files=1,
-        url="https://litter.catbox.moe/example.zip",
+        url="https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip",
     )
 
     archives = list_archives(tmp_path, 24, now=_MOMENT)
@@ -741,14 +744,17 @@ def test_resolve_archive_returns_remote_url_without_zip(tmp_path: Path) -> None:
         status="ready",
         size=10,
         files=1,
-        url="https://litter.catbox.moe/example.zip",
+        url="https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip",
     )
 
     location = resolve_archive(tmp_path, "ru", REQUEST_ID, 24, now=_MOMENT)
 
     assert location is not None
     assert location.storage == "remote"
-    assert location.url == "https://litter.catbox.moe/example.zip"
+    assert (
+        location.url
+        == "https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip"
+    )
     assert location.path is None
     assert find_archive(tmp_path, "ru", REQUEST_ID, 24, now=_MOMENT) is None
 
@@ -763,7 +769,7 @@ def test_resolve_archive_removes_expired_sidecar(tmp_path: Path) -> None:
     _sidecar(
         tmp_path,
         status="ready",
-        url="https://litter.catbox.moe/expired.zip",
+        url="https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip",
         created_at=_MOMENT - timedelta(hours=25),
         expires_at=_MOMENT - timedelta(hours=1),
     )
@@ -795,7 +801,7 @@ def test_cleanup_keeps_fresh_sidecar(tmp_path: Path) -> None:
     _sidecar(
         tmp_path,
         status="ready",
-        url="https://litter.catbox.moe/fresh.zip",
+        url="https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip",
     )
 
     cleanup_expired_archives(tmp_path, 24, now=_MOMENT)

@@ -9,7 +9,7 @@ HTTP-контракт для воркеров, которым нужны гот�
 - синхронный `POST /api/v1/content/deliveries` — zip отдаётся потоком, контракт
   YouTube Kit не меняется;
 - асинхронный `POST /api/v1/content/deliveries/link` — архив собирается в фоне,
-  заливается на Litterbox на 24 часа, а на сервере остаётся sidecar со ссылкой.
+  заливается на Filebin, а на сервере на 24 часа остаётся sidecar со ссылкой.
 
 ## Синхронная выдача
 
@@ -100,7 +100,7 @@ GET /api/v1/content/deliveries/{language}/{request_id}
 | Статус | Значение |
 |---|---|
 | `building` | сборка или заливка ещё идёт |
-| `ready` | архив залит, `url` — публичная ссылка Litterbox |
+| `ready` | архив залит, `url` — публичная ссылка Filebin |
 | `ready_local` | заливка не удалась, zip остался локально, `url=null`, `error` объясняет причину |
 | `empty` | в стоке не было `.mp4`, zip не создавался, `files=0` |
 | `failed` | сборка не удалась, `error` содержит причину |
@@ -117,27 +117,41 @@ GET /api/v1/content/deliveries/{language}/{request_id}
 с тем же `request_id` возвращает существующий статус и не списывает сток.
 Пока идёт сборка, запрос с другим `request_id` получает `409`.
 
-## Litterbox
+## Filebin
 
 После успешной сборки zip заливается на:
 
 ```
-https://litterbox.catbox.moe/resources/internals/api.php
+POST https://filebin.net/cf-<request_id>/<request_id>.zip
+Content-Type: application/zip
 ```
 
-Параметры: `reqtype=fileupload`, `time=24h`, файл в поле `fileToUpload`,
-HTTP-клиент — `httpx`. Ответ сервиса должен быть абсолютным HTTP(S)-URL;
-иначе это ошибка заливки.
+Тело — сырые байты архива. Бин и имя файла детерминированы от `request_id`,
+поэтому повторная заливка того же job попадает в тот же бин и не создаёт
+второй. Наружу возвращается:
+
+```
+https://filebin.net/cf-<request_id>/<request_id>.zip
+```
+
+Успех — только `201`. JSON ответа разбирать не обязательно, но если в нём есть
+`file.filename`, имя должно совпасть с отправленным. Таймаут заливки — 300 с:
+архив около 1 ГиБ при наблюдаемых ~15 МБ/с заливается примерно за 71 с.
+Таймауты скачивания у поставщика не меняются.
 
 - Архив больше 1 ГБ не заливается — job получает `ready_local`.
-- Litterbox недоступен, ответил ошибкой, таймаутом или не URL — job получает
-  `ready_local`, zip остаётся на диске, `error` содержит понятный текст.
+- Filebin недоступен, ответил `400`, `403`, `412`, `413`, `429`, `5xx` или
+  любым кодом кроме `201`, не ответил вовремя — job получает `ready_local`,
+  zip остаётся на диске, `error` содержит код ошибки.
+- Ответ `201` с невалидным JSON — не ошибка: ссылка строится из бина и имени
+  файла.
 - После успешной заливки локальный zip удаляется.
-- Полный URL Litterbox не пишется в лог и не попадает в ответы, кроме поля
-  `url` самого job и списка архивов.
-
-Ссылка Litterbox публичная и обходит IP-allowlist. Это осознанно: видео уже
-публичны, а ссылка живёт 24 часа.
+- Полный URL Filebin не пишется в лог и не попадает в ответы, кроме поля `url`
+  самого job и списка архивов.
+- Ссылка Filebin публичная и обходит IP-allowlist. Хост хранит файл 6 дней, но
+  API перестаёт отдавать архив через 24 ч (`CONTENT_FACTORY_DELIVERY_RETENTION_HOURS`).
+  Прямое скачивание идёт через `302` на подписанный S3 URL; это осознанно:
+  видео уже публичны, а наша ссылка живёт сутки.
 
 ## Sidecar
 
@@ -158,7 +172,7 @@ app_data/archive/<language>/<request_id>.json
   "expires_at": "2026-05-02T12:00:00Z",
   "size": 303000000,
   "files": 100,
-  "url": "https://litter.catbox.moe/example.zip",
+  "url": "https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip",
   "error": null
 }
 ```
@@ -253,13 +267,13 @@ GET /api/v1/content/archives
     "created_at": "2026-05-01T12:00:00Z",
     "expires_at": "2026-05-02T12:00:00Z",
     "storage": "remote",
-    "url": "https://litter.catbox.moe/example.zip",
+    "url": "https://filebin.net/cf-3f1c1b0e-6f1a-4f6e-9d2e-0f6a7b8c9d10/3f1c1b0e-6f1a-4f6e-9d2e-0f6a7b8c9d10.zip",
     "files": 100
   }
 ]
 ```
 
-- `storage=remote` — архив на Litterbox, `url` заполнен, `files` берётся из
+- `storage=remote` — архив на Filebin, `url` заполнен, `files` берётся из
   sidecar;
 - `storage=local` — zip на диске, `url=null`;
 - для старого локального архива без sidecar `files=null`, `size` — размер файла;
@@ -270,7 +284,7 @@ GET /api/v1/content/archives
 GET /api/v1/content/archives/{language}/{request_id}.zip
 ```
 
-- для `storage=remote` — `302 Location: <url>` на Litterbox;
+- для `storage=remote` — `302 Location: <url>` на Filebin;
 - для локального архива — `FileResponse` (`application/zip`, имя
   `delivery-<request_id>.zip`) без повторной сборки и без изменения стока;
 - если архива нет, он истёк или `ready_local` остался без zip — `404`.
@@ -343,7 +357,7 @@ unzip -l delivery.zip
 - Ошибка сборки zip — `.tmp` удаляется, исходники остаются; синхронно `500`,
   job переходит в `failed`.
 - Ошибка удаления исходника после сборки — логируется, zip отдаётся.
-- Litterbox недоступен или архив больше 1 ГБ — `ready_local`, zip остаётся.
+- Filebin недоступен или архив больше 1 ГБ — `ready_local`, zip остаётся.
 - API перезапущен во время `building` — при старте job получает `failed`,
   повторный `POST` собирает заново.
 - Два `POST` одновременно — один `202`, второй `409`; сток не списывается

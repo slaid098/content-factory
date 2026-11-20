@@ -1,4 +1,4 @@
-"""Background delivery jobs that publish archives to Litterbox."""
+"""Background delivery jobs that publish archives to Filebin."""
 
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ def deliver(
 
 
 def upload_archive(archive: Path) -> str:
-    """Upload one archive through the Litterbox upload capsule."""
+    """Upload one archive through the Filebin upload capsule."""
     return upload_service.upload_archive(archive)
 
 
@@ -319,7 +319,7 @@ def _build_and_publish(
             retention_hours,
             size,
             files,
-            "не удалось загрузить архив на Litterbox",
+            "не удалось загрузить архив на файлообменник",
         )
     _remove_archive(archive, request.request_id)
     return _job_state(
