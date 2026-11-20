@@ -41,6 +41,14 @@ class VideoMetadata:
     width: int | None
     height: int | None
     create_time: int | None = None
+    aigc_label: str = ""
+    moderation_aigc_label: str = ""
+
+    def has_aigc_signal(self) -> bool:
+        """Вернуть, есть ли у видео любой признак AI-контента."""
+        return bool(
+            self.is_aigc or self.aigc_description or self.aigc_label or self.moderation_aigc_label
+        )
 
 
 @dataclass(frozen=True, slots=True)

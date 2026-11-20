@@ -22,7 +22,9 @@
             "height": 1920
           },
           "IsAigc": false,
-          "AIGCDescription": ""
+          "AIGCDescription": "",
+          "aigcLabelType": "",
+          "moderationAigcLabelType": ""
         }
       }
     }

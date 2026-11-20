@@ -43,6 +43,18 @@ def _as_bool(value: object) -> bool:
     return False
 
 
+def _as_label(value: object) -> str:
+    """Нормализовать метку AI: пустые и нулевые значения дают пустую строку."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "1" if value else ""
+    if isinstance(value, (int, float)):
+        return "" if value == 0 else str(value)
+    text = str(value).strip()
+    return "" if text in {"", "0"} else text
+
+
 def _as_dict(value: object) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
@@ -105,6 +117,8 @@ def parse_video_page(html: str, url: str = "") -> VideoMetadata:
         width=_as_int(video.get("width")),
         height=_as_int(video.get("height")),
         create_time=_as_int(item.get("createTime")),
+        aigc_label=_as_label(item.get("aigcLabelType")),
+        moderation_aigc_label=_as_label(item.get("moderationAigcLabelType")),
     )
 
 

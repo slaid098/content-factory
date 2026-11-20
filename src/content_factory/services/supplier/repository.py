@@ -224,7 +224,7 @@ class Repository:
                         metadata.height,
                         metadata.create_time,
                         metadata.description,
-                        int(metadata.is_aigc or bool(metadata.aigc_description)),
+                        int(metadata.has_aigc_signal()),
                         status,
                         reason,
                         now,

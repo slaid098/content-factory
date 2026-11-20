@@ -52,6 +52,8 @@ def _metadata(video_id: str, **overrides: object) -> VideoMetadata:
         duration=12,
         is_aigc=False,
         aigc_description="",
+        aigc_label="",
+        moderation_aigc_label="",
         width=1080,
         height=1920,
         create_time=1_700_000_000,
@@ -162,6 +164,32 @@ def test_save_decision_marks_aigc_description(tmp_path: Path) -> None:
     repo.save_decision(
         video,
         _metadata("1", is_aigc=False, aigc_description="AI generated"),
+        FilterDecision(False, "aigc"),
+    )
+
+    with sqlite3.connect(repo.db_path) as conn:
+        assert conn.execute("SELECT is_aigc FROM videos WHERE video_id = '1'").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"aigc_label": "1"},
+        {"moderation_aigc_label": "1"},
+        {"aigc_label": "1", "moderation_aigc_label": "1"},
+    ],
+)
+def test_save_decision_marks_aigc_labels(
+    tmp_path: Path,
+    overrides: dict[str, str],
+) -> None:
+    repo = _repo(tmp_path)
+    video = _video("1")
+    repo.add_found(video)
+
+    repo.save_decision(
+        video,
+        _metadata("1", is_aigc=False, aigc_description="", **overrides),
         FilterDecision(False, "aigc"),
     )
 

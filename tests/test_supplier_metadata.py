@@ -37,6 +37,8 @@ def test_parse_video_page() -> None:
     assert result.duration == 99
     assert result.is_aigc is False
     assert result.aigc_description == ""
+    assert result.aigc_label == ""
+    assert result.moderation_aigc_label == ""
     assert result.width == 1080
     assert result.height == 1920
     assert result.create_time is None
@@ -50,6 +52,72 @@ def test_parse_aigc_video() -> None:
     result = metadata.parse_video_page(_page(data))
     assert result.is_aigc is True
     assert result.aigc_description == "AI generated"
+
+
+@pytest.mark.parametrize(
+    ("field", "attribute"),
+    [
+        ("aigcLabelType", "aigc_label"),
+        ("moderationAigcLabelType", "moderation_aigc_label"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, ""),
+        ("", ""),
+        (" ", ""),
+        (0, ""),
+        ("0", ""),
+        (1, "1"),
+        ("1", "1"),
+        (" label ", "label"),
+    ],
+)
+def test_parse_aigc_label_coercion(
+    field: str,
+    attribute: str,
+    value: object,
+    expected: str,
+) -> None:
+    data = _fixture()
+    item = data["__DEFAULT_SCOPE__"]["webapp.video-detail"]["itemInfo"]["itemStruct"]
+    item[field] = value
+
+    result = metadata.parse_video_page(_page(data))
+
+    assert getattr(result, attribute) == expected
+
+
+@pytest.mark.parametrize(
+    ("field", "attribute"),
+    [
+        ("aigcLabelType", "aigc_label"),
+        ("moderationAigcLabelType", "moderation_aigc_label"),
+    ],
+)
+def test_parse_aigc_label_is_independent(field: str, attribute: str) -> None:
+    data = _fixture()
+    item = data["__DEFAULT_SCOPE__"]["webapp.video-detail"]["itemInfo"]["itemStruct"]
+    item[field] = "1"
+
+    result = metadata.parse_video_page(_page(data))
+
+    assert getattr(result, attribute) == "1"
+    other = "moderation_aigc_label" if attribute == "aigc_label" else "aigc_label"
+    assert getattr(result, other) == ""
+
+
+def test_parse_missing_aigc_labels() -> None:
+    data = _fixture()
+    item = data["__DEFAULT_SCOPE__"]["webapp.video-detail"]["itemInfo"]["itemStruct"]
+    del item["aigcLabelType"]
+    del item["moderationAigcLabelType"]
+
+    result = metadata.parse_video_page(_page(data))
+
+    assert result.aigc_label == ""
+    assert result.moderation_aigc_label == ""
 
 
 def test_parse_create_time() -> None:
