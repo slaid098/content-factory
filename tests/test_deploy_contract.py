@@ -53,10 +53,26 @@ def test_compose_contract() -> None:
         "http://127.0.0.1:8000/api/v1/stock",
     ]
     assert api["restart"] == "unless-stopped"
-    assert worker["command"] == ["prefect", "worker", "start", "--pool", "content-factory"]
+    assert worker["command"] == [
+        "prefect",
+        "worker",
+        "start",
+        "--pool",
+        "content-factory",
+        "--limit",
+        "1",
+    ]
     assert worker["restart"] == "unless-stopped"
     assert "./app_data:/app/app_data" in api["volumes"]
     assert "./app_data:/app/app_data" in worker["volumes"]
+
+
+def test_worker_command_caps_concurrent_flow_runs() -> None:
+    command = _load("compose.yaml")["services"]["worker"]["command"]
+
+    assert command.count("--limit") == 1
+    limit = command.index("--limit")
+    assert command[limit + 1] == "1"
 
 
 def test_compose_delivery_contract() -> None:

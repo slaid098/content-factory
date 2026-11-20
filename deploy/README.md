@@ -503,12 +503,29 @@ sudo docker compose run --rm --no-deps worker prefect deployment ls
 sudo docker compose logs -f worker
 ```
 
-`prefect.yaml` задаёт cron `*/15 * * * *`, конкурентность 1 и pool
-`content-factory`. Шаг `set_working_directory` указывает воркеру на `/app`,
-где в образе лежат `src/` и `prefect.yaml`; поэтому deployment не зависит от
-текущего каталога процесса. Cron — это тик планировщика; решение о
-производстве принимает сам flow по `config.run.interval`, поэтому холостые
-тики выходят сразу.
+`prefect.yaml` задаёт cron `*/15 * * * *`, pool `content-factory`,
+`concurrency_limit: 1` и шаг `set_working_directory` на `/app`, где в образе
+лежат `src/` и `prefect.yaml`; deployment не зависит от текущего каталога
+процесса. Cron — это тик планировщика; решение о производстве принимает сам
+flow по `config.run.interval`, поэтому холостые тики выходят сразу.
+
+Одновременность ограничена на двух уровнях:
+
+- `concurrency_limit: 1` в `prefect.yaml` — серверный лимит deployment'а.
+  Это timed lease: пока run жив, Prefect его продлевает, а
+  `collision_strategy` по умолчанию (`ENQUEUE`) ставит новые тики в очередь.
+  Если воркер убит (например, деплоем), lease убитого run'а истекает и сервер
+  отдаёт слот следующему run'у, хотя state зомби остаётся `RUNNING`.
+- `--limit 1` в команде сервиса `worker` (`compose.yaml`) — жёсткий кап
+  воркера, не зависящий от lease. Если Prefect всё же выдаст второй run,
+  воркер напишет `Flow run limit reached` и не запустит его, пока не
+  завершится текущий.
+
+Деплой может перезапустить `worker` и прервать активный run — это допустимо:
+после рестарта запускается ровно один run. В пуле пока один deployment; при
+появлении второго `--limit 1` станет общим для пула. Второй `worker` в пуле
+per-worker лимит не покрывает и один run на весь пул не гарантирует — это вне
+текущего контура.
 
 ## 9. Автоматический деплой и откат
 
