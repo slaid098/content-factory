@@ -13,13 +13,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from content_factory.api.app import create_app
-from content_factory.constants import ARCHIVE_DIR, CONTENT_DIR
+from content_factory.constants import ARCHIVE_DIR, CONFIG_DIR, CONTENT_DIR
 from content_factory.exceptions import DeliveryError
+from content_factory.schemas.content.delivery import DeliveryJobInfo
 from content_factory.services.delivery.scheduler import (
     ARCHIVE_CLEANUP_JOB_ID,
     create_cleanup_scheduler,
 )
 from content_factory.services.delivery.service import cleanup_expired_archives
+from content_factory.services.delivery.sidecars import save_job
 from delivery_helpers import REQUEST_ID, REQUEST_ID_TEXT, add_downloaded_video, touch_mp4
 
 _TOKEN = "delivery-secret"
@@ -77,6 +79,37 @@ def _body(**overrides: object) -> dict[str, object]:
     }
     body.update(overrides)
     return body
+
+
+def _write_config(data_dir: Path, text: str) -> None:
+    path = data_dir / CONFIG_DIR / "config.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _sidecar(
+    data_dir: Path,
+    *,
+    status: str,
+    url: str | None = None,
+    size: int = 10,
+    files: int = 1,
+    created_at: datetime | None = None,
+    expires_at: datetime | None = None,
+) -> DeliveryJobInfo:
+    moment = created_at or datetime.now(UTC)
+    job = DeliveryJobInfo(
+        request_id=REQUEST_ID,
+        language="ru",
+        status=status,  # type: ignore[arg-type]
+        created_at=moment,
+        expires_at=expires_at or moment + timedelta(hours=24),
+        size=size,
+        files=files,
+        url=url,
+    )
+    save_job(data_dir, job)
+    return job
 
 
 def _post(
@@ -207,7 +240,7 @@ def test_delivery_uses_canonical_request_id_in_filename(data_dir: Path) -> None:
         {"language": "RU"},
         {"language": "r"},
         {"count": 0},
-        {"count": 11},
+        {"count": 301},
         {"request_id": "not-a-uuid"},
         {"query": ""},
         {"query": "x" * 201},
@@ -233,6 +266,56 @@ def test_delivery_returns_500_when_archive_cannot_be_built(
     response = _post(_client())
 
     assert response.status_code == 500
+
+
+def test_delivery_rejects_count_above_default_max_count(data_dir: Path) -> None:
+    response = _post(_client(), count=101)
+
+    assert response.status_code == 422
+
+
+def test_delivery_accepts_count_300_with_configured_limit(data_dir: Path) -> None:
+    _write_config(data_dir, "delivery:\n  max_count: 300\n")
+
+    response = _post(_client(), count=300)
+
+    assert response.status_code == 204
+
+
+def test_delivery_rejects_count_above_configured_limit(data_dir: Path) -> None:
+    _write_config(data_dir, "delivery:\n  max_count: 5\n")
+
+    response = _post(_client(), count=6)
+
+    assert response.status_code == 422
+
+
+def test_delivery_link_without_configured_token_returns_503(
+    data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CONTENT_FACTORY_DELIVERY_TOKEN")
+
+    response = _client().post("/api/v1/content/deliveries/link", json=_body())
+
+    assert response.status_code == 503
+
+
+def test_delivery_link_without_authorization_returns_401(data_dir: Path) -> None:
+    response = _client().post("/api/v1/content/deliveries/link", json=_body())
+
+    assert response.status_code == 401
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+
+
+def test_delivery_link_rejects_count_above_limit(data_dir: Path) -> None:
+    response = _client().post(
+        "/api/v1/content/deliveries/link",
+        json=_body(count=101),
+        headers=_headers(),
+    )
+
+    assert response.status_code == 422
 
 
 def test_cleanup_scheduler_contract(tmp_path: Path) -> None:
@@ -268,6 +351,7 @@ _CONTENT_READ_ROUTES = [
     "/api/v1/content/topics?language=ru",
     "/api/v1/content/archives",
     f"/api/v1/content/archives/ru/{REQUEST_ID}.zip",
+    f"/api/v1/content/deliveries/ru/{REQUEST_ID}",
 ]
 
 
@@ -453,6 +537,58 @@ def test_archives_without_directory_returns_empty_list(data_dir: Path) -> None:
 
     assert response.status_code == 200
     assert response.json() == []
+
+
+def test_archives_lists_remote_sidecar_without_zip(data_dir: Path) -> None:
+    url = "https://litter.catbox.moe/example.zip"
+    _sidecar(data_dir, status="ready", url=url, size=303, files=2)
+
+    response = _get(_client(), "/api/v1/content/archives")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["request_id"] == REQUEST_ID_TEXT
+    assert body[0]["storage"] == "remote"
+    assert body[0]["url"] == url
+    assert body[0]["size"] == 303
+    assert body[0]["files"] == 2
+    assert _TOKEN not in response.text
+
+
+def test_archives_lists_legacy_local_archive_as_local(data_dir: Path) -> None:
+    _touch_archive(data_dir, REQUEST_ID, b"zip", datetime.now(UTC))
+
+    body = _get(_client(), "/api/v1/content/archives").json()
+
+    assert body[0]["storage"] == "local"
+    assert body[0]["url"] is None
+    assert body[0]["files"] is None
+
+
+def test_download_remote_archive_redirects_to_litterbox(data_dir: Path) -> None:
+    url = "https://litter.catbox.moe/example.zip"
+    _sidecar(data_dir, status="ready", url=url, size=303, files=2)
+
+    response = _client().get(
+        f"/api/v1/content/archives/ru/{REQUEST_ID}.zip",
+        headers=_headers(),
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert response.headers["Location"] == url
+
+
+def test_download_ready_local_archive_without_zip_returns_404(data_dir: Path) -> None:
+    _sidecar(data_dir, status="ready_local", url=None, size=10, files=1)
+
+    response = _get(
+        _client(),
+        f"/api/v1/content/archives/ru/{REQUEST_ID}.zip",
+    )
+
+    assert response.status_code == 404
 
 
 def test_archives_lists_same_request_id_in_two_languages(data_dir: Path) -> None:

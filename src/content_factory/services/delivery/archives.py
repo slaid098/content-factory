@@ -3,17 +3,51 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 from uuid import UUID
 
 from loguru import logger
 
 from content_factory.constants import ARCHIVE_DIR
 from content_factory.schemas.content.archives import ArchiveInfo
+from content_factory.schemas.content.delivery import DeliveryJobInfo
+from content_factory.services.delivery.sidecars import (
+    delete_job,
+    is_job_expired,
+    iter_jobs,
+    language_directories,
+    load_job,
+    save_job,
+)
+
+__all__ = [
+    "ArchiveLocation",
+    "archive_expires_at",
+    "delete_job",
+    "find_archive",
+    "is_archive_expired",
+    "is_job_expired",
+    "iter_jobs",
+    "list_archives",
+    "load_job",
+    "resolve_archive",
+    "save_job",
+]
 
 _ZIP_SUFFIX = ".zip"
 _LANGUAGE = re.compile(r"[a-z]{2}")
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveLocation:
+    """Where one live archive can be fetched from."""
+
+    storage: Literal["local", "remote"]
+    path: Path | None
+    url: str | None
 
 
 def archive_expires_at(created_at: datetime, retention_hours: int) -> datetime:
@@ -54,9 +88,10 @@ def list_archives(
     *,
     now: datetime | None = None,
 ) -> tuple[ArchiveInfo, ...]:
-    """List live zip archives of every language, newest first.
+    """List live local and remote archives of every language, newest first.
 
-    Expired archives are hidden even when cleanup has not removed them yet;
+    A sidecar takes precedence over a legacy zip with the same request id.
+    Expired entries are hidden even when cleanup has not removed them yet;
     files with a non-UUID name or a non-zip suffix are ignored.
 
     Args:
@@ -68,27 +103,69 @@ def list_archives(
         Live archives sorted by creation time in descending order.
     """
     moment = now or datetime.now(UTC)
-    archive_root = data_dir / ARCHIVE_DIR
-    try:
-        language_dirs = sorted(
-            path
-            for path in archive_root.iterdir()
-            if path.is_dir() and _LANGUAGE.fullmatch(path.name)
-        )
-    except FileNotFoundError:
-        return ()
-    except OSError as ex:
-        logger.bind(
-            path=str(archive_root),
-            error=ex,
-            error_type=type(ex).__name__,
-        ).warning("Не удалось прочитать каталог архивов")
-        return ()
+    jobs = iter_jobs(data_dir)
+    sidecar_keys = {(job.language, job.request_id) for job in jobs}
     archives: list[ArchiveInfo] = []
-    for directory in language_dirs:
-        archives.extend(_read_directory(directory, retention_hours, moment))
+    for job in jobs:
+        info = _job_archive(data_dir, job, moment)
+        if info is not None:
+            archives.append(info)
+    for directory in language_directories(data_dir / ARCHIVE_DIR):
+        for path in _zip_paths(directory):
+            try:
+                request_id = UUID(path.stem)
+            except ValueError:
+                continue
+            if (directory.name, request_id) in sidecar_keys:
+                continue
+            info = _read_archive(path, directory.name, retention_hours, moment)
+            if info is not None:
+                archives.append(info)
     archives.sort(key=lambda item: item.created_at, reverse=True)
     return tuple(archives)
+
+
+def resolve_archive(
+    data_dir: Path,
+    language: str,
+    request_id: UUID,
+    retention_hours: int,
+    *,
+    now: datetime | None = None,
+) -> ArchiveLocation | None:
+    """Return a live local path or remote URL of one archive.
+
+    A ready sidecar with a URL is always remote, even when the local zip was
+    not deleted. A ``ready_local`` sidecar without its zip is gone (``404``).
+    """
+    if not _LANGUAGE.fullmatch(language):
+        return None
+    moment = now or datetime.now(UTC)
+    job = load_job(data_dir, language, request_id)
+    if job is not None:
+        if is_job_expired(job, now=moment):
+            _discard_expired_job(data_dir, job)
+            return None
+        if job.status == "ready" and job.url:
+            return ArchiveLocation(storage="remote", path=None, url=job.url)
+        if job.status == "ready_local":
+            path = _zip_path(data_dir, language, request_id)
+            try:
+                if path.is_file():
+                    return ArchiveLocation(storage="local", path=path, url=None)
+            except OSError as ex:
+                logger.bind(error=ex, error_type=type(ex).__name__).warning(
+                    "Не удалось прочитать архив {}",
+                    path.name,
+                )
+        return None
+    path = _zip_path(data_dir, language, request_id)
+    stored_at = _local_mtime(path)
+    if stored_at is None:
+        return None
+    if is_archive_expired(stored_at, retention_hours, now=moment):
+        return None
+    return ArchiveLocation(storage="local", path=path, url=None)
 
 
 def find_archive(
@@ -99,7 +176,7 @@ def find_archive(
     *,
     now: datetime | None = None,
 ) -> Path | None:
-    """Return a live archive path, or ``None`` when it is missing or expired.
+    """Return a live local archive path, or ``None`` for a remote/missing one.
 
     Args:
         data_dir: Root of the runtime data directory.
@@ -109,49 +186,58 @@ def find_archive(
         now: Moment used to check the archive age; defaults to UTC now.
 
     Returns:
-        Path to the archive when it can be served.
+        Path to the archive when it can be served locally.
     """
-    if not _LANGUAGE.fullmatch(language):
-        return None
-    path = data_dir / ARCHIVE_DIR / language / f"{request_id}{_ZIP_SUFFIX}"
-    moment = now or datetime.now(UTC)
-    try:
-        if not path.is_file():
-            return None
-        stored_at = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
-    except FileNotFoundError:
-        return None
-    except OSError as ex:
-        logger.bind(path=str(path), error=ex, error_type=type(ex).__name__).warning(
-            "Не удалось прочитать архив {}",
-            path.name,
-        )
-        return None
-    if is_archive_expired(stored_at, retention_hours, now=moment):
-        return None
-    return path
+    location = resolve_archive(
+        data_dir,
+        language,
+        request_id,
+        retention_hours,
+        now=now,
+    )
+    return location.path if location is not None else None
 
 
-def _read_directory(
-    directory: Path,
-    retention_hours: int,
+def _job_archive(
+    data_dir: Path,
+    job: DeliveryJobInfo,
     now: datetime,
-) -> list[ArchiveInfo]:
-    """Read live archives of one language directory."""
-    try:
-        paths = sorted(directory.glob(f"*{_ZIP_SUFFIX}"))
-    except OSError as ex:
-        logger.bind(path=str(directory), error=ex, error_type=type(ex).__name__).warning(
-            "Не удалось прочитать каталог архива {}",
-            directory.name,
+) -> ArchiveInfo | None:
+    """Build a list entry for a live sidecar with a servable archive."""
+    if is_job_expired(job, now=now):
+        return None
+    if job.status == "ready" and job.url:
+        return ArchiveInfo(
+            language=job.language,
+            request_id=job.request_id,
+            size=job.size,
+            created_at=job.created_at,
+            expires_at=job.expires_at,
+            storage="remote",
+            url=job.url,
+            files=job.files,
         )
-        return []
-    archives: list[ArchiveInfo] = []
-    for path in paths:
-        info = _read_archive(path, directory.name, retention_hours, now)
-        if info is not None:
-            archives.append(info)
-    return archives
+    if job.status == "ready_local":
+        path = _zip_path(data_dir, job.language, job.request_id)
+        try:
+            if not path.is_file():
+                return None
+        except OSError as ex:
+            logger.bind(error=ex, error_type=type(ex).__name__).warning(
+                "Не удалось прочитать архив {}",
+                path.name,
+            )
+            return None
+        return ArchiveInfo(
+            language=job.language,
+            request_id=job.request_id,
+            size=job.size,
+            created_at=job.created_at,
+            expires_at=job.expires_at,
+            storage="local",
+            files=job.files,
+        )
+    return None
 
 
 def _read_archive(
@@ -186,4 +272,51 @@ def _read_archive(
         size=stat.st_size,
         created_at=created_at,
         expires_at=archive_expires_at(created_at, retention_hours),
+        storage="local",
     )
+
+
+def _zip_paths(directory: Path) -> list[Path]:
+    """Return zip files of one language directory, or none on error."""
+    try:
+        return sorted(directory.glob(f"*{_ZIP_SUFFIX}"))
+    except OSError as ex:
+        logger.bind(path=str(directory), error=ex, error_type=type(ex).__name__).warning(
+            "Не удалось прочитать каталог архива {}",
+            directory.name,
+        )
+        return []
+
+
+def _zip_path(data_dir: Path, language: str, request_id: UUID) -> Path:
+    """Build the local zip path from validated pieces only."""
+    return data_dir / ARCHIVE_DIR / language / f"{request_id}{_ZIP_SUFFIX}"
+
+
+def _local_mtime(path: Path) -> datetime | None:
+    """Return the local zip modification time, or ``None`` when unavailable."""
+    try:
+        if not path.is_file():
+            return None
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+    except FileNotFoundError:
+        return None
+    except OSError as ex:
+        logger.bind(path=str(path), error=ex, error_type=type(ex).__name__).warning(
+            "Не удалось прочитать архив {}",
+            path.name,
+        )
+        return None
+
+
+def _discard_expired_job(data_dir: Path, job: DeliveryJobInfo) -> None:
+    """Remove an expired sidecar and its local zip, tolerating races."""
+    delete_job(data_dir, job.language, job.request_id)
+    path = _zip_path(data_dir, job.language, job.request_id)
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as ex:
+        logger.bind(error=ex, error_type=type(ex).__name__).warning(
+            "Не удалось удалить просроченный архив {}",
+            job.request_id,
+        )

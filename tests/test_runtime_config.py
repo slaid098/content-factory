@@ -36,6 +36,7 @@ _LEAF_KEYS = (
     "streak",
     "long_pause",
     "cooldown",
+    "max_count",
     "enabled",
     "stock_target",
 )
@@ -52,7 +53,7 @@ def test_seeded_file_comments_every_key(tmp_path: Path) -> None:
         if line.strip().startswith(tuple(f"{key}:" for key in _LEAF_KEYS))
     ]
 
-    assert len(key_lines) == 18
+    assert len(key_lines) == 19
     for index, line in key_lines:
         assert lines[index - 1].strip().startswith("#"), f"нет комментария: {line.strip()}"
 
@@ -66,6 +67,7 @@ def test_seeds_file_and_returns_defaults(tmp_path: Path) -> None:
     assert "batch" in path.read_text(encoding="utf-8")
     assert config == default_config()
     assert config.run.batch == 20
+    assert config.delivery.max_count == 100
     assert config.languages["ru"].enabled is True
     assert config.languages["en"].enabled is False
 
@@ -133,6 +135,8 @@ captcha:
   long_pause: "9h"
 alerts:
   cooldown: "10s"
+delivery:
+  max_count: 50
 languages:
   ru:
     enabled: false
@@ -159,6 +163,7 @@ languages:
     assert config.captcha.pause == 480.0
     assert config.captcha.long_pause == 32400.0
     assert config.alerts.cooldown == 10.0
+    assert config.delivery.max_count == 50
     assert config.languages["ru"].enabled is False
     assert config.languages["ru"].stock_target == 3
     assert config.languages["en"].enabled is True
@@ -188,6 +193,9 @@ languages:
         ("filter:\n  max: 0\n", "filter.max"),
         ("download:\n  workers: 0\n", "download.workers"),
         ("captcha:\n  streak: 0\n", "captcha.streak"),
+        ("delivery:\n  max_count: 0\n", "delivery.max_count"),
+        ("delivery:\n  max_count: 301\n", "delivery.max_count"),
+        ("delivery:\n  max_count: true\n", "delivery.max_count"),
         ("languages:\n  ru:\n    stock_target: -1\n", "languages.ru.stock_target"),
         ("languages:\n  ru:\n    enabled: 1\n", "languages.ru.enabled"),
     ],

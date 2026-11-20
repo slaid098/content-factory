@@ -8,6 +8,7 @@ from pathlib import Path
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from content_factory.services.delivery.jobs import mark_interrupted_jobs
 from content_factory.services.delivery.service import cleanup_expired_archives
 
 ARCHIVE_CLEANUP_JOB_ID = "delivery-archive-cleanup"
@@ -37,5 +38,6 @@ def create_cleanup_scheduler(data_dir: Path, retention_hours: int) -> AsyncIOSch
 
 
 def run_startup_cleanup(data_dir: Path, retention_hours: int) -> None:
-    """Remove expired archives once when the API starts."""
+    """Remove expired archives and fail jobs left building by a restart."""
     cleanup_expired_archives(data_dir, retention_hours)
+    mark_interrupted_jobs(data_dir)

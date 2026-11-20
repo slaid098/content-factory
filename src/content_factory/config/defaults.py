@@ -7,6 +7,7 @@ from typing import Any
 from content_factory.schemas.config.runtime import (
     AlertsConfig,
     CaptchaConfig,
+    DeliveryConfig,
     DownloadConfig,
     FilterConfig,
     LanguageConfig,
@@ -27,6 +28,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "download": {"workers": 2, "pause": "10s"},
     "captcha": {"streak": 3, "pause": "2h", "long_pause": "6h"},
     "alerts": {"cooldown": "6h"},
+    "delivery": {"max_count": 100},
     "languages": {
         "ru": {"enabled": True, "stock_target": 150},
         "en": {"enabled": False, "stock_target": 100},
@@ -76,6 +78,10 @@ alerts:
   # Минимальный интервал между одинаковыми алертами.
   cooldown: "6h"
 
+delivery:
+  # Максимум видео в одном архиве ручной выдачи.
+  max_count: 100
+
 languages:
   ru:
     # Производить для этого языка.
@@ -108,4 +114,5 @@ def default_config() -> RuntimeConfig:
             "ru": LanguageConfig(enabled=True, stock_target=150),
             "en": LanguageConfig(enabled=False, stock_target=100),
         },
+        delivery=DeliveryConfig(max_count=100),
     )

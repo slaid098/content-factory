@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +78,13 @@ class LanguageConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class DeliveryConfig:
+    """Limits of the manual temporary-link delivery."""
+
+    max_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     """Complete runtime configuration."""
 
@@ -88,3 +95,6 @@ class RuntimeConfig:
     captcha: CaptchaConfig
     alerts: AlertsConfig
     languages: dict[str, LanguageConfig]
+    # Kept last with a default so configurations built before the manual
+    # delivery key existed stay valid.
+    delivery: DeliveryConfig = field(default_factory=lambda: DeliveryConfig(max_count=100))

@@ -17,3 +17,15 @@ class SupplierError(ContentFactoryError):
 
 class DeliveryError(ContentFactoryError):
     """Raised when a content delivery archive cannot be built."""
+
+
+class DeliveryBusyError(DeliveryError):
+    """Raised when another delivery archive is already being built."""
+
+
+class UploadError(DeliveryError):
+    """Raised when a built archive cannot be published to Litterbox."""
+
+
+class ArchiveTooLargeError(UploadError):
+    """Raised when an archive exceeds the Litterbox upload limit."""
