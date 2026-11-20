@@ -19,6 +19,7 @@ dependencies = [
   "importlib-metadata>=4.4",
   "httpx>=0.27",
   "pyyaml>=6.0",
+  "ruamel.yaml>=0.18",
   "pydantic>=2.9",
   "pydantic-settings>=2.6",
   "apscheduler>=3.11,<4",
@@ -64,6 +65,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["apscheduler.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["ruamel.yaml", "ruamel.yaml.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

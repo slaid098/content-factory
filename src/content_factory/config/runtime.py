@@ -37,8 +37,24 @@ def load_runtime_config(path: Path, *, seed: bool = True) -> RuntimeConfig:
         raw = _read(path)
     else:
         raw = _read(path) if path.exists() else {}
-    merged = _merge(DEFAULT_CONFIG, raw, prefix="")
-    return _build(merged)
+    return validate_runtime_config(raw)
+
+
+def validate_runtime_config(raw: Mapping[str, Any]) -> RuntimeConfig:
+    """Validate a raw runtime mapping merged over the built-in defaults.
+
+    The same merge and range checks run for the file loader and the settings
+    editor, so an edited document cannot take a shortcut around validation.
+    No file is read or written.
+
+    Args:
+        raw: Parsed YAML mapping, usually the content of ``config.yaml``.
+
+    Raises:
+        ConfigError: A key is unknown, a value has the wrong type or a value
+            violates a range or a cross-field rule.
+    """
+    return _build(_merge(DEFAULT_CONFIG, raw, prefix=""))
 
 
 def _seed(path: Path) -> None:
@@ -110,7 +126,7 @@ def _build(data: Mapping[str, Any]) -> RuntimeConfig:
 
     config = RuntimeConfig(
         run=RunConfig(
-            batch=_int(run, "batch", "run.batch", minimum=1),
+            batch=_int(run, "batch", "run.batch", minimum=1, maximum=1000),
             interval=_duration(run, "interval", "run.interval"),
             max_duration=_duration(run, "max_duration", "run.max_duration"),
             pause_between_languages=_duration(
@@ -118,15 +134,21 @@ def _build(data: Mapping[str, Any]) -> RuntimeConfig:
             ),
         ),
         search=SearchConfig(
-            max_queries=_int(search, "max_queries", "search.max_queries", minimum=1),
+            max_queries=_int(
+                search,
+                "max_queries",
+                "search.max_queries",
+                minimum=1,
+                maximum=500,
+            ),
             pause=_duration(search, "pause", "search.pause"),
         ),
         filter=FilterConfig(
-            max=_int(filter_section, "max", "filter.max", minimum=1),
+            max=_int(filter_section, "max", "filter.max", minimum=1, maximum=10000),
             pause=_duration(filter_section, "pause", "filter.pause"),
         ),
         download=DownloadConfig(
-            workers=_int(download, "workers", "download.workers", minimum=1),
+            workers=_int(download, "workers", "download.workers", minimum=1, maximum=8),
             pause=_duration(download, "pause", "download.pause"),
         ),
         captcha=CaptchaConfig(
@@ -196,5 +218,6 @@ def _language(code: str, section: Mapping[str, Any]) -> LanguageConfig:
             "stock_target",
             f"languages.{code}.stock_target",
             minimum=0,
+            maximum=100000,
         ),
     )

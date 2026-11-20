@@ -6,6 +6,8 @@ from content_factory.exceptions.errors import (
     ContentFactoryError,
     DeliveryBusyError,
     DeliveryError,
+    SettingsValidationError,
+    SettingsWriteError,
     SupplierError,
     UploadError,
 )
@@ -16,6 +18,8 @@ __all__ = [
     "ContentFactoryError",
     "DeliveryBusyError",
     "DeliveryError",
+    "SettingsValidationError",
+    "SettingsWriteError",
     "SupplierError",
     "UploadError",
 ]

@@ -10,7 +10,7 @@ from content_factory.config.defaults import (
     DEFAULT_CONFIG,
     default_config,
 )
-from content_factory.config.runtime import load_runtime_config
+from content_factory.config.runtime import load_runtime_config, validate_runtime_config
 from content_factory.exceptions import ConfigError
 
 
@@ -262,3 +262,35 @@ def test_read_without_seed_reads_existing_file(tmp_path: Path) -> None:
     path = _write(tmp_path / "config.yaml", "run:\n  batch: 3\n")
 
     assert load_runtime_config(path, seed=False).run.batch == 3
+
+
+def test_validate_runtime_config_merges_defaults_without_files() -> None:
+    config = validate_runtime_config({"run": {"batch": 5}})
+
+    assert config.run.batch == 5
+    assert config.run.interval == default_config().run.interval
+    assert config.languages == default_config().languages
+
+
+def test_validate_runtime_config_rejects_unknown_key() -> None:
+    with pytest.raises(ConfigError, match="unknown"):
+        validate_runtime_config({"unknown": 1})
+
+
+@pytest.mark.parametrize(
+    ("text", "match"),
+    [
+        ("run:\n  batch: 1001\n", "run.batch"),
+        ("search:\n  max_queries: 501\n", "search.max_queries"),
+        ("filter:\n  max: 10001\n", "filter.max"),
+        ("download:\n  workers: 9\n", "download.workers"),
+        ("languages:\n  ru:\n    stock_target: 100001\n", "languages.ru.stock_target"),
+    ],
+)
+def test_validate_runtime_config_rejects_values_above_maximum(
+    tmp_path: Path, text: str, match: str
+) -> None:
+    path = _write(tmp_path / "config.yaml", text)
+
+    with pytest.raises(ConfigError, match=match):
+        load_runtime_config(path)
