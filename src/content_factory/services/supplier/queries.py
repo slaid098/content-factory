@@ -12,11 +12,18 @@ from content_factory.schemas.supplier.search import QuerySpec
 _LANGUAGE_RE = re.compile(r"^[a-z]{2,3}$")
 
 
-def _read_file(path: Path) -> list[str]:
-    try:
-        text = path.read_text(encoding="utf-8-sig")
-    except (OSError, UnicodeError) as ex:
-        raise SupplierError(f"не удалось прочитать {path}: {ex}") from ex
+def parse_language_queries(text: str) -> list[str]:
+    """Разобрать содержимое файла запросов без перемешивания.
+
+    Пустые строки и комментарии (строки, начинающиеся с ``#``) пропускаются,
+    пробелы внутри запроса нормализуются, порядок строк сохраняется.
+
+    Args:
+        text: Содержимое файла ``<language>.txt``.
+
+    Returns:
+        Запросы в исходном порядке; повторы не удаляются.
+    """
     queries: list[str] = []
     for line in text.splitlines():
         value = " ".join(line.strip().split())
@@ -24,6 +31,32 @@ def _read_file(path: Path) -> list[str]:
             continue
         queries.append(value)
     return queries
+
+
+def read_language_queries(directory: Path, language: str) -> list[str]:
+    """Прочитать строки запросов одного языка из ``<language>.txt``.
+
+    Args:
+        directory: Каталог с файлами запросов.
+        language: Код языка, например ``ru``.
+
+    Returns:
+        Запросы в порядке файла без комментариев и пустых строк. Пустой
+        список означает, что файла нет или в нём нет строк запроса.
+
+    Raises:
+        SupplierError: Код языка недопустим или файл существует, но не читается.
+    """
+    if _LANGUAGE_RE.fullmatch(language) is None:
+        raise SupplierError(f"недопустимый код языка: {language!r}")
+    path = directory / f"{language}.txt"
+    if not path.is_file():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError) as ex:
+        raise SupplierError(f"не удалось прочитать {path}: {ex}") from ex
+    return parse_language_queries(text)
 
 
 def load_language_queries(
@@ -49,14 +82,10 @@ def load_language_queries(
     Raises:
         SupplierError: Код языка недопустим или файл существует, но не читается.
     """
-    if _LANGUAGE_RE.fullmatch(language) is None:
-        raise SupplierError(f"недопустимый код языка: {language!r}")
     path = directory / f"{language}.txt"
-    if not path.is_file():
-        return []
     seen: set[str] = set()
     result: list[QuerySpec] = []
-    for query in _read_file(path):
+    for query in read_language_queries(directory, language):
         if query in seen:
             continue
         seen.add(query)

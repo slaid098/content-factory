@@ -6,6 +6,7 @@ from content_factory.services.delivery.jobs import (
     mark_interrupted_jobs,
     start_delivery_job,
 )
+from content_factory.services.delivery.queries import add_language_query, list_language_queries
 from content_factory.services.delivery.service import (
     cleanup_expired_archives,
     count_archive_files,
@@ -14,6 +15,7 @@ from content_factory.services.delivery.service import (
 from content_factory.services.delivery.topics import collect_topics
 
 __all__ = [
+    "add_language_query",
     "cleanup_expired_archives",
     "collect_topics",
     "count_archive_files",
@@ -21,6 +23,7 @@ __all__ = [
     "find_archive",
     "get_delivery_job",
     "list_archives",
+    "list_language_queries",
     "mark_interrupted_jobs",
     "resolve_archive",
     "start_delivery_job",
