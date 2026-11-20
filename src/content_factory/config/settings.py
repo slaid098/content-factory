@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field, ValidationError, field_validator, model_validator
+from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from content_factory.constants import (
@@ -122,6 +122,47 @@ class SupplierSettings(BaseSettings):
         return self
 
 
+class TitlesSettings(BaseSettings):
+    """Settings of the title generation flow read from ``TITLES_*`` variables."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="TITLES_",
+        extra="ignore",
+        case_sensitive=False,
+    )
+
+    api_url: str = "https://ollama.com/v1"
+    api_key: SecretStr | None = None
+    model: str = Field(default="deepseek-v4.1-flash", min_length=1)
+    timeout_seconds: float = Field(default=60, ge=5, le=300)
+    reasoning_effort: Literal["none", "low", "high", "max"] = "none"
+
+    @field_validator("api_url")
+    @classmethod
+    def _check_api_url(cls, value: str) -> str:
+        if any(char.isspace() for char in value):
+            raise ValueError("адрес не должен содержать пробелы")
+        parts = urlsplit(value)
+        if parts.scheme.lower() not in {"http", "https"}:
+            raise ValueError("адрес должен начинаться с http:// или https://")
+        if not parts.hostname:
+            raise ValueError("в адресе не указан хост")
+        try:
+            _ = parts.port
+        except ValueError as ex:
+            raise ValueError("в адресе неверный порт") from ex
+        if value.endswith("/"):
+            raise ValueError("адрес не должен заканчиваться на /")
+        return value
+
+    @field_validator("api_key", mode="before")
+    @classmethod
+    def _blank_key_to_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+
 def _ensure_directories(data_dir: Path) -> None:
     for name in (CONFIG_DIR, DB_DIR, CONTENT_DIR, ARCHIVE_DIR, QUERIES_DIR):
         path = data_dir / name
@@ -153,6 +194,31 @@ def load_supplier_settings() -> SupplierSettings:
         ) from ex
     _validate_proxy(settings.proxy)
     return settings
+
+
+def load_titles_settings() -> TitlesSettings:
+    """Read the title generation settings from the environment.
+
+    Raises:
+        ConfigError: A value cannot be parsed or violates a limit. The message
+            never repeats raw input, so the API key does not leak.
+    """
+    try:
+        return TitlesSettings()
+    except ValidationError as ex:
+        raise ConfigError(
+            f"не удалось загрузить настройки названий: {_titles_validation_message(ex)}"
+        ) from ex
+
+
+def _titles_validation_message(error: ValidationError) -> str:
+    """Format title settings errors without the raw input values."""
+    parts: list[str] = []
+    for item in error.errors():
+        location = ".".join(str(part) for part in item["loc"])
+        label = f"TITLES_{location.upper()}" if location else "настройки названий"
+        parts.append(f"{label}: {item['msg']}")
+    return "; ".join(parts)
 
 
 def _validation_message(error: ValidationError) -> str:

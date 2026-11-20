@@ -17,10 +17,10 @@ src/content_factory/
   exceptions/   # ошибки сервиса
   schemas/      # типы-данные
   services/     # доменные капсулы: поставщик, сток, алерты, выдача
-  flows/        # Prefect flow stock_topup
+  flows/        # Prefect flows: stock_topup и titles
 app_data/       # рантайм, не в git
 deploy/         # runbook Linux 1, GHCR и SFTP
-docs/           # контракты API, включая выдачу контента
+docs/           # контракты API, выдачи и названий
 scripts/        # деплой и бэкап конфига и запросов
 main.py         # ASGI-точка входа
 ```
@@ -95,6 +95,15 @@ curl -f -X POST http://127.0.0.1:8000/api/v1/content/deliveries \
 [docs/content-queries.md](docs/content-queries.md),
 [docs/runtime-settings.md](docs/runtime-settings.md).
 
+## Названия
+
+Flow `titles` раз в 10 минут запрашивает для стоковых видео без названия три
+варианта по кадрам через DeepSeek и сохраняет первый уникальный. Названия
+лежат в таблице `titles` операционной базы, язык берётся из каталога
+`content/<lang>`, уже названные файлы не перезаписываются. Без
+`TITLES_API_KEY` flow выходит со статусом `disabled` и не падает. Контракт,
+расписание и первый прогон: [docs/titles.md](docs/titles.md).
+
 ## Деплой
 
 Прод — Linux 1: `docker compose` поднимает `api` и Prefect-воркер, общий том
@@ -127,6 +136,11 @@ curl -f http://127.0.0.1:8000/api/v1/stock
 | `CONTENT_FACTORY_LOG_LEVEL` | `INFO` | уровень loguru |
 | `CONTENT_FACTORY_DELIVERY_TOKEN` | — | Bearer-токен выдачи; пусто — выдача выключена |
 | `CONTENT_FACTORY_DELIVERY_RETENTION_HOURS` | `24` | TTL zip-архивов, часов (≥ 1) |
+| `TITLES_API_URL` | `https://ollama.com/v1` | база API названий; `http`/`https`, без пробелов и завершающего `/` |
+| `TITLES_API_KEY` | — | ключ API названий; пусто — flow `titles` выключен |
+| `TITLES_MODEL` | `deepseek-v4.1-flash` | модель названий |
+| `TITLES_TIMEOUT_SECONDS` | `60` | таймаут запроса названий, 5–300 |
+| `TITLES_REASONING_EFFORT` | `none` | `none`, `low`, `high` или `max` |
 | `TELEGRAM_BOT_TOKEN` | — | токен бота для алертов |
 | `TELEGRAM_CHAT_ID` | — | чат для алертов |
 
