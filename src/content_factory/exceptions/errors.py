@@ -13,3 +13,7 @@ class ConfigError(ContentFactoryError):
 
 class SupplierError(ContentFactoryError):
     """Raised when the TikTok supplier engine cannot complete a stage."""
+
+
+class DeliveryError(ContentFactoryError):
+    """Raised when a content delivery archive cannot be built."""

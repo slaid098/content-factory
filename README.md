@@ -3,8 +3,9 @@
 Файловый буфер готовых видео по языкам с плановым добором через движок TikTok.
 
 Сервис считает остатки на диске, раз в несколько часов запускает производство
-недостающего объёма и отдаёт готовые файлы партнёру по SFTP. Файловая система —
-источник правды по остаткам, SQLite хранит только операционное состояние.
+недостающего объёма и отдаёт готовые файлы партнёру по SFTP и HTTP-воркерам
+по языку. Файловая система — источник правды по остаткам, SQLite хранит только
+операционное состояние.
 
 ## Структура
 
@@ -15,10 +16,11 @@ src/content_factory/
   constants/    # имена каталогов app_data
   exceptions/   # ошибки сервиса
   schemas/      # типы-данные
-  services/     # доменные капсулы: поставщик, сток, алерты
+  services/     # доменные капсулы: поставщик, сток, алерты, выдача
   flows/        # Prefect flow stock_topup
 app_data/       # рантайм, не в git
 deploy/         # runbook Linux 1, GHCR и SFTP
+docs/           # контракты API, включая выдачу контента
 scripts/        # деплой и бэкап конфига и запросов
 main.py         # ASGI-точка входа
 ```
@@ -45,6 +47,29 @@ uvicorn main:app --host 127.0.0.1 --port 8000
 В контейнере команда переопределяется на `0.0.0.0:8000`, но порт публикуется
 только на loopback хоста (`127.0.0.1:8000:8000`). Без compose образ по
 умолчанию слушает `127.0.0.1`.
+
+## Выдача контента
+
+Воркеры забирают готовые видео по языку через HTTP, не читая SFTP-каталоги:
+
+```bash
+curl -f -X POST http://127.0.0.1:8000/api/v1/content/deliveries \
+  -H "Authorization: Bearer $CONTENT_FACTORY_DELIVERY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"language":"ru","count":2,"request_id":"3f1c1b0e-6f1a-4f6e-9d2e-0f6a7b8c9d10"}' \
+  -o delivery.zip
+```
+
+Тело запроса: `language` (`^[a-z]{2}$`), `count` (1–10), `request_id` (UUID).
+Ответ `200` — zip с `NNN.mp4` и `NNN.json` (sidecar `{"title": "..."}`);
+`204` — в языке нет `.mp4`; `401` — нет или неверный Bearer-токен; `422` —
+невалидное тело; `503` — токен не настроен.
+
+Выданные `.mp4` удаляются из `content/<language>/`, zip хранится в
+`app_data/archive/<language>/<request_id>.zip`. Повтор с тем же `request_id`
+в пределах TTL (по умолчанию 24 часа) возвращает тот же архив. Старые архивы
+удаляет APScheduler раз в час. Полный контракт:
+[docs/content-delivery.md](docs/content-delivery.md).
 
 ## Деплой
 
@@ -76,8 +101,10 @@ curl -f http://127.0.0.1:8000/api/v1/stock
 |---|---|---|
 | `CONTENT_FACTORY_DATA_DIR` | `./app_data` | корень рантайм-данных |
 | `CONTENT_FACTORY_LOG_LEVEL` | `INFO` | уровень loguru |
+| `CONTENT_FACTORY_DELIVERY_TOKEN` | — | Bearer-токен выдачи; пусто — выдача выключена |
+| `CONTENT_FACTORY_DELIVERY_RETENTION_HOURS` | `24` | TTL zip-архивов, часов (≥ 1) |
 | `TELEGRAM_BOT_TOKEN` | — | токен бота для алертов |
 | `TELEGRAM_CHAT_ID` | — | чат для алертов |
 
-`app_data/` содержит `config/`, `db/`, `content/`, `queries/` и создаётся при
-старте.
+`app_data/` содержит `config/`, `db/`, `content/`, `archive/`, `queries/` и
+создаётся при старте.

@@ -1,5 +1,10 @@
 """Service-level exceptions."""
 
-from content_factory.exceptions.errors import ConfigError, ContentFactoryError, SupplierError
+from content_factory.exceptions.errors import (
+    ConfigError,
+    ContentFactoryError,
+    DeliveryError,
+    SupplierError,
+)
 
-__all__ = ["ConfigError", "ContentFactoryError", "SupplierError"]
+__all__ = ["ConfigError", "ContentFactoryError", "DeliveryError", "SupplierError"]
