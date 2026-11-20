@@ -9,7 +9,13 @@ from urllib.parse import urlsplit
 from pydantic import Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from content_factory.constants import CONFIG_DIR, CONTENT_DIR, DB_DIR, QUERIES_DIR
+from content_factory.constants import (
+    ARCHIVE_DIR,
+    CONFIG_DIR,
+    CONTENT_DIR,
+    DB_DIR,
+    QUERIES_DIR,
+)
 from content_factory.exceptions.errors import ConfigError
 from content_factory.schemas.config.runtime import RuntimeConfig
 from content_factory.schemas.supplier.settings import SupplierConfig
@@ -41,13 +47,20 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     telegram_bot_token: str | None = Field(default=None, validation_alias="TELEGRAM_BOT_TOKEN")
     telegram_chat_id: str | None = Field(default=None, validation_alias="TELEGRAM_CHAT_ID")
+    delivery_token: str | None = None
+    delivery_retention_hours: int = Field(default=24, ge=1)
 
     @field_validator("data_dir")
     @classmethod
     def _expand_user(cls, value: Path) -> Path:
         return value.expanduser()
 
-    @field_validator("telegram_bot_token", "telegram_chat_id", mode="before")
+    @field_validator(
+        "telegram_bot_token",
+        "telegram_chat_id",
+        "delivery_token",
+        mode="before",
+    )
     @classmethod
     def _blank_to_none(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
@@ -110,7 +123,7 @@ class SupplierSettings(BaseSettings):
 
 
 def _ensure_directories(data_dir: Path) -> None:
-    for name in (CONFIG_DIR, DB_DIR, CONTENT_DIR, QUERIES_DIR):
+    for name in (CONFIG_DIR, DB_DIR, CONTENT_DIR, ARCHIVE_DIR, QUERIES_DIR):
         path = data_dir / name
         try:
             path.mkdir(parents=True, exist_ok=True)

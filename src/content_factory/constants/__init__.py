@@ -1,6 +1,7 @@
 """Shared constants for the service."""
 
 from content_factory.constants.paths import (
+    ARCHIVE_DIR,
     CONFIG_DIR,
     CONFIG_FILENAME,
     CONTENT_DIR,
@@ -10,6 +11,7 @@ from content_factory.constants.paths import (
 )
 
 __all__ = [
+    "ARCHIVE_DIR",
     "CONFIG_DIR",
     "CONFIG_FILENAME",
     "CONTENT_DIR",

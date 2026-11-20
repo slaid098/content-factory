@@ -12,7 +12,13 @@ from content_factory.config.settings import (
     load_settings,
     load_supplier_settings,
 )
-from content_factory.constants import CONFIG_DIR, CONTENT_DIR, DB_DIR, QUERIES_DIR
+from content_factory.constants import (
+    ARCHIVE_DIR,
+    CONFIG_DIR,
+    CONTENT_DIR,
+    DB_DIR,
+    QUERIES_DIR,
+)
 from content_factory.exceptions import ConfigError
 from content_factory.schemas.config.runtime import (
     AlertsConfig,
@@ -28,6 +34,8 @@ from content_factory.schemas.config.runtime import (
 _ENV_NAMES = (
     "CONTENT_FACTORY_DATA_DIR",
     "CONTENT_FACTORY_LOG_LEVEL",
+    "CONTENT_FACTORY_DELIVERY_TOKEN",
+    "CONTENT_FACTORY_DELIVERY_RETENTION_HOURS",
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_CHAT_ID",
 )
@@ -81,6 +89,8 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.log_level == "INFO"
     assert settings.telegram_bot_token is None
     assert settings.telegram_chat_id is None
+    assert settings.delivery_token is None
+    assert settings.delivery_retention_hours == 24
 
 
 def test_environment_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -96,6 +106,32 @@ def test_environment_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     assert settings.log_level == "DEBUG"
     assert settings.telegram_bot_token == "token"
     assert settings.telegram_chat_id == "42"
+
+
+def test_delivery_environment_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("CONTENT_FACTORY_DELIVERY_TOKEN", "secret")
+    monkeypatch.setenv("CONTENT_FACTORY_DELIVERY_RETENTION_HOURS", "6")
+
+    settings = Settings()
+
+    assert settings.delivery_token == "secret"
+    assert settings.delivery_retention_hours == 6
+
+
+def test_blank_delivery_token_becomes_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("CONTENT_FACTORY_DELIVERY_TOKEN", "   ")
+
+    assert Settings().delivery_token is None
+
+
+def test_delivery_retention_must_be_positive(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("CONTENT_FACTORY_DELIVERY_RETENTION_HOURS", "0")
+
+    with pytest.raises(ValidationError):
+        Settings()
 
 
 def test_blank_telegram_values_become_none(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -127,7 +163,7 @@ def test_load_settings_creates_data_directories(
     settings = load_settings()
 
     assert settings.data_dir == data_dir
-    for name in (CONFIG_DIR, DB_DIR, CONTENT_DIR, QUERIES_DIR):
+    for name in (CONFIG_DIR, DB_DIR, CONTENT_DIR, ARCHIVE_DIR, QUERIES_DIR):
         assert (data_dir / name).is_dir()
 
 

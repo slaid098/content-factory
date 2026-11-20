@@ -21,6 +21,7 @@ dependencies = [
   "pyyaml>=6.0",
   "pydantic>=2.9",
   "pydantic-settings>=2.6",
+  "apscheduler>=3.11,<4",
   "loguru>=0.7.2",
   "yt-dlp[default,curl-cffi]>=2024.12.13",
   "curl_cffi>=0.7",
@@ -61,6 +62,10 @@ pretty = true
 module = ["yt_dlp.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["apscheduler.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
@@ -96,6 +101,7 @@ reason = "служебный runbook, не продуктовая витрина
 inheritance_allowlist = [
   "content_factory.exceptions.errors.ContentFactoryError",
   "content_factory.exceptions.errors.SupplierError",
+  "content_factory.exceptions.errors.DeliveryError",
 ]
 
 # Конструкторы этапов (download/filter/mcp_session) совпадают по форме: два

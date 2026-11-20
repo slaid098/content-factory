@@ -55,6 +55,23 @@ def test_compose_contract() -> None:
     assert "./app_data:/app/app_data" in worker["volumes"]
 
 
+def test_compose_delivery_contract() -> None:
+    compose = _load("compose.yaml")
+    services = compose["services"]
+    api = services["api"]
+
+    assert "/app/app_data/archive" in services["init"]["command"][0]
+    assert api["environment"]["CONTENT_FACTORY_DELIVERY_TOKEN"] == (
+        "${CONTENT_FACTORY_DELIVERY_TOKEN:-}"
+    )
+    assert api["environment"]["CONTENT_FACTORY_DELIVERY_RETENTION_HOURS"] == (
+        "${CONTENT_FACTORY_DELIVERY_RETENTION_HOURS:-24}"
+    )
+    assert compose["networks"]["content-bus"]["internal"] is True
+    assert api["networks"]["content-bus"]["aliases"] == ["content-factory-api"]
+    assert api["ports"] == ["127.0.0.1:8000:8000"]
+
+
 def test_compose_omits_security_opt_for_snap_docker() -> None:
     services = _load("compose.yaml")["services"]
 

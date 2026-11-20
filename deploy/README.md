@@ -204,9 +204,10 @@ namei -l /root/dockers/content-factory/app_data/content
 отсутствие права записи для group/other. `/root` при этом остаётся
 `drwx------`.
 
-`app_data/config`, `app_data/db` и `app_data/queries` принадлежат `10001`
-(пользователь `app` в контейнере) и закрыты от остальных (`0750`); это делает
-одноразовый сервис `init` при каждом `docker compose up`.
+`app_data/config`, `app_data/db`, `app_data/queries` и `app_data/archive`
+принадлежат `10001` (пользователь `app` в контейнере) и закрыты от остальных
+(`0750`); это делает одноразовый сервис `init` при каждом `docker compose up`.
+`archive` лежит вне SFTP-chroot `content/` и партнёру не виден.
 
 ### 4.2 Каталоги языков
 
@@ -256,6 +257,9 @@ SUPPLIER_BITBROWSER_URL=http://host.docker.internal:54529
 # id профиля BitBrowser обязателен
 SUPPLIER_PROFILE_ID=
 SUPPLIER_PROXY=
+# Bearer-токен выдачи контента; пустое значение выключает endpoint (503).
+CONTENT_FACTORY_DELIVERY_TOKEN=
+CONTENT_FACTORY_DELIVERY_RETENTION_HOURS=24
 EOF
 ```
 
@@ -269,6 +273,8 @@ EOF
 | `SUPPLIER_BITBROWSER_URL` | да | `http://host.docker.internal:54529` | API BitBrowser |
 | `SUPPLIER_PROFILE_ID` | да | — | профиль BitBrowser для TikTok |
 | `SUPPLIER_PROXY` | нет | — | прокси движка: `http://`, `https://`, `socks5://`, `socks5h://` |
+| `CONTENT_FACTORY_DELIVERY_TOKEN` | нет | — | Bearer-токен `POST /api/v1/content/deliveries`; пусто — выдача выключена |
+| `CONTENT_FACTORY_DELIVERY_RETENTION_HOURS` | нет | `24` | TTL zip-архивов выдачи, часов (≥ 1) |
 | `CONTENT_FACTORY_LOG_LEVEL` | нет | `INFO` | уровень loguru в API и воркере |
 
 `IMAGE_TAG` в `.env` не задаётся: его экспортирует деплой-скрипт. Значение по
@@ -475,9 +481,9 @@ sudo docker image ls ghcr.io/slaid098/content-factory
 
 - API слушает `0.0.0.0:8000` внутри контейнера, наружу порт опубликован
   только как `127.0.0.1:8000:8000`; новых публичных портов нет.
-- Одноразовый сервис `init` создаёт `app_data/{config,db,queries}`, выставляет
-  им владельца `10001` и фиксирует `root:root 0755` на `app_data` и
-  `content`. Каталог `ru` он не трогает.
+- Одноразовый сервис `init` создаёт `app_data/{config,db,queries,archive}`,
+  выставляет им владельца `10001` и фиксирует `root:root 0755` на `app_data`
+  и `content`. Каталог `ru` он не трогает.
 - `./app_data` — bind mount с хоста, в образ не попадает. `git reset --hard`
   его не удаляет: каталог в `.gitignore`.
 - Healthcheck API: `curl -f http://127.0.0.1:8000/api/v1/stock`.

@@ -20,6 +20,11 @@ networks:
       config:
         - subnet: 172.28.0.0/24
           gateway: 172.28.0.1
+  # Внутренняя сеть выдачи: контейнеры-потребители обращаются к API по
+  # стабильному alias content-factory-api, наружу сеть не маршрутизируется.
+  content-bus:
+    name: content-bus
+    internal: true
 
 services:
   # Bind mount создаёт app_data от root, если каталога ещё нет. app_data и
@@ -33,9 +38,9 @@ services:
     command:
       - |
         set -eu
-        mkdir -p /app/app_data/config /app/app_data/db /app/app_data/queries
-        chown -R 10001:10001 /app/app_data/config /app/app_data/db /app/app_data/queries
-        chmod 0750 /app/app_data/config /app/app_data/db /app/app_data/queries
+        mkdir -p /app/app_data/config /app/app_data/db /app/app_data/queries /app/app_data/archive
+        chown -R 10001:10001 /app/app_data/config /app/app_data/db /app/app_data/queries /app/app_data/archive
+        chmod 0750 /app/app_data/config /app/app_data/db /app/app_data/queries /app/app_data/archive
         mkdir -p /app/app_data/content
         chown root:root /app/app_data /app/app_data/content
         chmod 0755 /app/app_data /app/app_data/content
@@ -52,8 +57,15 @@ services:
     environment:
       CONTENT_FACTORY_DATA_DIR: /app/app_data
       CONTENT_FACTORY_LOG_LEVEL: ${CONTENT_FACTORY_LOG_LEVEL:-INFO}
+      CONTENT_FACTORY_DELIVERY_TOKEN: ${CONTENT_FACTORY_DELIVERY_TOKEN:-}
+      CONTENT_FACTORY_DELIVERY_RETENTION_HOURS: ${CONTENT_FACTORY_DELIVERY_RETENTION_HOURS:-24}
     volumes:
       - ./app_data:/app/app_data
+    networks:
+      default: {}
+      content-bus:
+        aliases:
+          - content-factory-api
     restart: unless-stopped
     depends_on:
       init:
