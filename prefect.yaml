@@ -23,3 +23,17 @@ deployments:
         timezone: UTC
         active: true
     concurrency_limit: 1
+
+  - name: titles
+    description: "Генерация уникальных названий по кадрам видео"
+    entrypoint: src/content_factory/flows/titles/flow.py:titles
+    work_pool:
+      name: content-factory
+    # Отдельный тик каждые 10 минут: названия нужны раньше, чем следующий
+    # добор стока, и не должны ждать долгого stock_topup.
+    schedules:
+      - slug: every-10-minutes
+        cron: "*/10 * * * *"
+        timezone: UTC
+        active: true
+    concurrency_limit: 1

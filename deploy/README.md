@@ -504,29 +504,31 @@ sudo docker compose run --rm --no-deps worker prefect deployment ls
 sudo docker compose logs -f worker
 ```
 
-`prefect.yaml` задаёт cron `*/15 * * * *`, pool `content-factory`,
-`concurrency_limit: 1` и шаг `set_working_directory` на `/app`, где в образе
-лежат `src/` и `prefect.yaml`; deployment не зависит от текущего каталога
-процесса. Cron — это тик планировщика; решение о производстве принимает сам
-flow по `config.run.interval`, поэтому холостые тики выходят сразу.
+`prefect.yaml` задаёт два deployment: `stock_topup` с cron `*/15 * * * *` и
+`titles` с cron `*/10 * * * *`. Оба используют pool `content-factory`, шаг
+`set_working_directory` на `/app`, где в образе лежат `src/` и `prefect.yaml`;
+deployment не зависит от текущего каталога процесса. Cron `stock_topup` — это
+тик планировщика; решение о производстве принимает сам flow по
+`config.run.interval`, поэтому холостые тики выходят сразу.
 
 Одновременность ограничена на двух уровнях:
 
-- `concurrency_limit: 1` в `prefect.yaml` — серверный лимит deployment'а.
-  Это timed lease: пока run жив, Prefect его продлевает, а
+- `concurrency_limit: 1` у каждого deployment в `prefect.yaml` — серверный
+  лимит. Это timed lease: пока run жив, Prefect его продлевает, а
   `collision_strategy` по умолчанию (`ENQUEUE`) ставит новые тики в очередь.
   Если воркер убит (например, деплоем), lease убитого run'а истекает и сервер
   отдаёт слот следующему run'у, хотя state зомби остаётся `RUNNING`.
-- `--limit 1` в команде сервиса `worker` (`compose.yaml`) — жёсткий кап
-  воркера, не зависящий от lease. Если Prefect всё же выдаст второй run,
-  воркер напишет `Flow run limit reached` и не запустит его, пока не
-  завершится текущий.
+- `--limit 2` в команде сервиса `worker` (`compose.yaml`) — жёсткий кап
+  воркера, не зависящий от lease. Два слота нужны, чтобы долгий
+  `stock_topup` не блокировал тики `titles`: каждый deployment всё равно
+  выполняет не больше одного run, но два разных deployment могут идти
+  одновременно. Если Prefect всё же выдаст лишний run, воркер напишет
+  `Flow run limit reached` и не запустит его, пока не освободится слот.
 
-Деплой может перезапустить `worker` и прервать активный run — это допустимо:
-после рестарта запускается ровно один run. В пуле пока один deployment; при
-появлении второго `--limit 1` станет общим для пула. Второй `worker` в пуле
-per-worker лимит не покрывает и один run на весь пул не гарантирует — это вне
-текущего контура.
+Деплой может перезапустить `worker` и прервать активные run — это допустимо:
+после рестарта запускается не больше одного run на deployment. Второй
+`worker` в пуле per-worker лимит не покрывает и один run на весь пул не
+гарантирует — это вне текущего контура.
 
 ## 9. Автоматический деплой и откат
 

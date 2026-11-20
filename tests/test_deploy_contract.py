@@ -60,7 +60,7 @@ def test_compose_contract() -> None:
         "--pool",
         "content-factory",
         "--limit",
-        "1",
+        "2",
     ]
     assert worker["restart"] == "unless-stopped"
     assert "./app_data:/app/app_data" in api["volumes"]
@@ -72,7 +72,7 @@ def test_worker_command_caps_concurrent_flow_runs() -> None:
 
     assert command.count("--limit") == 1
     limit = command.index("--limit")
-    assert command[limit + 1] == "1"
+    assert command[limit + 1] == "2"
 
 
 def test_compose_delivery_contract() -> None:
@@ -239,10 +239,14 @@ def test_deploy_runbook_documents_worker_contract() -> None:
     assert "one-shot" in runbook
 
 
-def test_prefect_deployment_contract() -> None:
-    deployment = _load("prefect.yaml")["deployments"][0]
+def _deployment(name: str) -> dict[str, Any]:
+    deployments = _load("prefect.yaml")["deployments"]
+    return next(deployment for deployment in deployments if deployment["name"] == name)
 
-    assert deployment["name"] == "stock_topup"
+
+def test_prefect_deployment_contract() -> None:
+    deployment = _deployment("stock_topup")
+
     assert deployment["entrypoint"] == "src/content_factory/flows/stock_topup/flow.py:stock_topup"
     assert deployment["work_pool"]["name"] == "content-factory"
     assert deployment["concurrency_limit"] == 1
@@ -257,3 +261,22 @@ def test_prefect_deployment_contract() -> None:
 
     module = importlib.import_module("content_factory.flows.stock_topup.flow")
     assert callable(module.stock_topup)
+
+
+def test_prefect_titles_deployment_contract() -> None:
+    deployment = _deployment("titles")
+
+    assert deployment["entrypoint"] == "src/content_factory/flows/titles/flow.py:titles"
+    assert deployment["work_pool"]["name"] == "content-factory"
+    assert deployment["concurrency_limit"] == 1
+    assert deployment["schedules"] == [
+        {
+            "slug": "every-10-minutes",
+            "cron": "*/10 * * * *",
+            "timezone": "UTC",
+            "active": True,
+        }
+    ]
+
+    module = importlib.import_module("content_factory.flows.titles.flow")
+    assert callable(module.titles)
