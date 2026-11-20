@@ -118,3 +118,7 @@ curl -f http://127.0.0.1:8000/api/v1/stock
 
 `app_data/` содержит `config/`, `db/`, `content/`, `archive/`, `queries/` и
 создаётся при старте.
+
+Параметры производства лежат в `app_data/config/config.yaml` и правятся через
+API с preview, бэкапом и сохранением комментариев:
+[docs/runtime-settings.md](docs/runtime-settings.md).

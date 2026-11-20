@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from content_factory.api.ui_page import UI_DIR, ui_router
 from content_factory.api.v1.routes.content import content_router
 from content_factory.api.v1.routes.queries import queries_router
+from content_factory.api.v1.routes.settings import settings_router
 from content_factory.api.v1.routes.stock import stock_router
 from content_factory.config.settings import Settings
 from content_factory.services.delivery.scheduler import (
@@ -46,6 +47,7 @@ def create_app() -> FastAPI:
     app.include_router(stock_router, prefix="/api/v1", tags=["stock"])
     app.include_router(content_router, prefix="/api/v1", tags=["content"])
     app.include_router(queries_router, prefix="/api/v1", tags=["content"])
+    app.include_router(settings_router, prefix="/api/v1", tags=["content"])
     app.include_router(ui_router)
     app.mount("/ui", StaticFiles(directory=UI_DIR), name="ui")
     return app

@@ -11,6 +11,14 @@ class ConfigError(ContentFactoryError):
     """Raised when configuration cannot be read, created or validated."""
 
 
+class SettingsValidationError(ContentFactoryError):
+    """Raised when edited runtime settings do not pass validation."""
+
+
+class SettingsWriteError(ContentFactoryError):
+    """Raised when the runtime settings file cannot be written safely."""
+
+
 class SupplierError(ContentFactoryError):
     """Raised when the TikTok supplier engine cannot complete a stage."""
 
