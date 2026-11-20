@@ -1,21 +1,21 @@
-/** Archive list: cards, live countdown and re-download without rebuilding. */
+/** Archive list: cards, live countdown and direct download links. */
 
-import { ApiError, readBlob, request, requestJson } from "./api.js";
-import { el, saveBlob } from "./dom.js";
+import { requestJson } from "./api.js";
+import { el, setMessage, toggle } from "./dom.js";
 import {
   formatBytes,
   formatDateTime,
+  formatCount,
   formatRemaining,
   languageName,
 } from "./format.js";
 
 const TICK_MS = 1000;
-const DOWNLOAD_TIMEOUT_MS = 120000;
 const EXPIRY_REFRESH_MS = 60000;
 
 /**
  * Build the archive list once and keep its countdowns running.
- * @param {{list: HTMLElement, empty: HTMLElement, message: HTMLElement, lastArchive: HTMLElement}} elements
+ * @param {{list: HTMLElement, empty: HTMLElement, message: HTMLElement}} elements
  */
 export function createArchivesView(elements) {
   /** @type {Array<Record<string, unknown>>} */
@@ -33,10 +33,10 @@ export function createArchivesView(elements) {
       const data = await requestJson("/api/v1/content/archives");
       archives = Array.isArray(data) ? data : [];
       freshId = highlightId;
-      setMessage("");
+      setMessage(elements.message, "");
       render();
     } catch (error) {
-      setMessage(error.message);
+      setMessage(elements.message, error.message);
     }
   }
 
@@ -47,21 +47,8 @@ export function createArchivesView(elements) {
       return row;
     });
     elements.list.replaceChildren(...rows);
-    elements.list.hidden = rows.length === 0;
-    elements.empty.hidden = rows.length !== 0;
-
-    const fresh =
-      freshId === null
-        ? undefined
-        : archives.find((item) => item.request_id === freshId);
-    elements.lastArchive.replaceChildren();
-    elements.lastArchive.hidden = !fresh;
-    if (fresh) {
-      elements.lastArchive.append(
-        el("h3", "", "Архив готов"),
-        buildCard(fresh, true),
-      );
-    }
+    toggle(elements.list, rows.length !== 0);
+    toggle(elements.empty, rows.length === 0);
     tick();
   }
 
@@ -78,6 +65,9 @@ export function createArchivesView(elements) {
 
     const tags = el("span", "archive-tags");
     tags.append(el("span", "badge", languageName(String(item.language))));
+    tags.append(
+      el("span", "badge", item.storage === "remote" ? "Litterbox" : "сервер"),
+    );
     if (fresh) {
       tags.append(el("span", "badge accent", "только что"));
     }
@@ -89,6 +79,9 @@ export function createArchivesView(elements) {
       el("span", "", "·"),
       el("span", "", `создан ${formatDateTime(String(item.created_at))}`),
     );
+    if (typeof item.files === "number") {
+      meta.append(el("span", "", "·"), el("span", "", `${formatCount(item.files)} видео`));
+    }
 
     const foot = el("div", "archive-foot");
     const timer = el("span", "timer");
@@ -99,60 +92,33 @@ export function createArchivesView(elements) {
 
     const link = el("a", "button secondary", "Скачать");
     link.href = archiveUrl(item);
-    link.download = `delivery-${requestId}.zip`;
-    link.addEventListener("click", (event) => {
-      event.preventDefault();
-      void download(item, link);
-    });
+    if (item.storage === "remote") {
+      link.rel = "noopener";
+    } else {
+      link.download = `delivery-${requestId}.zip`;
+    }
 
     foot.append(timer, link);
     card.append(head, meta, foot);
     return card;
   }
 
-  /**
-   * Download one archive through the same GET URL; it never rebuilds stock.
-   * @param {Record<string, unknown>} item
-   * @param {HTMLElement} trigger
-   */
-  async function download(item, trigger) {
-    if (trigger.classList.contains("is-busy")) {
-      return;
-    }
-    trigger.classList.add("is-busy");
-    trigger.setAttribute("aria-busy", "true");
-    try {
-      const response = await request(
-        archiveUrl(item),
-        {},
-        DOWNLOAD_TIMEOUT_MS,
-      );
-      saveBlob(
-        await readBlob(response),
-        `delivery-${String(item.request_id)}.zip`,
-      );
-      setMessage("");
-    } catch (error) {
-      setMessage(error.message);
-      if (error instanceof ApiError && error.status === 404) {
-        await load();
-        setMessage(error.message);
-      }
-    } finally {
-      trigger.classList.remove("is-busy");
-      trigger.removeAttribute("aria-busy");
-    }
-  }
-
   function tick() {
     const now = Date.now();
     let expired = false;
-    for (const node of document.querySelectorAll("[data-expires]")) {
+    for (const node of elements.list.querySelectorAll("[data-expires]")) {
       const remaining = formatRemaining(node.dataset.expires, now);
       node.textContent = remaining;
       if (remaining === "истёк") {
         expired = true;
-        node.closest(".archive-card")?.classList.add("is-expired");
+        const card = node.closest(".archive-card");
+        card?.classList.add("is-expired");
+        const link = card?.querySelector("a.button");
+        if (link) {
+          link.removeAttribute("href");
+          link.setAttribute("aria-disabled", "true");
+          link.textContent = "Истёк";
+        }
       }
     }
     if (expired && now - lastExpiryRefresh > EXPIRY_REFRESH_MS) {
@@ -162,18 +128,13 @@ export function createArchivesView(elements) {
   }
 
   /**
-   * @param {string} text
-   */
-  function setMessage(text) {
-    elements.message.textContent = text;
-    elements.message.hidden = !text;
-  }
-
-  /**
    * @param {Record<string, unknown>} item
    * @returns {string}
    */
   function archiveUrl(item) {
+    if (item.storage === "remote" && typeof item.url === "string" && item.url) {
+      return item.url;
+    }
     const language = encodeURIComponent(String(item.language));
     const requestId = encodeURIComponent(String(item.request_id));
     return `/api/v1/content/archives/${language}/${requestId}.zip`;

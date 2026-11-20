@@ -19,17 +19,42 @@ export function el(tag, className = "", text) {
 }
 
 /**
- * Download a blob under the given file name.
- * @param {Blob} blob
- * @param {string} filename
+ * Find a required element by id.
+ * @param {string} id
+ * @returns {HTMLElement}
  */
-export function saveBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 10000);
+export function byId(id) {
+  const node = document.getElementById(id);
+  if (!node) {
+    throw new Error(`Не найден элемент #${id}`);
+  }
+  return node;
+}
+
+/**
+ * Show or hide one element without touching its content.
+ * @param {HTMLElement} node
+ * @param {boolean} visible
+ */
+export function toggle(node, visible) {
+  node.hidden = !visible;
+}
+
+/**
+ * Show a text message, or hide the node when the text is empty.
+ * @param {HTMLElement} node
+ * @param {string} text
+ */
+export function setMessage(node, text) {
+  node.textContent = text;
+  node.hidden = !text;
+}
+
+/**
+ * Set the text of one element.
+ * @param {HTMLElement} node
+ * @param {string} text
+ */
+export function setText(node, text) {
+  node.textContent = text;
 }

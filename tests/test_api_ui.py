@@ -15,6 +15,8 @@ _FORBIDDEN = ("Bearer ", "CONTENT_FACTORY_DELIVERY_TOKEN", "Authorization")
 _EXTERNAL_URL = re.compile(r"https?://", re.IGNORECASE)
 _UI_FILES = sorted(path.name for path in _UI_DIR.iterdir() if path.is_file())
 _STATIC_FILES = [name for name in _UI_FILES if name != "index.html"]
+_JS_FILES = [name for name in _UI_FILES if name.endswith(".js")]
+_IMPORT = re.compile(r'from "\./([^"]+)"')
 
 
 @pytest.fixture
@@ -22,6 +24,14 @@ def client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
     """Build the app against an empty data directory."""
     monkeypatch.setenv("CONTENT_FACTORY_DATA_DIR", str(tmp_path))
     return TestClient(create_app())
+
+
+def _ui_text(name: str) -> str:
+    return (_UI_DIR / name).read_text(encoding="utf-8")
+
+
+def _all_scripts() -> str:
+    return "\n".join(_ui_text(name) for name in _JS_FILES)
 
 
 def test_root_returns_partner_page(client: TestClient) -> None:
@@ -35,6 +45,26 @@ def test_root_returns_partner_page(client: TestClient) -> None:
     assert 'id="topics"' in html
     assert 'id="archives"' in html
     assert 'id="delivery-form"' in html
+
+
+def test_root_page_has_three_tabs_and_panels(client: TestClient) -> None:
+    html = client.get("/").text
+
+    assert 'role="tablist"' in html
+    for name in ("delivery", "queries", "settings"):
+        assert f'id="tab-{name}"' in html
+        assert f'id="panel-{name}"' in html
+        assert f'aria-controls="panel-{name}"' in html
+        assert f'aria-labelledby="tab-{name}"' in html
+
+
+def test_delivery_panel_is_open_by_default(client: TestClient) -> None:
+    html = client.get("/").text
+
+    assert re.search(r'id="panel-delivery"[^>]*>', html)
+    assert not re.search(r'id="panel-delivery"[^>]*hidden', html)
+    assert re.search(r'id="panel-queries"[^>]*hidden', html)
+    assert re.search(r'id="panel-settings"[^>]*hidden', html)
 
 
 def test_root_page_does_not_require_token(
@@ -66,11 +96,17 @@ def test_static_assets_are_served_with_correct_content_type(
 
 def test_page_references_only_served_assets(client: TestClient) -> None:
     html = client.get("/").text
+    app_script = _ui_text("app.js")
 
     assert 'href="/ui/app.css"' in html
     assert 'src="/ui/app.js"' in html
     assert client.get("/ui/app.css").status_code == 200
     assert client.get("/ui/app.js").status_code == 200
+
+    imports = set(_IMPORT.findall(app_script))
+    assert {"archives.js", "jobs.js", "queries.js", "settings.js", "tabs.js"} <= imports
+    for name in imports:
+        assert client.get(f"/ui/{name}").status_code == 200
 
 
 def test_unknown_ui_asset_returns_404(client: TestClient) -> None:
@@ -79,7 +115,7 @@ def test_unknown_ui_asset_returns_404(client: TestClient) -> None:
 
 @pytest.mark.parametrize("name", _UI_FILES)
 def test_ui_files_have_no_secret_and_no_external_urls(name: str) -> None:
-    text = (_UI_DIR / name).read_text(encoding="utf-8")
+    text = _ui_text(name)
 
     for needle in _FORBIDDEN:
         assert needle not in text
@@ -98,10 +134,71 @@ def test_page_does_not_break_api_and_docs(client: TestClient) -> None:
     assert stock.headers["content-type"].startswith("application/json")
 
 
-def test_page_uses_same_origin_api_and_long_delivery_timeout() -> None:
-    app_script = (_UI_DIR / "app.js").read_text(encoding="utf-8")
-    api_script = (_UI_DIR / "api.js").read_text(encoding="utf-8")
+def test_delivery_uses_async_link_and_polls_every_three_seconds() -> None:
+    scripts = _all_scripts()
+
+    assert "/api/v1/content/deliveries/link" in scripts
+    assert "/api/v1/content/deliveries/" in scripts
+    assert "POLL_MS = 3000" in scripts
+    assert "POLL_LIMIT_MS = 30 * 60 * 1000" in scripts
+    for status in ("building", "ready_local", "empty", "failed"):
+        assert f'"{status}"' in scripts
+    assert "response.status === 409" in scripts
+
+
+def test_delivery_limit_comes_from_settings_with_fallback() -> None:
+    app_script = _ui_text("app.js")
+
+    assert "MAX_COUNT_FALLBACK = 100" in app_script
+    assert "delivery" in app_script
+    assert "max_count" in app_script
+    assert "MAX_COUNT = 10" not in app_script
+    assert not re.search(r"Math\.min\(10\b", app_script)
+
+
+def test_archive_downloads_are_plain_links() -> None:
+    archives = _ui_text("archives.js")
+
+    assert "fetch(" not in archives
+    assert "readBlob" not in archives
+    assert "saveBlob" not in archives
+    assert "Blob" not in archives
+    assert "item.url" in archives
+    assert "/api/v1/content/archives/" in archives
+    assert "is-expired" in archives
+
+
+def test_queries_tab_uses_list_search_and_append() -> None:
+    queries = _ui_text("queries.js")
+
+    assert '"/api/v1/content/queries"' in queries
+    assert "in_file" in queries
+    assert 'method: "POST"' in queries
+    assert "Запросов пока нет." in queries
+
+
+def test_settings_tab_previews_then_applies() -> None:
+    settings = _ui_text("settings.js")
+
+    assert '"/api/v1/content/settings"' in settings
+    assert '"/api/v1/content/settings/preview"' in settings
+    assert '"PUT"' in settings
+    assert "Изменений нет." in settings
+    assert "elements.apply.disabled = true" in settings
+    assert "Бэкап:" in settings
+
+
+def test_page_keeps_random_uuid_fallback() -> None:
+    app_script = _ui_text("app.js")
+
+    assert "crypto.randomUUID()" in app_script
+    assert "crypto.getRandomValues" in app_script
+
+
+def test_page_uses_same_origin_api_and_short_read_timeout() -> None:
+    app_script = _ui_text("app.js")
+    api_script = _ui_text("api.js")
 
     assert '"/api/v1/stock"' in app_script
-    assert "crypto.randomUUID()" in app_script
+    assert "READ_TIMEOUT_MS = 15000" in api_script
     assert "DELIVERY_TIMEOUT_MS = 300000" in api_script
