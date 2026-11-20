@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Выдача видео — content-factory</title>
+  <link rel="stylesheet" href="/ui/app.css">
+  <script type="module" src="/ui/app.js"></script>
+</head>
+<body>
+  <div class="page">
+    <header class="hero">
+      <div class="hero-text">
+        <p class="eyebrow">content-factory</p>
+        <h1>Выдача видео</h1>
+        <p class="lead">
+          Готовые ролики по языкам. Соберите архив и скачайте его: архив живёт
+          24 часа, повторное скачивание не тратит остаток.
+        </p>
+      </div>
+      <p class="muted hero-time" id="stock-updated" aria-live="polite"></p>
+    </header>
+
+    <main class="layout">
+      <section class="panel stock-panel" aria-labelledby="stock-title">
+        <div class="panel-head">
+          <h2 id="stock-title">Остаток на диске</h2>
+          <button type="button" class="ghost" id="refresh">Обновить</button>
+        </div>
+        <ul class="stock-list" id="stock-list"></ul>
+        <p class="message" id="stock-message" role="status" aria-live="polite" hidden></p>
+        <p class="empty" id="stock-empty" hidden>Видео пока нет.</p>
+      </section>
+
+      <section class="panel" aria-labelledby="delivery-title">
+        <div class="panel-head">
+          <h2 id="delivery-title">Собрать архив</h2>
+          <span class="muted" id="available"></span>
+        </div>
+
+        <form id="delivery-form" novalidate>
+          <div class="field">
+            <label class="field-label" for="language">Язык</label>
+            <select id="language" name="language"></select>
+          </div>
+
+          <fieldset class="topics" id="topics">
+            <legend class="field-label">Тема</legend>
+            <div class="topic-list" id="topic-list"></div>
+            <p class="hint" id="topics-message" role="status" aria-live="polite" hidden></p>
+            <p class="hint" id="unclassified" hidden></p>
+          </fieldset>
+
+          <div class="field">
+            <label class="field-label" for="count">Сколько видео</label>
+            <div class="field-row">
+              <input id="count" name="count" type="number" inputmode="numeric"
+                     min="1" max="1" step="1" value="1">
+              <span class="hint" id="count-hint">Не больше 10 за раз.</span>
+            </div>
+          </div>
+
+          <div class="actions">
+            <button type="submit" class="primary" id="deliver">Собрать архив</button>
+            <span class="status" id="delivery-status" role="status" aria-live="polite"></span>
+          </div>
+        </form>
+
+        <div class="last-archive" id="last-archive" hidden></div>
+      </section>
+
+      <section class="panel archives-panel" aria-labelledby="archives-title">
+        <div class="panel-head">
+          <h2 id="archives-title">Готовые архивы</h2>
+          <span class="muted">24 часа</span>
+        </div>
+        <p class="message" id="archives-message" role="status" aria-live="polite" hidden></p>
+        <ul class="archive-list" id="archives"></ul>
+        <p class="empty" id="archives-empty" hidden>Архивов пока нет.</p>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <p>Остаток обновляется раз в минуту. Архивы старше 24 часов удаляются.</p>
+    </footer>
+  </div>
+  <noscript><p class="no-script">Для работы страницы нужен JavaScript.</p></noscript>
+</body>
+</html>
