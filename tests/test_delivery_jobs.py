@@ -110,7 +110,7 @@ def test_link_returns_building_then_ready_and_removes_zip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"), b"video")
-    url = "https://litter.catbox.moe/example.zip"
+    url = "https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip"
     monkeypatch.setattr(
         "content_factory.services.delivery.jobs.upload_archive",
         lambda _archive: url,
@@ -152,7 +152,7 @@ def test_successful_upload_url_is_not_logged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"), b"video")
-    url = "https://litter.catbox.moe/private-link-123.zip"
+    url = "https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip"
     monkeypatch.setattr(
         "content_factory.services.delivery.jobs.upload_archive",
         lambda _archive: url,
@@ -176,7 +176,7 @@ def test_upload_failure_keeps_zip_and_returns_ready_local(
     touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"), b"video")
 
     def _fail(_archive: Path) -> str:
-        raise UploadError("Litterbox недоступен")
+        raise UploadError("Filebin недоступен")
 
     monkeypatch.setattr("content_factory.services.delivery.jobs.upload_archive", _fail)
     client = _client()
@@ -185,7 +185,8 @@ def test_upload_failure_keeps_zip_and_returns_ready_local(
     final = _wait(client, REQUEST_ID_TEXT, "ready_local")
 
     assert final["url"] is None
-    assert final["error"] == "Litterbox недоступен"
+    assert final["error"] == "Filebin недоступен"
+    assert "filebin.net" not in final["error"]
     assert final["files"] == 1
     assert (data_dir / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.zip").is_file()
 
@@ -221,7 +222,7 @@ def test_large_archive_skips_upload_attempt(
     def _unexpected(_archive: Path) -> str:
         nonlocal called
         called = True
-        return "https://litter.catbox.moe/should-not-exist.zip"
+        return "https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip"
 
     monkeypatch.setattr("content_factory.services.delivery.jobs.upload_archive", _unexpected)
     client = _client()
@@ -250,7 +251,7 @@ def test_unexpected_upload_error_falls_back_to_ready_local(
     final = _wait(client, REQUEST_ID_TEXT, "ready_local")
 
     assert final["url"] is None
-    assert final["error"] == "не удалось загрузить архив на Litterbox"
+    assert final["error"] == "не удалось загрузить архив на файлообменник"
 
 
 def test_link_without_stock_returns_empty(data_dir: Path) -> None:
@@ -319,7 +320,7 @@ def test_repeated_post_for_ready_job_keeps_stock_and_status(
 ) -> None:
     directory = data_dir / CONTENT_DIR / "ru"
     touch_mp4(directory / ("a" * 64 + ".mp4"), b"first")
-    url = "https://litter.catbox.moe/example.zip"
+    url = "https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip"
     monkeypatch.setattr(
         "content_factory.services.delivery.jobs.upload_archive",
         lambda _archive: url,
@@ -343,7 +344,7 @@ def test_job_get_after_ttl_returns_404_and_removes_sidecar(data_dir: Path) -> No
     _job(
         data_dir,
         status="ready",
-        url="https://litter.catbox.moe/expired.zip",
+        url="https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip",
         created_at=now - timedelta(hours=25),
         expires_at=now - timedelta(hours=1),
     )
@@ -373,7 +374,7 @@ def test_startup_marks_building_as_failed_and_repeat_rebuilds(
     now = datetime.now(UTC)
     _job(data_dir, status="building", created_at=now, expires_at=now + timedelta(hours=24))
     touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"), b"video")
-    url = "https://litter.catbox.moe/rebuilt.zip"
+    url = "https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip"
     monkeypatch.setattr(
         "content_factory.services.delivery.jobs.upload_archive",
         lambda _archive: url,

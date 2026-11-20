@@ -1,20 +1,18 @@
-"""Publish a delivery archive to Litterbox temporary file storage."""
+"""Publish a delivery archive to Filebin temporary file storage."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import IO
-from urllib.parse import urlsplit
 
 import httpx
 
 from content_factory.exceptions.errors import ArchiveTooLargeError, UploadError
 
-LITTERBOX_URL = "https://litterbox.catbox.moe/resources/internals/api.php"
-LITTERBOX_TIME = "24h"
+FILEBIN_URL = "https://filebin.net"
+FILEBIN_BIN_PREFIX = "cf-"
 MAX_ARCHIVE_BYTES = 1024**3
 MAX_UPLOAD_BYTES = MAX_ARCHIVE_BYTES
-UPLOAD_TIMEOUT_SECONDS = 120.0
+UPLOAD_TIMEOUT_SECONDS = 300.0
 
 
 def upload_archive(
@@ -23,7 +21,11 @@ def upload_archive(
     timeout: float = UPLOAD_TIMEOUT_SECONDS,
     client: httpx.Client | None = None,
 ) -> str:
-    """Upload one zip archive and return its public temporary URL.
+    """Upload one zip archive to Filebin and return its public URL.
+
+    The archive is named after its request id, so the bin and the file name
+    are deterministic: ``cf-<request_id>/<request_id>.zip``. A repeated upload
+    of the same job lands in the same bin instead of creating another one.
 
     The URL is never written to the log: it is a public bearer-like link that
     must not end up in service logs or error responses.
@@ -34,12 +36,13 @@ def upload_archive(
         client: Optional HTTP client, used by tests to avoid real network.
 
     Returns:
-        The absolute public URL returned by Litterbox.
+        The public URL built from the deterministic bin and file name.
 
     Raises:
         ArchiveTooLargeError: The archive exceeds the 1 GiB upload limit.
-        UploadError: The file cannot be read, the service is unreachable or
-            the response is not a valid URL.
+        UploadError: The file cannot be read, Filebin is unreachable,
+            answers with a status other than 201, or confirms another file
+            name.
     """
     try:
         size = archive.stat().st_size
@@ -47,42 +50,52 @@ def upload_archive(
         raise UploadError("не удалось прочитать архив для заливки") from ex
     if size > MAX_ARCHIVE_BYTES:
         raise ArchiveTooLargeError("архив больше 1 ГБ, заливка пропущена")
+    target = _public_url(archive)
+    headers = {
+        "Content-Type": "application/zip",
+        "Content-Length": str(size),
+    }
     try:
         with archive.open("rb") as handle:
-            files: dict[str, tuple[str, IO[bytes], str]] = {
-                "fileToUpload": (archive.name, handle, "application/zip")
-            }
-            data = {"reqtype": "fileupload", "time": LITTERBOX_TIME}
             if client is None:
                 response = httpx.post(
-                    LITTERBOX_URL,
-                    data=data,
-                    files=files,
+                    target,
+                    content=handle,
+                    headers=headers,
                     timeout=timeout,
                 )
             else:
                 response = client.post(
-                    LITTERBOX_URL,
-                    data=data,
-                    files=files,
+                    target,
+                    content=handle,
+                    headers=headers,
                     timeout=timeout,
                 )
     except (OSError, httpx.HTTPError) as ex:
-        raise UploadError("Litterbox недоступен или не ответил вовремя") from ex
-    if not 200 <= response.status_code < 300:
-        raise UploadError(f"Litterbox вернул ошибку (код {response.status_code})")
-    url = response.text.strip()
-    if not _is_public_url(url):
-        raise UploadError("Litterbox вернул некорректный URL")
-    return url
+        raise UploadError("Filebin недоступен или не ответил вовремя") from ex
+    if response.status_code != 201:
+        raise UploadError(f"Filebin вернул ошибку (код {response.status_code})")
+    _check_file_name(response, archive.name)
+    return target
 
 
-def _is_public_url(value: str) -> bool:
-    """Return whether *value* is a single absolute HTTP(S) URL."""
-    if not value or any(char.isspace() for char in value):
-        return False
+def _public_url(archive: Path) -> str:
+    """Build the deterministic public URL of one archive on Filebin."""
+    bin_id = f"{FILEBIN_BIN_PREFIX}{archive.stem}"
+    return f"{FILEBIN_URL}/{bin_id}/{archive.name}"
+
+
+def _check_file_name(response: httpx.Response, filename: str) -> None:
+    """Reject a 201 whose JSON names another file; an absent name is fine."""
     try:
-        parts = urlsplit(value)
+        payload = response.json()
     except ValueError:
-        return False
-    return parts.scheme in {"http", "https"} and bool(parts.netloc)
+        return
+    if not isinstance(payload, dict):
+        return
+    file_info = payload.get("file")
+    if not isinstance(file_info, dict):
+        return
+    declared = file_info.get("filename")
+    if isinstance(declared, str) and declared != filename:
+        raise UploadError("Filebin подтвердил другое имя файла")

@@ -78,7 +78,7 @@ curl -f -X POST http://127.0.0.1:8000/api/v1/content/deliveries \
 
 Для ручной выдачи сотен видео есть асинхронный
 `POST /api/v1/content/deliveries/link`: он отвечает `202`, собирает zip в фоне,
-заливает его на Litterbox на 24 часа и оставляет на сервере sidecar со ссылкой.
+заливает его на Filebin, а на сервере на 24 часа оставляет sidecar со ссылкой.
 Статус — `GET /api/v1/content/deliveries/<language>/<request_id>`. Страница
 опрашивает его раз в 3 секунды: `ready` даёт внешнюю ссылку, `ready_local` —
 локальный архив, `empty` — «нет видео», `409` — «сборка уже идёт». Скачивание

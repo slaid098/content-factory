@@ -146,7 +146,7 @@ def create_delivery_link(
     request: DeliveryRequest,
     settings: Annotated[Settings, Depends(require_delivery_token)],
 ) -> DeliveryJobInfo:
-    """Start a background build and Litterbox upload for a manual delivery."""
+    """Start a background build and Filebin upload for a manual delivery."""
     _check_delivery_limit(request, settings)
     try:
         return start_delivery_job(
@@ -240,7 +240,7 @@ def get_archives(
             "description": "Stored zip archive",
             "content": {"application/zip": {}},
         },
-        status.HTTP_302_FOUND: {"description": "Redirect to a Litterbox archive"},
+        status.HTTP_302_FOUND: {"description": "Redirect to a Filebin archive"},
         status.HTTP_401_UNAUTHORIZED: {"description": "Missing or invalid token"},
         status.HTTP_404_NOT_FOUND: {"description": "Archive is missing or expired"},
         status.HTTP_503_SERVICE_UNAVAILABLE: {"description": "Delivery is disabled"},
@@ -251,7 +251,7 @@ def download_archive(
     request_id: Annotated[UUID, Path()],
     settings: Annotated[Settings, Depends(require_delivery_token)],
 ) -> Response:
-    """Return a stored archive, redirecting to Litterbox for remote archives."""
+    """Return a stored archive, redirecting to Filebin for remote archives."""
     location = resolve_archive(
         settings.data_dir,
         language,
