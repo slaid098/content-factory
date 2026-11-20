@@ -183,9 +183,9 @@ def test_deploy_script_checks_worker() -> None:
 
     assert "docker compose ps -q worker" in script
     assert "docker inspect" in script
-    assert ".State.Status" in script
-    assert ".State.RestartCount" in script
-    assert ".State.ExitCode" in script
+    assert "--format '{{.State.Status}} {{.RestartCount}} {{.State.ExitCode}}'" in script
+    assert ".RestartCount" in script
+    assert ".State.RestartCount" not in script
     assert "WORKER_STARTUP_SECONDS=60" in script
     assert "WORKER_STABILITY_SECONDS=15" in script
     assert "docker compose logs" in script
@@ -232,7 +232,8 @@ def test_deploy_runbook_documents_worker_contract() -> None:
     assert "docker compose ps -q worker" in runbook
     assert "State.Status" in runbook
     assert "RestartCount" in runbook
-    assert "ExitCode" in runbook
+    assert "State.ExitCode" in runbook
+    assert "State.RestartCount" not in runbook
     assert "60 с" in runbook
     assert "15 с" in runbook
     assert "one-shot" in runbook

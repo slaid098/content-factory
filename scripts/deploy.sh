@@ -108,7 +108,7 @@ healthcheck() {
 inspect_worker() {
     local container="$1"
     docker inspect \
-        --format '{{.State.Status}} {{.State.RestartCount}} {{.State.ExitCode}}' \
+        --format '{{.State.Status}} {{.RestartCount}} {{.State.ExitCode}}' \
         "$container" 2>/dev/null
 }
 

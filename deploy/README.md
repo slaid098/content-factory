@@ -549,8 +549,8 @@ sudo -n /usr/local/sbin/content-factory-deploy <full-sha>
 7. проверяет `worker`: находит контейнер через `docker compose ps -q worker`
    (пустой вывод — провал), до 60 с ждёт `State.Status == running`, затем не
    меньше 15 с (опрос раз в 2 с) требует, чтобы статус оставался `running`, а
-   `State.RestartCount` не рос; при провале печатает `State.Status`,
-   `RestartCount`, `ExitCode` и ограниченный
+   `RestartCount` не рос; при провале печатает `State.Status`,
+   `RestartCount`, `State.ExitCode` и ограниченный
    `docker compose logs --tail 50 worker`;
 8. при провале healthcheck API или проверки `worker` возвращает предыдущий
    `IMAGE_TAG` и поднимает прежний образ; если предыдущего образа нет
