@@ -1,58 +1,253 @@
 # Деплой content-factory
 
-Прод-контур — Linux 1: Docker Compose поднимает API и Prefect-воркер, том
-`app_data` живёт на хосте, партнёр забирает готовые файлы по SFTP, конфиг и
-список запросов уходят в ночной бэкап.
+Прод-контур — Linux 1 (`193.3.168.35`): Docker Compose поднимает API и
+Prefect-воркер, том `app_data` живёт на хосте, партнёр забирает готовые файлы
+по SFTP, конфиг и список запросов уходят в ночной бэкап. Prefect 3 работает на
+Linux 2 (`https://prefect.slaid098.dev/api`).
+
+Проект лежит в `/root/dockers/content-factory`, как остальные compose-проекты
+Linux 1. Корень принадлежит root, поэтому деплой-скрипт запускается через
+`sudo`, а пользователь `deploy` не входит в группу `docker`.
 
 ## 1. Требования
 
 - Docker Engine 24+ и Docker Compose 2.24+ (`env_file.required`,
-  `host-gateway`).
-- Prefect 3 API, доступный воркеру (свой сервер или Prefect Cloud).
+  `host-gateway`). На Linux 1 Docker поставлен из snap: compose не задаёт
+  `security_opt` с запретом повышения привилегий, иначе AppArmor snapd
+  запрещает контейнерам `exec` (snapd LP#1908448). `cap_drop: ALL` и
+  loopback-порт остаются.
+- Prefect 3.6.x на Linux 2, доступный воркеру. Клиент в образе закреплён
+  `prefect>=3.6,<3.7`, чтобы совпадать с сервером 3.6.22.
 - BitBrowser и MCP-сервер, доступные из контейнера.
 - OpenSSH 9.0+ на хосте: нужны `sftp-server -P`/`-p` и запрос `copy-data`.
   Проверка: `ssh -V` и `sftp-server -Q requests` (на Debian/Ubuntu бинарник
   лежит в `/usr/lib/openssh/sftp-server`).
-- `sudo`, `git`, `curl`.
-
-Репозиторий и `app_data` держим в `/opt/content-factory`; дальше используется
-этот путь.
+- `sudo`, `git`, `curl`; на Linux 1 — пользователь `deploy` с ключом и
+  sudoers-правилом на деплой-скрипт.
+- Право `packages: write` у workflow: образ публикуется в GHCR.
 
 Сеть Compose зафиксирована в `compose.yaml`: `172.28.0.0/24`, шлюз
 `172.28.0.1`. Сервисы на хосте должны слушать этот адрес, а не `0.0.0.0`:
 из контейнера `host.docker.internal` указывает именно на шлюз. Если подсеть
 занята, поменяйте её в `compose.yaml` и адреса в этом runbook.
 
-## 2. Переменные окружения
+## 2. Контур CI/CD
 
-Секретов в репозитории нет. Compose читает `.env` из корня проекта: значения
-подставляются в `compose.yaml`, а сервис `worker` получает файл целиком через
-`env_file`. Поэтому тонкие настройки `SUPPLIER_*` можно менять в `.env`, не
-редактируя compose.
+`.github/workflows/ci.yml` состоит из трёх job'ов:
 
-| Переменная | Обязательно | По умолчанию | Назначение |
-|---|---|---|---|
-| `PREFECT_API_URL` | да | `http://host.docker.internal:4200/api` | API Prefect 3 |
-| `PREFECT_API_KEY` | для Prefect Cloud | — | ключ API; для локального сервера не нужен |
-| `TELEGRAM_BOT_TOKEN` | нет | — | токен бота для алертов; без него алерты выключены |
-| `TELEGRAM_CHAT_ID` | нет | — | чат алертов |
-| `SUPPLIER_MCP_URL` | да | `http://host.docker.internal:8765` | MCP-сервер BitBrowser |
-| `SUPPLIER_BITBROWSER_URL` | да | `http://host.docker.internal:54529` | API BitBrowser |
-| `SUPPLIER_PROFILE_ID` | да | — | профиль BitBrowser для TikTok |
-| `SUPPLIER_PROXY` | нет | — | прокси движка: `http://`, `https://`, `socks5://`, `socks5h://` |
-| `CONTENT_FACTORY_LOG_LEVEL` | нет | `INFO` | уровень loguru в API и воркере |
+| Job | Когда | Что делает |
+|---|---|---|
+| `ci` | push и PR в `main` | `ruff check`, `ruff format --check`, `mypy`, `pytest` |
+| `build-push` | после `ci`, только push в `main` или `workflow_dispatch` из `main` | собирает образ и пушит `latest` и `sha-<7>` |
+| `deploy` | после `build-push` | заходит по SSH на Linux 1 и запускает `/usr/local/sbin/content-factory-deploy <full-sha>` |
 
-`CONTENT_FACTORY_DATA_DIR=/app/app_data` жёстко задан в `compose.yaml`: это
-путь внутри контейнера, а на хосте ему соответствует `./app_data`.
+Красный `ci` останавливает цепочку: `build-push` объявлен с `needs: ci`, а
+`deploy` — с `needs: build-push`. PR и push в другие ветки не собирают и не
+деплоят образ.
 
-Каталог репозитория принадлежит root (требование sshd, см. §3), поэтому
-`.env` создаём так:
+Образ: `ghcr.io/slaid098/content-factory`. Теги:
+
+- `latest` — образ из последнего зелёного `main`;
+- `sha-<7>` — первые 7 символов `github.sha`, иммутабельный тег для отката.
+
+`deploy` использует `concurrency: group: deploy-production` с
+`cancel-in-progress: false`: одновременные пуши в `main` выполняются по
+очереди, текущий деплой не обрывается.
+
+Секретов в репозитории нет. Workflow получает их из GitHub Secrets:
+
+| Секрет | Значение |
+|---|---|
+| `DEPLOY_HOST` | `193.3.168.35` |
+| `DEPLOY_PORT` | `22` |
+| `DEPLOY_USER` | `deploy` |
+| `DEPLOY_SSH_KEY` | приватный ключ `deploy` целиком, без пароля |
+| `DEPLOY_KNOWN_HOSTS` | вывод `ssh-keyscan` для Linux 1 |
+
+Если секреты не заданы, `deploy` падает на шаге `Check deploy secrets` с
+перечислением отсутствующих имён. `build-push` от этого не страдает: он
+выполняется раньше и не использует `DEPLOY_*`.
+
+В GitHub → Settings → Actions → General → Workflow permissions должно быть
+разрешено `Read and write permissions` (или явный доступ к пакетам). При
+read-only настройке `GITHUB_TOKEN` не сможет запушить образ в GHCR, даже
+если в workflow указано `packages: write`.
+
+Ветку `main` держите под branch protection: деплой-скрипт выполняет от root
+код из этого коммита, поэтому в неё не должно попадать ничего в обход
+зелёного `ci`.
+
+## 3. Пользователи, ключи и sudoers
+
+### 3.1 Пользователи и ключи
+
+На Linux 1:
 
 ```bash
-test -f /opt/content-factory/.env || \
-  sudo install -m 600 -o "$(id -u)" -g "$(id -g)" /dev/null /opt/content-factory/.env
-cat > /opt/content-factory/.env <<'EOF'
-PREFECT_API_URL=http://host.docker.internal:4200/api
+sudo useradd --system --user-group --create-home --shell /bin/bash \
+  --home-dir /home/deploy deploy
+sudo install -d -m 700 -o deploy -g deploy /home/deploy/.ssh
+```
+
+На рабочей машине создайте отдельную пару для GitHub Actions:
+
+```bash
+ssh-keygen -t ed25519 -C "github-actions content-factory" \
+  -N "" -f content-factory-deploy
+ssh-keyscan -p 22 193.3.168.35 > content-factory-known-hosts
+```
+
+Публичный ключ установите на Linux 1 с ограничениями `restrict` (запрещает
+PTY и пересылки, но оставляет выполнение команды):
+
+```bash
+{ printf 'restrict '; cat content-factory-deploy.pub; } | \
+  sudo install -m 600 -o deploy -g deploy /dev/stdin \
+  /home/deploy/.ssh/authorized_keys
+```
+
+Приватный ключ и `known_hosts` попадут только в GitHub Secrets (см. §3.3).
+Не коммитьте их и не копируйте в `/root/dockers/content-factory`.
+
+Для SFTP нужен отдельный системный пользователь `content-partner`, которому
+принадлежит `app_data/content/ru`. Создайте его и положите публичный ключ
+партнёра:
+
+```bash
+sudo groupadd --system content-partner
+sudo useradd --system --gid content-partner \
+  --home-dir /var/lib/content-partner --shell /usr/sbin/nologin content-partner
+sudo install -d -m 700 -o content-partner -g content-partner /var/lib/content-partner
+sudo install -d -m 700 -o content-partner -g content-partner /var/lib/content-partner/.ssh
+sudo install -m 600 -o content-partner -g content-partner \
+  partner-key.pub /var/lib/content-partner/.ssh/authorized_keys
+```
+
+Ключ можно дополнительно ограничить префиксом `restrict` в `authorized_keys`:
+он запрещает PTY и пересылки на уровне ключа. Не путайте `content-partner` с
+пользователем `deploy`: первый читает готовые файлы по SFTP, второй только
+запускает деплой через sudo.
+
+### 3.2 sudoers
+
+Пользователь `deploy` не входит в группу `docker` и не имеет доступа к
+каталогу `/root`. Единственное повышение прав — один скрипт:
+
+```bash
+sudo tee /etc/sudoers.d/content-factory-deploy >/dev/null <<'EOF'
+deploy ALL=(root) NOPASSWD: /usr/local/sbin/content-factory-deploy
+EOF
+sudo chmod 0440 /etc/sudoers.d/content-factory-deploy
+sudo visudo -c
+```
+
+Правило без аргументов разрешает любые аргументы команды, поэтому скрипт сам
+проверяет, что аргумент — 40-символьный SHA в нижнем регистре, и до этой
+проверки ничего не меняет. Скрипт также требует `EUID=0`, так что прямой
+запуск от `deploy` ничего не делает.
+
+Проверка правила:
+
+```bash
+sudo -u deploy sudo -n -l /usr/local/sbin/content-factory-deploy
+```
+
+### 3.3 Секреты GitHub
+
+С рабочей машины, где авторизован `gh` с правами администратора репозитория:
+
+```bash
+gh secret set DEPLOY_HOST --body "193.3.168.35"
+gh secret set DEPLOY_PORT --body "22"
+gh secret set DEPLOY_USER --body "deploy"
+gh secret set DEPLOY_SSH_KEY < content-factory-deploy
+gh secret set DEPLOY_KNOWN_HOSTS < content-factory-known-hosts
+gh secret list
+```
+
+`DEPLOY_SSH_KEY` — приватный ключ, `DEPLOY_KNOWN_HOSTS` — файл из
+`ssh-keyscan`. Оба значения передаются только через Secrets и не печатаются
+в логах workflow.
+
+## 4. Клон и каталоги
+
+Клонируйте репозиторий от root: деплой-скрипт делает `git fetch` и
+`git reset --hard`, поэтому рабочая копия должна быть root-овой.
+
+```bash
+sudo install -d -m 0755 /root/dockers
+sudo git clone https://github.com/slaid098/content-factory.git \
+  /root/dockers/content-factory
+sudo chown -R root:root /root/dockers/content-factory
+```
+
+Если репозиторий приватный, настройте для root read-доступ (deploy key или
+credential helper) до первого `git fetch`. Ключ не храните в репозитории.
+
+### 4.1 Каталоги chroot
+
+sshd требует, чтобы **каждый** компонент пути `ChrootDirectory` принадлежал
+root и не был доступен на запись группе и остальным. `/root` имеет режим
+`0700` — для chroot это допустимо, sshd заходит в путь от root. Корень
+репозитория, `app_data` и `app_data/content` — `root:root 0755`:
+
+```bash
+sudo chown root:root /root/dockers/content-factory
+sudo chmod 0755 /root/dockers/content-factory
+sudo install -d -o root -g root -m 0755 \
+  /root/dockers/content-factory/app_data \
+  /root/dockers/content-factory/app_data/content
+namei -l /root/dockers/content-factory/app_data/content
+```
+
+Последняя команда должна показать `root root` на всех компонентах и
+отсутствие права записи для group/other. `/root` при этом остаётся
+`drwx------`.
+
+`app_data/config`, `app_data/db` и `app_data/queries` принадлежат `10001`
+(пользователь `app` в контейнере) и закрыты от остальных (`0750`); это делает
+одноразовый сервис `init` при каждом `docker compose up`.
+
+### 4.2 Каталоги языков
+
+Приложение не может писать в root-овый `content`, поэтому каталоги активных
+языков создаются заранее:
+
+```bash
+sudo install -d -o 10001 -g content-partner -m 2770 \
+  /root/dockers/content-factory/app_data/content/ru
+```
+
+`setgid` (`2770`) заставляет новые файлы наследовать группу
+`content-partner`, поэтому партнёр читает их. Файлы поставщик создаёт с umask
+`022`, то есть `0644`: группа получает только чтение. Не делайте файлы
+group-writable: `-P write` запрещает SFTP-запрос `write`, но `open` с
+`O_TRUNC` остаётся доступен, и такой файл можно обнулить. Проверка:
+
+```bash
+sudo find /root/dockers/content-factory/app_data/content -perm /022 -print
+```
+
+Вывод должен быть пустым.
+
+Если включаете ещё язык, создайте для него такой же каталог и добавьте его в
+`config.yaml`. Выключенные языки каталогов не получают и партнёру не видны.
+
+## 5. Переменные окружения
+
+Compose читает `.env` из корня проекта: значения подставляются в
+`compose.yaml`, а сервис `worker` получает файл целиком через `env_file`.
+Поэтому тонкие настройки `SUPPLIER_*` можно менять в `.env`, не редактируя
+compose. Каталог принадлежит root, поэтому `.env` создаём от root с правами
+`0600`:
+
+```bash
+# install выполняйте только при первом создании: существующий .env не
+# перезаписывайте, иначе потеряете ключи и настройки.
+sudo install -m 600 -o root -g root /dev/null \
+  /root/dockers/content-factory/.env
+sudo tee /root/dockers/content-factory/.env >/dev/null <<'EOF'
+PREFECT_API_URL=https://prefect.slaid098.dev/api
 PREFECT_API_KEY=
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
@@ -64,9 +259,25 @@ SUPPLIER_PROXY=
 EOF
 ```
 
-Файл уже принадлежит деплой-пользователю, поэтому `cat >` работает без
-`sudo`. У `SUPPLIER_*` с таймингами и лимитами есть значения по умолчанию в
-коде. Полный список:
+| Переменная | Обязательно | По умолчанию | Назначение |
+|---|---|---|---|
+| `PREFECT_API_URL` | да | `http://host.docker.internal:4200/api` | API Prefect 3 на Linux 2 |
+| `PREFECT_API_KEY` | для защищённого API | — | ключ API Prefect |
+| `TELEGRAM_BOT_TOKEN` | нет | — | токен бота для алертов; без него алерты выключены |
+| `TELEGRAM_CHAT_ID` | нет | — | чат алертов |
+| `SUPPLIER_MCP_URL` | да | `http://host.docker.internal:8765` | MCP-сервер BitBrowser |
+| `SUPPLIER_BITBROWSER_URL` | да | `http://host.docker.internal:54529` | API BitBrowser |
+| `SUPPLIER_PROFILE_ID` | да | — | профиль BitBrowser для TikTok |
+| `SUPPLIER_PROXY` | нет | — | прокси движка: `http://`, `https://`, `socks5://`, `socks5h://` |
+| `CONTENT_FACTORY_LOG_LEVEL` | нет | `INFO` | уровень loguru в API и воркере |
+
+`IMAGE_TAG` в `.env` не задаётся: его экспортирует деплой-скрипт. Значение по
+умолчанию — `latest` (`compose.yaml`). `CONTENT_FACTORY_DATA_DIR=/app/app_data`
+жёстко задан в `compose.yaml`: это путь внутри контейнера, а на хосте ему
+соответствует `./app_data`.
+
+У `SUPPLIER_*` с таймингами и лимитами есть значения по умолчанию в коде.
+Полный список:
 
 <details>
 <summary>Необязательные настройки поставщика</summary>
@@ -92,83 +303,25 @@ EOF
 
 </details>
 
-После изменения `.env` пересоздайте воркер:
+После первого деплоя пересоздайте воркер на том же образе, что API. Тег
+берётся из `.deploy-image-tag`, который пишет деплой-скрипт:
 
 ```bash
-docker compose up -d worker
+cd /root/dockers/content-factory
+sudo env IMAGE_TAG="$(sudo cat .deploy-image-tag)" docker compose pull worker
+sudo env IMAGE_TAG="$(sudo cat .deploy-image-tag)" docker compose up -d worker
 ```
 
-## 3. Пользователь и каталоги
+Без `IMAGE_TAG` compose подставит `latest` и может поднять не тот образ,
+который задеплоен (а при отсутствии `latest` — собрать локальный из `build: .`).
 
-### 3.1 Пользователь партнёра
-
-```bash
-sudo groupadd --system content-partner
-sudo useradd --system --gid content-partner \
-  --home-dir /var/lib/content-partner --shell /usr/sbin/nologin content-partner
-sudo install -d -m 700 -o content-partner -g content-partner /var/lib/content-partner
-sudo install -d -m 700 -o content-partner -g content-partner /var/lib/content-partner/.ssh
-sudo install -m 600 -o content-partner -g content-partner \
-  partner-key.pub /var/lib/content-partner/.ssh/authorized_keys
-```
-
-Ключ можно дополнительно ограничить префиксом `restrict` в `authorized_keys`:
-он запрещает PTY и пересылки на уровне ключа.
-
-### 3.2 Путь chroot
-
-sshd требует, чтобы **каждый** компонент пути `ChrootDirectory` принадлежал
-root и не был доступен на запись группе и остальным. Поэтому корень
-репозитория, `app_data` и `app_data/content` — `root:root 0755`:
-
-```bash
-sudo chown root:root /opt/content-factory
-sudo chmod 0755 /opt/content-factory
-sudo install -d -o root -g root -m 0755 \
-  /opt/content-factory/app_data \
-  /opt/content-factory/app_data/content
-namei -l /opt/content-factory/app_data/content
-```
-
-Последняя команда должна показать `root root` и `drwxr-xr-x` на всех
-компонентах.
-
-`app_data/config`, `app_data/db` и `app_data/queries` принадлежат `10001`
-(пользователь `app` в контейнере) и закрыты от остальных (`0750`); это делает
-одноразовый сервис `init` при каждом `docker compose up`.
-
-### 3.3 Каталоги языков
-
-Приложение не может писать в root-овый `content`, поэтому каталоги активных
-языков создаются заранее:
-
-```bash
-sudo install -d -o 10001 -g content-partner -m 2770 \
-  /opt/content-factory/app_data/content/ru
-```
-
-`setgid` (`2770`) заставляет новые файлы наследовать группу
-`content-partner`, поэтому партнёр читает их. Файлы поставщик создаёт с umask
-`022`, то есть `0644`: группа получает только чтение. Не делайте файлы
-group-writable: `-P write` запрещает SFTP-запрос `write`, но `open` с
-`O_TRUNC` остаётся доступен, и такой файл можно обнулить. Проверка:
-
-```bash
-sudo find /opt/content-factory/app_data/content -perm /022 -print
-```
-
-Вывод должен быть пустым.
-
-Если включаете ещё язык, создайте для него такой же каталог и добавьте его в
-`config.yaml`. Выключенные языки каталогов не получают и партнёру не видны.
-
-## 4. sshd
+## 6. sshd
 
 Создайте `/etc/ssh/sshd_config.d/60-content-partner.conf`:
 
 ```sshconfig
 Match User content-partner
-    ChrootDirectory /opt/content-factory/app_data/content
+    ChrootDirectory /root/dockers/content-factory/app_data/content
     ForceCommand internal-sftp -d / -P write,setstat,fsetstat,mkdir,rmdir,rename,posix-rename,symlink,hardlink,lsetstat,fsync,copy-data,users-groups-by-id,expand-path,home-directory
     DisableForwarding yes
     AuthenticationMethods publickey
@@ -204,7 +357,7 @@ sudo sshd -T -C user=content-partner,host=localhost,addr=127.0.0.1 \
 sudo systemctl reload ssh    # на Debian/Ubuntu; на других системах — sshd
 ```
 
-### 4.1 Проверка
+### 6.1 Проверка
 
 ```bash
 sftp content-partner@<host>
@@ -224,23 +377,109 @@ OpenSSH не различает «создать» и «удалить» на у
 запросы. Существующие `*.mp4` при этом не обнуляются: они принадлежат `app`
 и не доступны партнёру на запись.
 
-## 5. Запуск
+## 7. GHCR
+
+Workflow пушит образ в `ghcr.io/slaid098/content-factory` от
+`GITHUB_TOKEN` с правом `packages: write`; отдельный PAT для CI не нужен.
+
+Пакет GHCR по умолчанию приватный. Тогда `docker compose pull` на Linux 1
+падает с `unauthorized`. Два варианта:
+
+1. **Публичный пакет.** GitHub → Packages → `content-factory` → Package
+   settings → Change visibility → Public. Образ содержит код и зависимости,
+   но не `.env` и не `app_data`; перед сменой видимости убедитесь, что в
+   слоях нет секретов.
+2. **Приватный пакет и read-токен.** Создайте PAT с единственным правом
+   `read:packages` и залогиньтесь от root на Linux 1:
+
+   ```bash
+   sudo docker login ghcr.io -u slaid098
+   # токен вводится в приглашении, в git и .env он не попадает
+   ```
+
+   Токен сохранится в `/root/.docker/config.json`. Тот же логин нужен после
+   ротации токена.
+
+Проверка:
 
 ```bash
-cd /opt/content-factory
-docker compose config -q
-docker compose up -d --build
-docker compose ps
+sudo docker pull ghcr.io/slaid098/content-factory:latest
+```
+
+Деплой-скрипт логин не выполняет: он рассчитывает, что публичный пакет
+доступен без авторизации или credential уже лежит у root.
+
+## 8. Prefect и первый деплой
+
+### 8.1 Пул до первого деплоя
+
+Пул `content-factory` создаётся на сервере Prefect до первого запуска
+deploy-скрипта. Если пула нет, `prefect deploy --all` только предупреждает, а
+контейнеры уже обновлены; flow при этом не запустится.
+
+С машины с настроенным Prefect CLI:
+
+```bash
+PREFECT_API_URL=https://prefect.slaid098.dev/api \
+  prefect work-pool create content-factory --type process
+```
+
+Если пул уже существует, команда завершится ошибкой — это нормально.
+Проверка:
+
+```bash
+PREFECT_API_URL=https://prefect.slaid098.dev/api prefect work-pool ls
+```
+
+### 8.2 Установка деплой-скрипта
+
+`scripts/deploy.sh` — исходник root-овой копии. Установите её после клона и
+переустанавливайте вручную при каждом изменении скрипта: автоматический
+деплой не должен обновлять код, который выполняется от root.
+
+```bash
+sudo install -o root -g root -m 0755 \
+  /root/dockers/content-factory/scripts/deploy.sh \
+  /usr/local/sbin/content-factory-deploy
+```
+
+Проверка контракта без изменений:
+
+```bash
+sudo /usr/local/sbin/content-factory-deploy not-a-sha; echo "exit=$?"  # 2
+```
+
+### 8.3 Первый запуск
+
+Запустите workflow вручную из `main` (или сделайте push в `main`):
+
+```bash
+gh workflow run ci.yml --ref main
+gh run watch
+```
+
+Цепочка: `ci` → `build-push` (образ `latest` и `sha-<7>`) → `deploy`
+(`sudo /usr/local/sbin/content-factory-deploy <full-sha>`). Деплой-скрипт
+проверит SHA, обновит git-чекаут, выполнит `docker compose pull`, поднимет
+сервисы и проверит API.
+
+Проверка на Linux 1:
+
+```bash
+cd /root/dockers/content-factory
+sudo docker compose ps
 curl -f http://127.0.0.1:8000/api/v1/stock
+sudo cat .deploy-image-tag
+sudo docker image ls ghcr.io/slaid098/content-factory
 ```
 
 - API слушает `0.0.0.0:8000` внутри контейнера, наружу порт опубликован
-  только как `127.0.0.1:8000:8000`.
+  только как `127.0.0.1:8000:8000`; новых публичных портов нет.
 - Одноразовый сервис `init` создаёт `app_data/{config,db,queries}`, выставляет
   им владельца `10001` и фиксирует `root:root 0755` на `app_data` и
   `content`. Каталог `ru` он не трогает.
-- Том `./app_data` переживает `docker compose down` и пересоздание
-  контейнеров.
+- `./app_data` — bind mount с хоста, в образ не попадает. `git reset --hard`
+  его не удаляет: каталог в `.gitignore`.
 - Healthcheck API: `curl -f http://127.0.0.1:8000/api/v1/stock`.
 
 Снаружи API доступен только через SSH-туннель:
@@ -250,66 +489,70 @@ ssh -L 8000:127.0.0.1:8000 user@linux-1
 curl -f http://127.0.0.1:8000/api/v1/stock
 ```
 
-## 6. Prefect
-
-Prefect на хосте должен слушать шлюз сети Compose (`172.28.0.1`), а не
-`0.0.0.0`:
+После первого деплоя проверьте deployment:
 
 ```bash
-prefect server start --host 172.28.0.1
-```
-
-BitBrowser и MCP-сервер тоже привяжите к `172.28.0.1`. Если приложение не
-умеет выбирать адрес, закройте порты firewall'ом и разрешите только подсеть
-`172.28.0.0/24`:
-
-```bash
-sudo ufw allow OpenSSH
-sudo ufw allow from 172.28.0.0/24 to any port 4200 proto tcp
-sudo ufw allow from 172.28.0.0/24 to any port 54529 proto tcp
-sudo ufw allow from 172.28.0.0/24 to any port 8765 proto tcp
-sudo ufw default deny incoming
-```
-
-`PREFECT_API_URL` по умолчанию `http://host.docker.internal:4200/api`; из
-контейнера это имя резолвится в шлюз `172.28.0.1`.
-
-Создайте pool и зарегистрируйте deployment. `docker compose run` не зависит
-от перезапусков воркера:
-
-```bash
-cd /opt/content-factory
-docker compose run --rm --no-deps worker \
-  prefect work-pool create content-factory --type process
-docker compose run --rm --no-deps worker prefect deploy --all
-docker compose up -d worker
-```
-
-Если pool уже существует, первая команда завершится ошибкой — это нормально,
-переходите ко второй.
-
-Проверка:
-
-```bash
-docker compose run --rm --no-deps worker prefect deployment ls
-docker compose logs -f worker
+cd /root/dockers/content-factory
+sudo docker compose run --rm --no-deps worker prefect deployment ls
+sudo docker compose logs -f worker
 ```
 
 `prefect.yaml` задаёт cron `*/15 * * * *`, конкурентность 1 и pool
 `content-factory`. Шаг `set_working_directory` указывает воркеру на `/app`,
 где в образе лежат `src/` и `prefect.yaml`; поэтому deployment не зависит от
 текущего каталога процесса. Cron — это тик планировщика; решение о
-производстве принимает сам flow по `config.run.interval`, поэтому холостые тики
-выходят сразу.
+производстве принимает сам flow по `config.run.interval`, поэтому холостые
+тики выходят сразу.
 
-`prefect.yaml` вшит в образ. После его изменения пересоберите воркер:
+## 9. Автоматический деплой и откат
+
+`deploy` job выполняет на Linux 1 ровно одну команду от root:
 
 ```bash
-docker compose up -d --build worker
-docker compose run --rm --no-deps worker prefect deploy --all
+sudo -n /usr/local/sbin/content-factory-deploy <full-sha>
 ```
 
-## 7. Бэкап
+`scripts/deploy.sh`:
+
+1. принимает только `^[0-9a-f]{40}$`, иначе `exit 2` до любых изменений;
+2. проверяет, что запущен от root, и что есть `docker`, `git`, `curl`;
+3. читает предыдущий тег из `.deploy-image-tag` (по умолчанию `latest`);
+4. делает `git fetch` (без интерактивного запроса пароля) и
+   `git reset --hard <sha>`;
+5. экспортирует `IMAGE_TAG=sha-<7>`, выполняет `docker compose pull` и
+   `docker compose up -d --remove-orphans`;
+6. до 30 раз с интервалом 2 с проверяет
+   `http://127.0.0.1:8000/api/v1/stock`;
+7. при провале healthcheck возвращает предыдущий `IMAGE_TAG` и поднимает
+   прежний образ; если предыдущего образа нет локально, оставляет новый и
+   завершается с ненулевым кодом;
+8. только после успеха записывает новый тег в `.deploy-image-tag`;
+9. best-effort запускает `docker compose run --rm --no-deps worker prefect
+   deploy --all`: ошибка Prefect логируется, но не отменяет уже выполненный
+   `up -d`.
+
+Скрипт не печатает `.env`, не включает `set -x` и не логирует секреты.
+Полный SHA остаётся в логе деплоя; тег `sha-<7>` может совпасть у двух
+коммитов, для репозитория это допустимо.
+
+Ручной откат на предыдущий коммит:
+
+```bash
+cd /root/dockers/content-factory
+sudo git log --oneline -5
+sudo /usr/local/sbin/content-factory-deploy <full-sha-предыдущего-коммита>
+```
+
+Скрипт сам скачает тег `sha-<7>` старого коммита, поднимет контейнеры и
+обновит `.deploy-image-tag`. Если нужного образа нет ни локально, ни в
+GHCR, сначала опубликуйте его или соберите вручную. Откат не трогает
+`app_data`.
+
+Изменения в `scripts/deploy.sh` вступают в силу только после ручной
+переустановки из §8.2. Изменения в `scripts/backup_app_data.sh` — после
+переустановки из §10.
+
+## 10. Бэкап
 
 `scripts/backup_app_data.sh` архивирует только `app_data/config` и
 `app_data/queries`; `content/` и `db/` не трогаются. Если каталогов нет,
@@ -321,13 +564,13 @@ Cron работает от root, поэтому установите root-ову
 ```bash
 sudo install -d -m 700 -o root -g root /var/backups/content-factory
 sudo install -o root -g root -m 0755 \
-  /opt/content-factory/scripts/backup_app_data.sh \
+  /root/dockers/content-factory/scripts/backup_app_data.sh \
   /usr/local/sbin/content-factory-backup
 sudo crontab -e
 ```
 
 ```cron
-15 3 * * * APP_DATA_DIR=/opt/content-factory/app_data BACKUP_DIR=/var/backups/content-factory /usr/local/sbin/content-factory-backup >> /var/log/content-factory-backup.log 2>&1
+15 3 * * * APP_DATA_DIR=/root/dockers/content-factory/app_data BACKUP_DIR=/var/backups/content-factory /usr/local/sbin/content-factory-backup >> /var/log/content-factory-backup.log 2>&1
 ```
 
 `APP_DATA_DIR` обязателен: установленная копия не может вычислить корень
@@ -336,26 +579,44 @@ sudo crontab -e
 Проверка:
 
 ```bash
-sudo env APP_DATA_DIR=/opt/content-factory/app_data \
+sudo env APP_DATA_DIR=/root/dockers/content-factory/app_data \
   BACKUP_DIR=/var/backups/content-factory \
   /usr/local/sbin/content-factory-backup
 sudo tar -tzf /var/backups/content-factory/content-factory-config-queries-*.tar.gz
 ```
 
 Восстановление: остановите `worker`, распакуйте архив в `app_data/`, затем
-запустите `docker compose up -d worker` — `init` выставит владельца файлов
-`10001`.
-
-## 8. Обновление
+поднимите воркер на задеплоенном образе (тег лежит в `.deploy-image-tag`):
 
 ```bash
-cd /opt/content-factory
-sudo git pull
-docker compose up -d --build
-docker compose run --rm --no-deps worker prefect deploy --all   # если менялся prefect.yaml
-sudo install -o root -g root -m 0755 scripts/backup_app_data.sh \
-  /usr/local/sbin/content-factory-backup                        # если менялся скрипт
+cd /root/dockers/content-factory
+sudo env IMAGE_TAG="$(sudo cat .deploy-image-tag)" docker compose pull worker
+sudo env IMAGE_TAG="$(sudo cat .deploy-image-tag)" docker compose up -d worker
 ```
 
-`sudo git pull` нужен потому, что корень репозитория принадлежит root.
-`app_data` и состояние цикла в `app_data/db/db.sqlite3` при этом сохраняются.
+`init` выставит владельца файлов `10001`.
+
+## 11. Обновление и обслуживание
+
+Обычное обновление — push в `main`. CI собирает образ, деплой обновляет
+Linux 1 и регистрирует deployment в Prefect.
+
+Ручной прогон того же контура:
+
+```bash
+gh workflow run ci.yml --ref main
+```
+
+Локальная проверка compose на Linux 1:
+
+```bash
+cd /root/dockers/content-factory
+sudo docker compose config -q
+sudo docker compose ps
+```
+
+Если менялся `prefect.yaml`, деплой-скрипт сам выполнит `prefect deploy
+--all`. Если менялся `scripts/deploy.sh` или `scripts/backup_app_data.sh`,
+переустановите соответствующую root-овую копию вручную. Если менялся
+`compose.yaml`, новый образ всё равно приходит из GHCR; локальный
+`build: .` остаётся только для разработки (`docker compose up -d --build`).

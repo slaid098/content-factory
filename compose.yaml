@@ -1,10 +1,16 @@
 name: content-factory
 
+# Docker на Linux 1 установлен из snap: AppArmor-профиль snapd запрещает exec
+# контейнерам с флагом, запрещающим повышение привилегий (snapd LP#1908448),
+# поэтому security_opt здесь не задаём. cap_drop: ALL и loopback-порт остаются.
+#
 # Общий образ для API, воркера и одноразового init-контейнера.
+# В проде образ приходит из GHCR (деплой-скрипт задаёт IMAGE_TAG), а build
+# остаётся для локальной разработки: `docker compose up -d --build`.
 x-image: &image
   build:
     context: .
-  image: content-factory:0.1.0
+  image: ghcr.io/slaid098/content-factory:${IMAGE_TAG:-latest}
 
 # Фиксированный шлюз нужен, чтобы сервисы на хосте (Prefect, BitBrowser, MCP)
 # слушали конкретный адрес, а не 0.0.0.0. host.docker.internal указывает сюда.
@@ -35,8 +41,6 @@ services:
         chmod 0755 /app/app_data /app/app_data/content
     volumes:
       - ./app_data:/app/app_data
-    security_opt:
-      - "no-new-privileges:true"
     restart: "no"
 
   api:
@@ -54,8 +58,6 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
-    security_opt:
-      - "no-new-privileges:true"
     cap_drop:
       - ALL
     healthcheck:
@@ -90,8 +92,6 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
-    security_opt:
-      - "no-new-privileges:true"
     cap_drop:
       - ALL
     # BitBrowser и Prefect могут жить на хосте Linux 1.

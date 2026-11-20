@@ -20,6 +20,9 @@ coverage.xml
 app_data/
 backups/
 
+# Состояние деплоя: тег предыдущего образа для отката.
+.deploy-image-tag
+
 # Secrets
 .env
 .env.*
