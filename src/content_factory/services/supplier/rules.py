@@ -19,7 +19,7 @@ def evaluate(metadata: VideoMetadata, cfg: SupplierConfig) -> FilterDecision:
     Returns:
         Решение с первой причиной отказа либо одобрение.
     """
-    if metadata.is_aigc or metadata.aigc_description:
+    if metadata.has_aigc_signal():
         return FilterDecision(False, "aigc")
     if metadata.duration is None or metadata.duration <= 0:
         return FilterDecision(False, "invalid_duration")

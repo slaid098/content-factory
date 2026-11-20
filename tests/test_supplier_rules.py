@@ -44,6 +44,8 @@ def meta() -> VideoMetadata:
         duration=12,
         is_aigc=False,
         aigc_description="",
+        aigc_label="",
+        moderation_aigc_label="",
         width=1080,
         height=1920,
         create_time=NOW - 30 * 86400,
@@ -66,6 +68,9 @@ def test_boundaries_are_approved(meta: VideoMetadata, cfg: SupplierConfig) -> No
     [
         ({"is_aigc": True}, "aigc"),
         ({"aigc_description": "AI generated"}, "aigc"),
+        ({"aigc_label": "1"}, "aigc"),
+        ({"moderation_aigc_label": "1"}, "aigc"),
+        ({"aigc_label": "1", "moderation_aigc_label": "1"}, "aigc"),
         ({"duration": None}, "invalid_duration"),
         ({"duration": 0}, "invalid_duration"),
         ({"duration": 4}, "duration_out_of_range"),
@@ -94,6 +99,27 @@ def test_rejections(
     decision = evaluate(replace(meta, **changes), cfg)
     assert decision.approved is False
     assert decision.reason == reason
+
+
+@pytest.mark.parametrize("field", ["aigc_label", "moderation_aigc_label"])
+def test_aigc_label_takes_priority_over_other_filters(
+    meta: VideoMetadata,
+    cfg: SupplierConfig,
+    field: str,
+) -> None:
+    labelled = replace(meta, **{field: "1", "duration": None})
+
+    decision = evaluate(labelled, cfg)
+
+    assert decision.approved is False
+    assert decision.reason == "aigc"
+
+
+def test_missing_aigc_labels_are_approved(meta: VideoMetadata, cfg: SupplierConfig) -> None:
+    decision = evaluate(replace(meta, aigc_label="", moderation_aigc_label=""), cfg)
+
+    assert decision.approved is True
+    assert decision.reason is None
 
 
 def test_minimum_age_boundary_is_approved(meta: VideoMetadata, cfg: SupplierConfig) -> None:
