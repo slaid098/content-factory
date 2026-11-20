@@ -251,6 +251,13 @@ h3 {
   background: var(--accent);
 }
 
+.stock-meta {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Topics: read-only stock breakdown */
 
 .topics {

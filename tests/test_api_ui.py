@@ -168,6 +168,40 @@ def test_archive_downloads_are_plain_links() -> None:
     assert "is-expired" in archives
 
 
+def test_stock_panel_shows_titles_and_disk_usage() -> None:
+    html = _ui_text("index.html")
+    app_script = _ui_text("app.js")
+    css = _ui_text("app.css")
+
+    assert 'id="archives-summary"' in html
+    assert "stock-meta" in app_script
+    assert ".stock-meta" in css
+    for field in ("titled", "untitled", "video_bytes"):
+        assert field in app_script
+    assert "formatBytes(row.videoBytes)" in app_script
+    assert "с названием" in app_script
+    assert "без ·" in app_script
+    assert "ждём обработку названий" in app_script
+
+
+def test_archives_header_counts_only_local_archives() -> None:
+    archives = _ui_text("archives.js")
+    app_script = _ui_text("app.js")
+
+    assert 'summary: byId("archives-summary")' in app_script
+    assert 'item.storage === "local"' in archives
+    assert "renderSummary" in archives
+    assert "formatBytes(bytes)" in archives
+    assert "локальные архивы; удалённые в Filebin диск не занимают" in archives
+
+
+def test_archives_panel_has_no_management_buttons() -> None:
+    html = _ui_text("index.html")
+    panel = html.split('aria-labelledby="archives-title"', 1)[1].split("</section>", 1)[0]
+
+    assert "<button" not in panel
+
+
 def test_queries_tab_uses_list_search_and_append() -> None:
     queries = _ui_text("queries.js")
 

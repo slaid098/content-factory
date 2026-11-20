@@ -3,7 +3,7 @@
 import { MESSAGES, requestJson } from "./api.js";
 import { createArchivesView } from "./archives.js";
 import { byId, el, setMessage, setText, toggle } from "./dom.js";
-import { formatCount, formatDateTime, languageName } from "./format.js";
+import { formatBytes, formatCount, formatDateTime, languageName } from "./format.js";
 import { createJobsView } from "./jobs.js";
 import { createQueriesView } from "./queries.js";
 import { createSettingsView } from "./settings.js";
@@ -36,6 +36,7 @@ const archives = createArchivesView({
   list: byId("archives"),
   empty: byId("archives-empty"),
   message: byId("archives-message"),
+  summary: byId("archives-summary"),
 });
 
 const jobs = createJobsView(
@@ -95,7 +96,7 @@ const tabs = createTabs({
 });
 
 const state = {
-  /** @type {Array<{language: string, stock: number, target: number}>} */
+  /** @type {Array<{language: string, stock: number, target: number, titled: number, untitled: number, videoBytes: number}>} */
   languages: [],
   /** @type {string | null} */
   language: null,
@@ -140,6 +141,9 @@ async function loadStock() {
       language: String(row.language),
       stock: Number(row.stock) || 0,
       target: Number(row.target) || 0,
+      titled: Number(row.titled) || 0,
+      untitled: Number(row.untitled) || 0,
+      videoBytes: Number(row.video_bytes) || 0,
     }));
     if (!state.languages.some((row) => row.language === state.language)) {
       state.language = state.languages.length > 0 ? state.languages[0].language : null;
@@ -179,7 +183,13 @@ function renderStock() {
     fill.style.width = `${Math.min(100, Math.max(0, share))}%`;
     bar.append(fill);
 
-    item.append(head, bar);
+    const meta = el(
+      "p",
+      "stock-meta",
+      `${formatCount(row.titled)} с названием · ${formatCount(row.untitled)} без · ${formatBytes(row.videoBytes)}`,
+    );
+
+    item.append(head, bar, meta);
     return item;
   });
 
@@ -209,7 +219,7 @@ function fillLanguageSelect(select, withStock) {
   }
   const options = state.languages.map((row) => {
     const label = withStock
-      ? `${languageName(row.language)} — ${formatCount(row.stock)}`
+      ? `${languageName(row.language)} — ${formatCount(row.titled)}`
       : languageName(row.language);
     const option = el("option", "", label);
     option.value = row.language;
@@ -282,11 +292,13 @@ function buildTopic(label, count) {
 
 function stockTotal() {
   const row = state.languages.find((item) => item.language === state.language);
-  return row ? row.stock : 0;
+  return row ? row.titled : 0;
 }
 
 function updateAvailable() {
   const total = stockTotal();
+  const row = state.languages.find((item) => item.language === state.language);
+  const stock = row ? row.stock : 0;
   const limit = Math.max(1, Math.min(state.maxCount, total));
   ui.count.max = String(limit);
   const current = Number.parseInt(ui.count.value, 10);
@@ -296,16 +308,26 @@ function updateAvailable() {
     ui.count.value = String(limit);
   }
 
-  ui.available.textContent = total > 0 ? `доступно ${formatCount(total)}` : "видео пока нет";
-  if (total === 0) {
+  if (stock === 0) {
+    ui.available.textContent = "видео пока нет";
     ui.countHint.textContent = "Видео этого языка пока нет — выберите другой язык.";
+  } else if (total === 0) {
+    ui.available.textContent = "ждём обработку названий";
+    ui.countHint.textContent =
+      "Видео уже скачаны, но названий пока нет — они появятся здесь после обработки.";
   } else {
+    ui.available.textContent = `доступно ${formatCount(total)}`;
     const suffix = state.maxCount < total ? " (лимит из настроек)" : "";
     ui.countHint.textContent = `Не больше ${formatCount(limit)} за раз${suffix}.`;
   }
   ui.count.disabled = state.busy || total === 0;
   ui.deliver.disabled = state.busy || total === 0;
-  ui.deliver.title = total === 0 ? "В стоке выбранного языка нет видео" : "";
+  ui.deliver.title =
+    stock === 0
+      ? "В стоке выбранного языка нет видео"
+      : total === 0
+        ? "Ждём обработку названий видео"
+        : "";
 }
 
 /**

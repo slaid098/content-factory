@@ -40,6 +40,9 @@ def get_stock() -> StockResponse:
                 stock=row.stock,
                 target=row.target,
                 deficit=row.deficit,
+                titled=row.titled,
+                untitled=row.untitled,
+                video_bytes=row.video_bytes,
             )
             for row in snapshot.languages
         ),

@@ -14,6 +14,9 @@ class LanguageStock:
     stock: int
     target: int
     deficit: int
+    titled: int
+    untitled: int
+    video_bytes: int
 
 
 @dataclass(frozen=True, slots=True)
