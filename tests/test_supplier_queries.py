@@ -5,7 +5,10 @@ from pathlib import Path
 import pytest
 
 from content_factory.exceptions.errors import SupplierError
-from content_factory.services.supplier.queries import load_language_queries
+from content_factory.services.supplier.queries import (
+    load_language_queries,
+    read_language_queries,
+)
 
 
 def test_load_language_queries_reads_one_language(tmp_path: Path) -> None:
@@ -21,6 +24,23 @@ def test_load_language_queries_reads_one_language(tmp_path: Path) -> None:
         ("как пережить расставание", "ru"),
     ]
     assert queries[0].source == tmp_path / "ru.txt"
+
+
+def test_read_language_queries_keeps_order_and_duplicates(tmp_path: Path) -> None:
+    (tmp_path / "ru.txt").write_text(
+        "# comment\n  третий   запрос \nпервый\nтретий запрос\n",
+        encoding="utf-8",
+    )
+
+    assert read_language_queries(tmp_path, "ru") == [
+        "третий запрос",
+        "первый",
+        "третий запрос",
+    ]
+
+
+def test_read_language_queries_missing_file_returns_empty(tmp_path: Path) -> None:
+    assert read_language_queries(tmp_path, "de") == []
 
 
 def test_load_language_queries_normalizes_whitespace(tmp_path: Path) -> None:
