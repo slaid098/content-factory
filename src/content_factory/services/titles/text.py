@@ -57,11 +57,11 @@ def normalize_title_key(title: str) -> str:
 
 
 def description_title_key(description: str) -> str:
-    """Build the uniqueness key of the title that a description would produce.
+    """Build the uniqueness key of the TikTok description.
 
-    The delivery fallback takes the TikTok description, removes hashtags and
-    collapses whitespace; a generated title equal to that text repeats an
-    existing title and must not be stored.
+    A generated title equal to that text repeats an existing title and must
+    not be stored. Hashtags are removed and whitespace is collapsed before
+    normalizing.
 
     Args:
         description: Raw ``videos.description`` value; may be empty.

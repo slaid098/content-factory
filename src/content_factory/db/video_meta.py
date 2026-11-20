@@ -24,8 +24,8 @@ class VideoMeta:
 def load_video_meta(db_path: Path, hashes: Sequence[str]) -> dict[str, VideoMeta]:
     """Read descriptions, topics and durations for downloaded files by SHA-256.
 
-    A missing or unreadable database must not stop the caller: delivery falls
-    back to a generic title, and title generation uses an empty description.
+    A missing or unreadable database must not stop the caller: delivery finds
+    no topic matches, and title generation uses an empty description.
 
     Args:
         db_path: Path to the operational SQLite database.

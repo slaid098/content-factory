@@ -20,14 +20,14 @@ from content_factory.services.delivery.archives import (
 )
 from content_factory.services.delivery.metadata import VideoMeta, load_video_meta
 from content_factory.services.delivery.service import (
+    _build_archive,
     cleanup_expired_archives,
     count_archive_files,
     deliver,
 )
 from content_factory.services.delivery.sidecars import save_job
-from content_factory.services.delivery.titles import load_descriptions, normalize_title
 from content_factory.services.delivery.topics import collect_topics
-from delivery_helpers import REQUEST_ID, add_downloaded_video, touch_mp4
+from delivery_helpers import REQUEST_ID, add_downloaded_video, add_title, touch_mp4
 
 _MOMENT = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
 
@@ -94,77 +94,13 @@ def _zip_bytes(data: bytes, entry: str) -> bytes:
         return archive.read(entry)
 
 
-def test_normalize_title_collapses_whitespace() -> None:
-    assert normalize_title("  Привет \n\t мир  ", "ru") == "Привет мир"
-
-
-def test_normalize_title_removes_hashtags() -> None:
-    assert normalize_title("Лучшее видео #рек #fyp", "ru") == "Лучшее видео"
-
-
-@pytest.mark.parametrize(
-    ("description", "language", "expected"),
-    [
-        (None, "ru", "Видео"),
-        ("   ", "ru", "Видео"),
-        ("#рек", "ru", "Видео"),
-        (None, "en", "Video"),
-        ("", "de", "Video"),
-    ],
-)
-def test_normalize_title_falls_back_per_language(
-    description: str | None,
-    language: str,
-    expected: str,
-) -> None:
-    assert normalize_title(description, language) == expected
-
-
-def test_normalize_title_truncates_to_100_characters_with_ellipsis() -> None:
-    title = normalize_title("а" * 150, "ru")
-
-    assert len(title) == 100
-    assert title.endswith("…")
-    assert title == "а" * 99 + "…"
-
-
-def test_normalize_title_keeps_short_text() -> None:
-    assert normalize_title("Короткий заголовок", "ru") == "Короткий заголовок"
-
-
-def test_load_descriptions_maps_sha_to_video_description(tmp_path: Path) -> None:
-    db_path = tmp_path / "db" / "db.sqlite3"
-    add_downloaded_video(db_path, "a" * 64, "Описание видео")
-    add_downloaded_video(db_path, "b" * 64, "Другое описание")
-
-    descriptions = load_descriptions(db_path, ["a" * 64, "missing"])
-
-    assert descriptions == {"a" * 64: "Описание видео"}
-
-
-def test_load_descriptions_without_hashes_returns_empty(tmp_path: Path) -> None:
-    assert load_descriptions(tmp_path / "missing.sqlite3", []) == {}
-
-
-def test_load_descriptions_without_database_returns_empty(tmp_path: Path) -> None:
-    assert load_descriptions(tmp_path / "missing.sqlite3", ["a" * 64]) == {}
-
-
-def test_load_descriptions_with_broken_database_returns_empty(tmp_path: Path) -> None:
-    db_path = tmp_path / "db" / "db.sqlite3"
-    db_path.parent.mkdir(parents=True)
-    db_path.write_bytes(b"not a database")
-
-    assert load_descriptions(db_path, ["a" * 64]) == {}
-
-
-def test_deliver_builds_zip_with_real_titles_and_removes_sources(tmp_path: Path) -> None:
+def test_deliver_builds_zip_with_stored_titles_and_removes_sources(tmp_path: Path) -> None:
     first_hash = "a" * 64
     second_hash = "b" * 64
     first = touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{first_hash}.mp4", b"first")
     second = touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{second_hash}.mp4", b"second")
-    add_downloaded_video(tmp_path / "db" / "db.sqlite3", first_hash, "  Первое #рек ")
-    add_downloaded_video(tmp_path / "db" / "db.sqlite3", second_hash, "#толькотеги")
+    add_title(tmp_path / "db" / "db.sqlite3", first_hash, "Первое название")
+    add_title(tmp_path / "db" / "db.sqlite3", second_hash, "Второе название")
 
     archive = deliver(tmp_path, "ru", 10, REQUEST_ID, retention_hours=24)
 
@@ -174,10 +110,118 @@ def test_deliver_builds_zip_with_real_titles_and_removes_sources(tmp_path: Path)
     assert sorted(_zip_entries(data)) == ["001.json", "001.mp4", "002.json", "002.mp4"]
     assert _zip_bytes(data, "001.mp4") == b"first"
     assert _zip_bytes(data, "002.mp4") == b"second"
-    assert _zip_title(data) == "Первое"
-    assert _zip_title(data, "002.json") == "Видео"
+    assert _zip_title(data) == "Первое название"
+    assert _zip_title(data, "002.json") == "Второе название"
     assert not first.exists()
     assert not second.exists()
+
+
+def test_deliver_returns_none_for_untitled_stock_and_keeps_file(tmp_path: Path) -> None:
+    source = touch_mp4(tmp_path / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"))
+
+    assert deliver(tmp_path, "ru", 1, REQUEST_ID, retention_hours=24) is None
+    assert source.is_file()
+    assert not _archive_path(tmp_path).exists()
+
+
+def test_deliver_selects_only_titled_files_from_mixed_stock(tmp_path: Path) -> None:
+    first_hash = "a" * 64
+    second_hash = "b" * 64
+    first = touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{first_hash}.mp4", b"first")
+    second = touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{second_hash}.mp4", b"second")
+    untitled = [
+        touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{sha256}.mp4")
+        for sha256 in ("c" * 64, "d" * 64, "e" * 64)
+    ]
+    add_title(tmp_path / "db" / "db.sqlite3", first_hash, "Первое название")
+    add_title(tmp_path / "db" / "db.sqlite3", second_hash, "Второе название")
+
+    archive = deliver(tmp_path, "ru", 10, REQUEST_ID, retention_hours=24)
+
+    assert archive is not None
+    data = archive.read_bytes()
+    assert sorted(_zip_entries(data)) == ["001.json", "001.mp4", "002.json", "002.mp4"]
+    assert _zip_bytes(data, "001.mp4") == b"first"
+    assert _zip_bytes(data, "002.mp4") == b"second"
+    assert not first.exists()
+    assert not second.exists()
+    assert all(path.is_file() for path in untitled)
+
+
+def test_deliver_writes_stored_title_without_normalization(tmp_path: Path) -> None:
+    sha256 = "a" * 64
+    title = "  Тихий   вечер #рек  " + "я" * 100
+    touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{sha256}.mp4")
+    add_title(tmp_path / "db" / "db.sqlite3", sha256, title)
+
+    archive = deliver(tmp_path, "ru", 1, REQUEST_ID, retention_hours=24)
+
+    assert archive is not None
+    assert _zip_title(archive.read_bytes()) == title
+
+
+def test_deliver_returns_none_without_database(tmp_path: Path) -> None:
+    source = touch_mp4(tmp_path / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"))
+
+    assert deliver(tmp_path, "ru", 1, REQUEST_ID, retention_hours=24) is None
+    assert source.is_file()
+    assert not (tmp_path / "db" / "db.sqlite3").exists()
+
+
+def test_deliver_returns_none_without_titles_table(tmp_path: Path) -> None:
+    sha256 = "a" * 64
+    source = touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{sha256}.mp4")
+    add_downloaded_video(tmp_path / "db" / "db.sqlite3", sha256, "Описание без названия")
+
+    assert deliver(tmp_path, "ru", 1, REQUEST_ID, retention_hours=24) is None
+    assert source.is_file()
+
+
+def test_deliver_returns_none_with_broken_database(tmp_path: Path) -> None:
+    source = touch_mp4(tmp_path / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"))
+    db_path = tmp_path / "db" / "db.sqlite3"
+    db_path.parent.mkdir(parents=True)
+    db_path.write_bytes(b"not a database")
+
+    assert deliver(tmp_path, "ru", 1, REQUEST_ID, retention_hours=24) is None
+    assert source.is_file()
+
+
+def test_deliver_skips_empty_title(tmp_path: Path) -> None:
+    sha256 = "a" * 64
+    source = touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{sha256}.mp4")
+    add_title(tmp_path / "db" / "db.sqlite3", sha256, "", norm="empty-title")
+
+    assert deliver(tmp_path, "ru", 1, REQUEST_ID, retention_hours=24) is None
+    assert source.is_file()
+
+
+def test_deliver_skips_whitespace_only_title(tmp_path: Path) -> None:
+    sha256 = "a" * 64
+    source = touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{sha256}.mp4")
+    add_title(tmp_path / "db" / "db.sqlite3", sha256, " \t\n ", norm="whitespace-title")
+
+    assert deliver(tmp_path, "ru", 1, REQUEST_ID, retention_hours=24) is None
+    assert source.is_file()
+    assert not _archive_path(tmp_path).exists()
+    assert not (tmp_path / ARCHIVE_DIR / "ru").exists()
+
+
+def test_deliver_after_title_is_added(tmp_path: Path) -> None:
+    sha256 = "a" * 64
+    source = touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{sha256}.mp4")
+
+    assert deliver(tmp_path, "ru", 1, REQUEST_ID, retention_hours=24) is None
+    assert source.is_file()
+    add_title(tmp_path / "db" / "db.sqlite3", sha256, "Название после прогона")
+
+    archive = deliver(tmp_path, "ru", 1, REQUEST_ID, retention_hours=24)
+
+    assert archive is not None
+    data = archive.read_bytes()
+    assert _zip_entries(data) == ["001.mp4", "001.json"]
+    assert _zip_title(data) == "Название после прогона"
+    assert not source.exists()
 
 
 def test_deliver_returns_none_without_mp4(tmp_path: Path) -> None:
@@ -185,46 +229,17 @@ def test_deliver_returns_none_without_mp4(tmp_path: Path) -> None:
     assert not (tmp_path / ARCHIVE_DIR / "ru").exists()
 
 
-def test_deliver_uses_fallback_title_without_database(tmp_path: Path) -> None:
-    touch_mp4(tmp_path / CONTENT_DIR / "en" / ("a" * 64 + ".mp4"))
-
-    archive = deliver(tmp_path, "en", 1, REQUEST_ID, retention_hours=24)
-
-    assert archive is not None
-    assert _zip_title(archive.read_bytes()) == "Video"
-
-
-def test_deliver_uses_fallback_title_for_empty_description(tmp_path: Path) -> None:
-    sha256 = "a" * 64
-    touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{sha256}.mp4")
-    add_downloaded_video(tmp_path / "db" / "db.sqlite3", sha256, "")
-
-    archive = deliver(tmp_path, "ru", 1, REQUEST_ID, retention_hours=24)
-
-    assert archive is not None
-    assert _zip_title(archive.read_bytes()) == "Видео"
-
-
-def test_deliver_uses_fallback_titles_for_broken_database(tmp_path: Path) -> None:
-    touch_mp4(tmp_path / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"))
-    db_path = tmp_path / "db" / "db.sqlite3"
-    db_path.parent.mkdir(parents=True)
-    db_path.write_bytes(b"not a database")
-
-    archive = deliver(tmp_path, "ru", 1, REQUEST_ID, retention_hours=24)
-
-    assert archive is not None
-    assert _zip_title(archive.read_bytes()) == "Видео"
-
-
 def test_deliver_returns_existing_archive_and_keeps_new_stock(tmp_path: Path) -> None:
     directory = tmp_path / CONTENT_DIR / "ru"
     touch_mp4(directory / "a.mp4", b"old")
+    add_title(tmp_path / "db" / "db.sqlite3", "a", "Старое название")
     first = deliver(tmp_path, "ru", 1, REQUEST_ID, retention_hours=24)
     assert first is not None
     original = first.read_bytes()
     touch_mp4(directory / "0.mp4", b"new")
     touch_mp4(directory / "b.mp4", b"other")
+    add_title(tmp_path / "db" / "db.sqlite3", "0", "Новое название")
+    add_title(tmp_path / "db" / "db.sqlite3", "b", "Третье название")
 
     second = deliver(tmp_path, "ru", 2, REQUEST_ID, retention_hours=24)
 
@@ -237,11 +252,13 @@ def test_deliver_returns_existing_archive_and_keeps_new_stock(tmp_path: Path) ->
 def test_deliver_rebuilds_expired_archive(tmp_path: Path) -> None:
     directory = tmp_path / CONTENT_DIR / "ru"
     touch_mp4(directory / "a.mp4", b"old")
+    add_title(tmp_path / "db" / "db.sqlite3", "a", "Старое название")
     archive = deliver(tmp_path, "ru", 1, REQUEST_ID, retention_hours=24, now=_MOMENT)
     assert archive is not None
     old = _MOMENT - timedelta(hours=25)
     os.utime(archive, (old.timestamp(), old.timestamp()))
     touch_mp4(directory / "new.mp4", b"new")
+    add_title(tmp_path / "db" / "db.sqlite3", "new", "Новое название")
 
     rebuilt = deliver(tmp_path, "ru", 1, REQUEST_ID, retention_hours=24, now=_MOMENT)
 
@@ -256,6 +273,7 @@ def test_deliver_discards_tmp_and_keeps_sources_on_build_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = touch_mp4(tmp_path / CONTENT_DIR / "ru" / "a.mp4")
+    add_title(tmp_path / "db" / "db.sqlite3", "a", "Название для ошибки")
 
     def _fail(self: zipfile.ZipFile, *args: object, **kwargs: object) -> None:
         raise OSError("disk full")
@@ -270,11 +288,25 @@ def test_deliver_discards_tmp_and_keeps_sources_on_build_error(
     assert list(archive_dir.glob("*.tmp")) == []
 
 
+def test_build_archive_discards_tmp_when_title_is_missing(tmp_path: Path) -> None:
+    source = touch_mp4(tmp_path / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"))
+    archive_path = _archive_path(tmp_path)
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(KeyError):
+        _build_archive(archive_path, [source], {})
+
+    assert source.is_file()
+    assert not archive_path.exists()
+    assert not archive_path.with_suffix(".tmp").exists()
+
+
 def test_deliver_returns_archive_when_source_unlink_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = touch_mp4(tmp_path / CONTENT_DIR / "ru" / "a.mp4")
+    add_title(tmp_path / "db" / "db.sqlite3", "a", "Название без удаления")
     original_unlink = Path.unlink
 
     def _deny_mp4(self: Path, *args: object, **kwargs: object) -> None:
@@ -471,6 +503,9 @@ def test_deliver_with_query_keeps_other_topics_in_stock(tmp_path: Path) -> None:
     add_downloaded_video(db_path, first_hash, "Первое", query="курятник")
     add_downloaded_video(db_path, second_hash, "Второе", query="курятник")
     add_downloaded_video(db_path, other_hash, "Другое", query="заправка")
+    add_title(db_path, first_hash, "Первое название")
+    add_title(db_path, second_hash, "Второе название")
+    add_title(db_path, other_hash, "Другое название")
 
     archive = deliver(tmp_path, "ru", 10, REQUEST_ID, "курятник", retention_hours=24)
 
@@ -493,6 +528,7 @@ def test_deliver_query_is_case_sensitive(tmp_path: Path) -> None:
         "Описание",
         query="Курятник",
     )
+    add_title(tmp_path / "db" / "db.sqlite3", sha256, "Название с регистром")
 
     assert deliver(tmp_path, "ru", 1, REQUEST_ID, "курятник", retention_hours=24) is None
     assert source.is_file()
@@ -507,10 +543,37 @@ def test_deliver_returns_none_when_query_has_no_matches(tmp_path: Path) -> None:
         "Описание",
         query="заправка",
     )
+    add_title(tmp_path / "db" / "db.sqlite3", sha256, "Название другой темы")
 
     assert deliver(tmp_path, "ru", 1, REQUEST_ID, "курятник", retention_hours=24) is None
     assert source.is_file()
     assert not _archive_path(tmp_path).exists()
+
+
+def test_deliver_query_searches_only_titled_files(tmp_path: Path) -> None:
+    named_hash = "a" * 64
+    untitled_hash = "b" * 64
+    other_hash = "c" * 64
+    named = touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{named_hash}.mp4", b"named")
+    untitled = touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{untitled_hash}.mp4", b"untitled")
+    other = touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{other_hash}.mp4", b"other")
+    db_path = tmp_path / "db" / "db.sqlite3"
+    add_downloaded_video(db_path, named_hash, "Первое", query="курятник")
+    add_downloaded_video(db_path, untitled_hash, "Второе", query="курятник")
+    add_downloaded_video(db_path, other_hash, "Третье", query="заправка")
+    add_title(db_path, named_hash, "Названное про курятник")
+    add_title(db_path, other_hash, "Названное про заправку")
+
+    archive = deliver(tmp_path, "ru", 10, REQUEST_ID, "курятник", retention_hours=24)
+
+    assert archive is not None
+    data = archive.read_bytes()
+    assert _zip_entries(data) == ["001.mp4", "001.json"]
+    assert _zip_bytes(data, "001.mp4") == b"named"
+    assert _zip_title(data) == "Названное про курятник"
+    assert not named.exists()
+    assert untitled.is_file()
+    assert other.is_file()
 
 
 def test_deliver_with_query_and_missing_database_returns_none(tmp_path: Path) -> None:
@@ -675,6 +738,8 @@ def test_find_archive_returns_none_when_stat_fails(
 def test_count_archive_files_counts_mp4_entries(tmp_path: Path) -> None:
     touch_mp4(tmp_path / CONTENT_DIR / "ru" / "a.mp4", b"first")
     touch_mp4(tmp_path / CONTENT_DIR / "ru" / "b.mp4", b"second")
+    add_title(tmp_path / "db" / "db.sqlite3", "a", "Первое название")
+    add_title(tmp_path / "db" / "db.sqlite3", "b", "Второе название")
     archive = deliver(tmp_path, "ru", 10, REQUEST_ID, retention_hours=24)
     assert archive is not None
 

@@ -22,7 +22,13 @@ from content_factory.services.delivery.scheduler import (
 )
 from content_factory.services.delivery.service import cleanup_expired_archives
 from content_factory.services.delivery.sidecars import save_job
-from delivery_helpers import REQUEST_ID, REQUEST_ID_TEXT, add_downloaded_video, touch_mp4
+from delivery_helpers import (
+    REQUEST_ID,
+    REQUEST_ID_TEXT,
+    add_downloaded_video,
+    add_title,
+    touch_mp4,
+)
 
 _TOKEN = "delivery-secret"
 _MOMENT = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
@@ -177,12 +183,45 @@ def test_delivery_returns_204_without_mp4(data_dir: Path) -> None:
     assert response.content == b""
 
 
-def test_delivery_returns_zip_with_real_title_and_removes_stock(data_dir: Path) -> None:
+def test_delivery_returns_204_when_mp4_untitled(data_dir: Path) -> None:
+    source = touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"))
+
+    response = _post(_client())
+
+    assert response.status_code == 204
+    assert response.content == b""
+    assert source.is_file()
+    assert not (data_dir / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.zip").exists()
+
+
+def test_delivery_returns_zip_after_title_is_added_to_untitled_stock(data_dir: Path) -> None:
+    sha256 = "a" * 64
+    title = "  Вечернее название  "
+    source = touch_mp4(data_dir / CONTENT_DIR / "ru" / f"{sha256}.mp4", b"video")
+    client = _client()
+
+    first = _post(client)
+
+    assert first.status_code == 204
+    assert source.is_file()
+
+    add_title(data_dir / "db" / "db.sqlite3", sha256, title)
+    second = _post(client)
+
+    assert second.status_code == 200
+    assert second.headers["Content-Type"] == "application/zip"
+    with zipfile.ZipFile(io.BytesIO(second.content)) as archive:
+        assert archive.namelist() == ["001.mp4", "001.json"]
+        assert json.loads(archive.read("001.json")) == {"title": title}
+    assert not source.exists()
+
+
+def test_delivery_returns_zip_with_stored_title_and_removes_stock(data_dir: Path) -> None:
     first_hash = "a" * 64
     second_hash = "b" * 64
     first = touch_mp4(data_dir / CONTENT_DIR / "ru" / f"{first_hash}.mp4", b"first")
     second = touch_mp4(data_dir / CONTENT_DIR / "ru" / f"{second_hash}.mp4", b"second")
-    add_downloaded_video(data_dir / "db" / "db.sqlite3", first_hash, "Реальное описание")
+    add_title(data_dir / "db" / "db.sqlite3", first_hash, "Название из titles")
 
     response = _post(_client())
 
@@ -194,7 +233,7 @@ def test_delivery_returns_zip_with_real_title_and_removes_stock(data_dir: Path) 
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         assert archive.namelist() == ["001.mp4", "001.json"]
         assert archive.read("001.mp4") == b"first"
-        assert json.loads(archive.read("001.json")) == {"title": "Реальное описание"}
+        assert json.loads(archive.read("001.json")) == {"title": "Название из titles"}
     assert not first.exists()
     assert second.is_file()
     archive_path = data_dir / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.zip"
@@ -207,10 +246,12 @@ def test_delivery_returns_zip_with_real_title_and_removes_stock(data_dir: Path) 
 def test_delivery_is_idempotent_by_request_id(data_dir: Path) -> None:
     directory = data_dir / CONTENT_DIR / "ru"
     touch_mp4(directory / "a.mp4", b"old")
+    add_title(data_dir / "db" / "db.sqlite3", "a", "Старое название")
     client = _client()
     first = _post(client)
     assert first.status_code == 200
     touch_mp4(directory / "0.mp4", b"new")
+    add_title(data_dir / "db" / "db.sqlite3", "0", "Новое название")
 
     second = _post(client)
 
@@ -222,6 +263,7 @@ def test_delivery_is_idempotent_by_request_id(data_dir: Path) -> None:
 
 def test_delivery_uses_canonical_request_id_in_filename(data_dir: Path) -> None:
     touch_mp4(data_dir / CONTENT_DIR / "ru" / "a.mp4")
+    add_title(data_dir / "db" / "db.sqlite3", "a", "Название канонического id")
     uppercase = str(REQUEST_ID).upper()
 
     response = _post(_client(), request_id=uppercase)
@@ -456,6 +498,8 @@ def test_delivery_with_query_returns_only_matching_file(data_dir: Path) -> None:
         "Второе",
         query="заправка",
     )
+    add_title(data_dir / "db" / "db.sqlite3", first_hash, "Первое название")
+    add_title(data_dir / "db" / "db.sqlite3", second_hash, "Второе название")
 
     response = _post(_client(), query="курятник")
 
@@ -463,6 +507,7 @@ def test_delivery_with_query_returns_only_matching_file(data_dir: Path) -> None:
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         assert archive.namelist() == ["001.mp4", "001.json"]
         assert archive.read("001.mp4") == b"first"
+        assert json.loads(archive.read("001.json")) == {"title": "Первое название"}
     assert not first.exists()
     assert second.is_file()
 
@@ -476,6 +521,7 @@ def test_delivery_with_query_without_matches_returns_204(data_dir: Path) -> None
         "Описание",
         query="заправка",
     )
+    add_title(data_dir / "db" / "db.sqlite3", sha256, "Название другой темы")
 
     response = _post(_client(), query="курятник")
 
@@ -497,6 +543,7 @@ def test_delivery_with_query_and_broken_database_returns_204(data_dir: Path) -> 
 
 def test_archives_lists_created_archive_with_expiry(data_dir: Path) -> None:
     touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"))
+    add_title(data_dir / "db" / "db.sqlite3", "a" * 64, "Название архива")
     assert _post(_client()).status_code == 200
     archive_path = data_dir / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.zip"
 
@@ -516,6 +563,7 @@ def test_archives_lists_created_archive_with_expiry(data_dir: Path) -> None:
 
 def test_archives_hides_expired_archive(data_dir: Path) -> None:
     touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"))
+    add_title(data_dir / "db" / "db.sqlite3", "a" * 64, "Название архива")
     assert _post(_client()).status_code == 200
     expired_id = UUID(int=2)
     expired = _touch_archive(
@@ -606,6 +654,7 @@ def test_archives_lists_same_request_id_in_two_languages(data_dir: Path) -> None
 
 def test_download_archive_returns_same_bytes(data_dir: Path) -> None:
     touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"), b"video")
+    add_title(data_dir / "db" / "db.sqlite3", "a" * 64, "Название архива")
     assert _post(_client()).status_code == 200
     archive_path = data_dir / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.zip"
     stored = archive_path.read_bytes()
@@ -626,6 +675,7 @@ def test_download_archive_returns_same_bytes(data_dir: Path) -> None:
 
 def test_download_archive_after_expiry_returns_404(data_dir: Path) -> None:
     touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"))
+    add_title(data_dir / "db" / "db.sqlite3", "a" * 64, "Название архива")
     assert _post(_client()).status_code == 200
     archive_path = data_dir / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.zip"
     stale = (datetime.now(UTC) - timedelta(hours=25)).timestamp()
