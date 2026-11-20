@@ -90,8 +90,8 @@ def normalize_query(value: str) -> str:
         The query with collapsed whitespace and no surrounding spaces.
 
     Raises:
-        ValueError: The query is empty, longer than 200 characters or contains
-            a control character.
+        ValueError: The query is empty, longer than 200 characters, starts
+            with ``#`` or contains a control character.
     """
     if "\n" in value or "\r" in value:
         raise ValueError("запрос не должен содержать переводы строк")
@@ -100,6 +100,8 @@ def normalize_query(value: str) -> str:
     normalized = " ".join(value.split())
     if not normalized:
         raise ValueError("запрос не может быть пустым")
+    if normalized.startswith("#"):
+        raise ValueError("запрос не должен начинаться с #")
     if len(normalized) > _MAX_QUERY_LENGTH:
         raise ValueError("запрос длиннее 200 символов")
     return normalized

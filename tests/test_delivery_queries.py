@@ -140,6 +140,12 @@ def test_normalize_query_rejects_line_breaks(value: str) -> None:
         normalize_query(value)
 
 
+@pytest.mark.parametrize("value", ["#запрос", "  # запрос "])
+def test_normalize_query_rejects_comment_like_values(value: str) -> None:
+    with pytest.raises(ValueError, match="начинаться с #"):
+        normalize_query(value)
+
+
 def test_add_creates_file_with_header(tmp_path: Path) -> None:
     query, created = add_language_query(tmp_path, "ru", "  новый   запрос ")
 

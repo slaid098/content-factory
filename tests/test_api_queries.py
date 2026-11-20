@@ -247,7 +247,7 @@ def test_create_query_accepts_200_characters(data_dir: Path) -> None:
 
 @pytest.mark.parametrize(
     "query",
-    ["", "   ", "a" * 201, "a\x00b", "a\x07b", "a\nb", "a\rb"],
+    ["", "   ", "a" * 201, "a\x00b", "a\x07b", "a\nb", "a\rb", "#запрос", "  # запрос "],
 )
 def test_create_query_rejects_invalid_values(data_dir: Path, query: str) -> None:
     response = _post(_client(), {"language": "ru", "query": query})
