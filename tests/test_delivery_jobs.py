@@ -286,6 +286,22 @@ def test_link_with_untitled_stock_returns_empty(data_dir: Path) -> None:
     assert not (data_dir / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.zip").exists()
 
 
+def test_link_with_whitespace_only_title_returns_empty(data_dir: Path) -> None:
+    sha256 = "a" * 64
+    source = touch_mp4(data_dir / CONTENT_DIR / "ru" / f"{sha256}.mp4", b"video")
+    add_title(data_dir / "db" / "db.sqlite3", sha256, " \t\n ", norm="whitespace-title")
+    client = _client()
+
+    assert _post(client).status_code == 202
+    final = _wait(client, REQUEST_ID_TEXT, "empty")
+
+    assert final["files"] == 0
+    assert final["size"] == 0
+    assert final["url"] is None
+    assert source.is_file()
+    assert not (data_dir / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.zip").exists()
+
+
 def test_build_error_returns_failed_job(
     data_dir: Path,
     monkeypatch: pytest.MonkeyPatch,

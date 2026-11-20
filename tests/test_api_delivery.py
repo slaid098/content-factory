@@ -194,6 +194,28 @@ def test_delivery_returns_204_when_mp4_untitled(data_dir: Path) -> None:
     assert not (data_dir / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.zip").exists()
 
 
+def test_delivery_returns_zip_after_title_is_added_to_untitled_stock(data_dir: Path) -> None:
+    sha256 = "a" * 64
+    title = "  Вечернее название  "
+    source = touch_mp4(data_dir / CONTENT_DIR / "ru" / f"{sha256}.mp4", b"video")
+    client = _client()
+
+    first = _post(client)
+
+    assert first.status_code == 204
+    assert source.is_file()
+
+    add_title(data_dir / "db" / "db.sqlite3", sha256, title)
+    second = _post(client)
+
+    assert second.status_code == 200
+    assert second.headers["Content-Type"] == "application/zip"
+    with zipfile.ZipFile(io.BytesIO(second.content)) as archive:
+        assert archive.namelist() == ["001.mp4", "001.json"]
+        assert json.loads(archive.read("001.json")) == {"title": title}
+    assert not source.exists()
+
+
 def test_delivery_returns_zip_with_stored_title_and_removes_stock(data_dir: Path) -> None:
     first_hash = "a" * 64
     second_hash = "b" * 64

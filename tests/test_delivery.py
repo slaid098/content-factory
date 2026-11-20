@@ -20,6 +20,7 @@ from content_factory.services.delivery.archives import (
 )
 from content_factory.services.delivery.metadata import VideoMeta, load_video_meta
 from content_factory.services.delivery.service import (
+    _build_archive,
     cleanup_expired_archives,
     count_archive_files,
     deliver,
@@ -195,6 +196,17 @@ def test_deliver_skips_empty_title(tmp_path: Path) -> None:
     assert source.is_file()
 
 
+def test_deliver_skips_whitespace_only_title(tmp_path: Path) -> None:
+    sha256 = "a" * 64
+    source = touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{sha256}.mp4")
+    add_title(tmp_path / "db" / "db.sqlite3", sha256, " \t\n ", norm="whitespace-title")
+
+    assert deliver(tmp_path, "ru", 1, REQUEST_ID, retention_hours=24) is None
+    assert source.is_file()
+    assert not _archive_path(tmp_path).exists()
+    assert not (tmp_path / ARCHIVE_DIR / "ru").exists()
+
+
 def test_deliver_after_title_is_added(tmp_path: Path) -> None:
     sha256 = "a" * 64
     source = touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{sha256}.mp4")
@@ -274,6 +286,19 @@ def test_deliver_discards_tmp_and_keeps_sources_on_build_error(
     assert source.is_file()
     archive_dir = tmp_path / ARCHIVE_DIR / "ru"
     assert list(archive_dir.glob("*.tmp")) == []
+
+
+def test_build_archive_discards_tmp_when_title_is_missing(tmp_path: Path) -> None:
+    source = touch_mp4(tmp_path / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"))
+    archive_path = _archive_path(tmp_path)
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(KeyError):
+        _build_archive(archive_path, [source], {})
+
+    assert source.is_file()
+    assert not archive_path.exists()
+    assert not archive_path.with_suffix(".tmp").exists()
 
 
 def test_deliver_returns_archive_when_source_unlink_fails(
