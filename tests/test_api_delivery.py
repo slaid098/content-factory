@@ -240,7 +240,17 @@ def test_delivery_returns_zip_with_stored_title_and_removes_stock(data_dir: Path
     assert archive_path.is_file()
 
     stock = _client().get("/api/v1/stock").json()
-    assert stock["languages"] == [{"language": "ru", "stock": 1, "target": 150, "deficit": 149}]
+    assert stock["languages"] == [
+        {
+            "language": "ru",
+            "stock": 1,
+            "target": 150,
+            "deficit": 149,
+            "titled": 0,
+            "untitled": 1,
+            "video_bytes": 6,
+        }
+    ]
 
 
 def test_delivery_is_idempotent_by_request_id(data_dir: Path) -> None:

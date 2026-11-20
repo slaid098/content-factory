@@ -15,7 +15,7 @@ const EXPIRY_REFRESH_MS = 60000;
 
 /**
  * Build the archive list once and keep its countdowns running.
- * @param {{list: HTMLElement, empty: HTMLElement, message: HTMLElement}} elements
+ * @param {{list: HTMLElement, empty: HTMLElement, message: HTMLElement, summary: HTMLElement}} elements
  */
 export function createArchivesView(elements) {
   /** @type {Array<Record<string, unknown>>} */
@@ -49,7 +49,16 @@ export function createArchivesView(elements) {
     elements.list.replaceChildren(...rows);
     toggle(elements.list, rows.length !== 0);
     toggle(elements.empty, rows.length === 0);
+    renderSummary();
     tick();
+  }
+
+  function renderSummary() {
+    const local = archives.filter((item) => item.storage === "local");
+    const bytes = local.reduce((sum, item) => sum + (Number(item.size) || 0), 0);
+    elements.summary.textContent =
+      local.length === 0 ? "0" : `${formatCount(local.length)} · ${formatBytes(bytes)}`;
+    elements.summary.title = "локальные архивы; удалённые в Filebin диск не занимают";
   }
 
   /**

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class LanguageStockResponse(BaseModel):
@@ -16,6 +16,9 @@ class LanguageStockResponse(BaseModel):
     stock: int
     target: int
     deficit: int
+    titled: int = Field(ge=0)
+    untitled: int = Field(ge=0)
+    video_bytes: int = Field(ge=0)
 
 
 class StockResponse(BaseModel):
