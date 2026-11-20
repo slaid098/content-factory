@@ -62,14 +62,27 @@ def extract_frames(path: Path, duration: int | None) -> tuple[bytes, ...]:
 
 
 def _extract_frame(path: Path, moment: float) -> bytes:
-    """Run ffmpeg for one moment and return the JPEG bytes, if any."""
+    """Run ffmpeg for one moment and return the JPEG bytes, if any.
+
+    Raises:
+        TitleError: ffmpeg is missing or cannot be started for this frame.
+    """
+    try:
+        executable = imageio_ffmpeg.get_ffmpeg_exe()
+    except RuntimeError as ex:
+        raise TitleError("не удалось извлечь кадры видео") from ex
     try:
         command = [
-            imageio_ffmpeg.get_ffmpeg_exe(),
+            executable,
+            "-nostdin",
             "-v",
             "error",
             "-ss",
             f"{moment:.3f}",
+            "-f",
+            "mp4",
+            "-protocol_whitelist",
+            "file",
             "-i",
             str(path),
             "-frames:v",

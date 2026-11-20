@@ -9,9 +9,10 @@ _CYRILLIC_LANGUAGES = frozenset({"ru", "uk", "kk", "bg", "sr", "mk", "be"})
 _FORBIDDEN_WORDS = frozenset({"видео", "video", "ролик", "shorts", "клип", "clip"})
 _ALLOWED_PUNCTUATION = frozenset(".,!?—:-…")
 _LINK = re.compile(
-    r"(?:https?://|www\.|t\.me/|[a-z0-9-]+\.(?:com|ru|org|net|io|me|tv)\b)",
+    r"(?:https?://|www\.|t\.me/|\b[a-z0-9-]{2,}\.[a-z]{2,}\b)",
     re.IGNORECASE,
 )
+_HASHTAG = re.compile(r"#\S+")
 _WORD = re.compile(r"[^\W_]+", re.UNICODE)
 _TITLE_MIN_LENGTH = 15
 _TITLE_MAX_LENGTH = 70
@@ -55,6 +56,28 @@ def normalize_title_key(title: str) -> str:
     return key
 
 
+def description_title_key(description: str) -> str:
+    """Build the uniqueness key of the title that a description would produce.
+
+    The delivery fallback takes the TikTok description, removes hashtags and
+    collapses whitespace; a generated title equal to that text repeats an
+    existing title and must not be stored.
+
+    Args:
+        description: Raw ``videos.description`` value; may be empty.
+
+    Returns:
+        The normalized key, or ``""`` when the description has no words.
+    """
+    text = " ".join(_HASHTAG.sub(" ", clean_title(description)).split())
+    if not text:
+        return ""
+    try:
+        return normalize_title_key(text)
+    except ValueError:
+        return ""
+
+
 def validate_title(title: str, language: str) -> bool:
     """Return whether a title may be stored for the given language.
 
@@ -74,7 +97,7 @@ def validate_title(title: str, language: str) -> bool:
     cleaned = clean_title(title)
     if not _TITLE_MIN_LENGTH <= len(cleaned) <= _TITLE_MAX_LENGTH:
         return False
-    words = cleaned.split()
+    words = [token for token in cleaned.split() if any(char.isalnum() for char in token)]
     if not _TITLE_MIN_WORDS <= len(words) <= _TITLE_MAX_WORDS:
         return False
     if not any(char.isalpha() for char in cleaned):

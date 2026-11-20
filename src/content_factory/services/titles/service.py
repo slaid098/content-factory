@@ -17,7 +17,12 @@ from content_factory.db.video_meta import VideoMeta, load_video_meta
 from content_factory.services.titles.client import TitleError, generate_titles
 from content_factory.services.titles.files import stock_files
 from content_factory.services.titles.frames import extract_frames
-from content_factory.services.titles.text import clean_title, normalize_title_key, validate_title
+from content_factory.services.titles.text import (
+    clean_title,
+    description_title_key,
+    normalize_title_key,
+    validate_title,
+)
 
 _RECENT_LIMIT = 40
 _EMPTY_META = VideoMeta(description="", query="")
@@ -112,7 +117,14 @@ def _title_one(
             "Не удалось подготовить название"
         )
         return None, recent
-    saved = _save_candidate(connection, path.stem, options, language, moment)
+    saved = _save_candidate(
+        connection,
+        path.stem,
+        options,
+        language,
+        moment,
+        description_title_key(meta.description),
+    )
     if saved is None:
         logger.bind(path=str(path)).warning("Все варианты названия заняты или невалидны")
         return None, recent
@@ -125,6 +137,7 @@ def _save_candidate(
     options: tuple[str, ...],
     language: str,
     moment: datetime,
+    description_key: str,
 ) -> str | None:
     """Store the first free and valid option, or return ``None``."""
     for option in options:
@@ -134,6 +147,8 @@ def _save_candidate(
         try:
             norm = normalize_title_key(title)
         except ValueError:
+            continue
+        if description_key and norm == description_key:
             continue
         if save_title(connection, sha256, title, norm, moment.isoformat()):
             return title

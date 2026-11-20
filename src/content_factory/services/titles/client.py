@@ -17,6 +17,7 @@ from content_factory.services.titles.languages import language_name
 _ATTEMPTS = 3
 _MAX_DATA_LENGTH = 500
 _TITLES_IN_RESPONSE = 3
+_PRINTABLE_KEY_RANGE = range(33, 127)
 
 
 class TitleError(Exception):
@@ -99,10 +100,11 @@ def _request(
     client: httpx.Client | None,
 ) -> tuple[str, ...]:
     """Send one chat-completions request and parse its title list."""
+    authorization = _authorization(settings)
     payload = _payload(frames, language, description, query, recent, settings)
     headers = {"Content-Type": "application/json"}
-    if settings.api_key is not None:
-        headers["Authorization"] = f"Bearer {settings.api_key.get_secret_value()}"
+    if authorization is not None:
+        headers["Authorization"] = authorization
     url = f"{settings.api_url.rstrip('/')}/chat/completions"
     try:
         if client is None:
@@ -115,12 +117,37 @@ def _request(
                 headers=headers,
                 timeout=settings.timeout_seconds,
             )
+    except httpx.LocalProtocolError:
+        raise TitleClientError("не удалось отправить запрос к API названий") from None
     except (httpx.TransportError, httpx.TimeoutException) as ex:
         raise TransientTitleError("API названий недоступен или не ответил вовремя") from ex
     except httpx.InvalidURL as ex:
         raise TitleClientError("неверный адрес API названий") from ex
     _check_status(response)
     return _parse_response(response)
+
+
+def _authorization(settings: TitlesSettings) -> str | None:
+    """Build the Authorization header without ever exposing a malformed key.
+
+    The header value must be printable ASCII without whitespace; other
+    characters make httpx raise an error that embeds the raw header.
+
+    Args:
+        settings: Title API settings.
+
+    Returns:
+        The header value, or ``None`` when no key is configured.
+
+    Raises:
+        TitleClientError: The key has a character outside printable ASCII 33..126.
+    """
+    if settings.api_key is None:
+        return None
+    key = settings.api_key.get_secret_value()
+    if any(ord(char) not in _PRINTABLE_KEY_RANGE for char in key):
+        raise TitleClientError("ключ API названий содержит недопустимые символы")
+    return f"Bearer {key}"
 
 
 def _payload(

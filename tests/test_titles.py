@@ -14,6 +14,7 @@ from pydantic import SecretStr
 
 from content_factory.config.settings import TitlesSettings, load_titles_settings
 from content_factory.constants import CONTENT_DIR, DB_DIR, DB_FILENAME
+from content_factory.db import titles as titles_db
 from content_factory.db.titles import ensure_schema, load_titles, recent_titles, save_title
 from content_factory.db.video_meta import VideoMeta, load_video_meta
 from content_factory.exceptions import ConfigError
@@ -32,6 +33,7 @@ from content_factory.services.titles.frames import extract_frames, frame_times
 from content_factory.services.titles.service import TitlePassResult
 from content_factory.services.titles.text import (
     clean_title,
+    description_title_key,
     normalize_title_key,
     validate_title,
 )
@@ -82,18 +84,31 @@ def test_save_title_inserts_once_and_rejects_duplicates(tmp_path: Path) -> None:
     assert load_titles(db_path, ["a" * 64, "b" * 64]) == {"a" * 64: "Утренний свет на кухне"}
 
 
-def test_load_titles_reads_more_than_one_batch(tmp_path: Path) -> None:
+def test_load_titles_reads_more_than_one_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     db_path = _db_path(tmp_path)
     db_path.parent.mkdir(parents=True)
-    connection = sqlite3.connect(db_path)
-    try:
-        ensure_schema(connection)
-        save_title(connection, "z" * 64, "Последнее название утра", "последнее", "2026-05-01")
-    finally:
-        connection.close()
-    hashes = [f"{index:064x}" for index in range(500)] + ["z" * 64]
+    titles = ("Первое название утра", "Второе название утра", "Третье название утра")
+    for index, title in enumerate(titles):
+        add_title(db_path, f"{index:064x}", title)
+    hashes = [f"{index:064x}" for index in range(5)]
+    batches: list[list[str]] = []
+    original = titles_db._load_batch
 
-    assert load_titles(db_path, hashes) == {"z" * 64: "Последнее название утра"}
+    def spy(connection: sqlite3.Connection, batch: list[str]) -> dict[str, str]:
+        batches.append(list(batch))
+        return original(connection, batch)
+
+    monkeypatch.setattr(titles_db, "_BATCH_SIZE", 2)
+    monkeypatch.setattr(titles_db, "_load_batch", spy)
+
+    assert load_titles(db_path, hashes) == {
+        f"{index:064x}": title for index, title in enumerate(titles)
+    }
+    assert [len(batch) for batch in batches] == [2, 2, 1]
+    assert [sha256 for batch in batches for sha256 in batch] == hashes
 
 
 def test_load_titles_skips_empty_titles(tmp_path: Path) -> None:
@@ -199,6 +214,22 @@ def test_normalize_title_key_rejects_empty_result(title: str) -> None:
 
 
 @pytest.mark.parametrize(
+    ("description", "expected"),
+    [
+        ("  Утренний #тег  свет #ещё ", "утренний свет"),
+        ("Ёжик, #тег!", "ежик"),
+        ("Свет #один#два на кухне", "свет на кухне"),
+        ("", ""),
+        ("   ", ""),
+        ("#тег #ещё", ""),
+        ("!!!", ""),
+    ],
+)
+def test_description_title_key_strips_hashtags(description: str, expected: str) -> None:
+    assert description_title_key(description) == expected
+
+
+@pytest.mark.parametrize(
     ("title", "language"),
     [
         ("Утренний свет на кухне", "ru"),
@@ -206,6 +237,8 @@ def test_normalize_title_key_rejects_empty_result(title: str) -> None:
         ("Morning light in the kitchen", "en"),
         ("Morning light in the kitchen", "de"),
         ("Утренний свет, кухня — тишина!", "ru"),
+        ("Уютная кухня и т. д. у окна", "ru"),
+        ("Дом у А. С. Пушкина", "ru"),
         ("а" * 7 + " " + "б" * 7, "ru"),
         ("а" * 34 + " " + "б" * 35, "ru"),
     ],
@@ -227,10 +260,15 @@ def test_validate_title_accepts_good_titles(title: str, language: str) -> None:
         ("Утренний свет @user", "ru"),
         ("Смотрите https://example.com", "ru"),
         ("Смотрите example.com сейчас", "ru"),
+        ("Смотрите example.xyz сейчас", "ru"),
+        ("Смотрите example.co.uk сейчас", "ru"),
+        ("Смотрите bit.ly сейчас", "ru"),
         ('Утренний "свет" на кухне', "ru"),
         ("Утренний свет на кухне ☀", "ru"),
         ("Утренний_свет на кухне", "ru"),
         ("12345 67890 12345", "en"),
+        ("Свет, , , , , ,", "ru"),
+        ("Утренний ———————", "ru"),
         ("Morning light in the kitchen", "ru"),
         ("Утренний свет на кухне", "en"),
         ("Morning light's kitchen", "en"),
@@ -275,9 +313,16 @@ def test_extract_frames_calls_ffmpeg_per_moment(
     assert len(calls) == 3
     command, kwargs = calls[0]
     assert command[0] == "/opt/ffmpeg"
+    assert command[1] == "-nostdin"
     assert str(video) in command
     assert "scale=768:768:force_original_aspect_ratio=decrease" in command
     assert command[command.index("-ss") + 1] == "10.000"
+    assert command[command.index("-f") + 1] == "mp4"
+    assert command[command.index("-protocol_whitelist") + 1] == "file"
+    assert command.index("-nostdin") < command.index("-i")
+    assert command.index("-f") < command.index("-i")
+    assert command.index("-protocol_whitelist") < command.index("-i")
+    assert command[command.index("-i") + 1] == str(video)
     assert kwargs["timeout"] == 30
     assert "shell" not in kwargs
 
@@ -302,16 +347,17 @@ def test_extract_frames_skips_failed_frame(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    outputs = [b"first", b"", b"third"]
+    outputs = [(b"first", 0), (b"", 1), (b"third", 0)]
 
     def fake_run(command: list[str], **kwargs: Any) -> Any:
         del kwargs
-        return _run_result(command, outputs.pop(0), returncode=1)
+        stdout, returncode = outputs.pop(0)
+        return _run_result(command, stdout, returncode=returncode)
 
     monkeypatch.setattr(titles_frames.subprocess, "run", fake_run)
     monkeypatch.setattr(titles_frames.imageio_ffmpeg, "get_ffmpeg_exe", lambda: "/opt/ffmpeg")
 
-    assert extract_frames(tmp_path / "video.mp4", None) == ()
+    assert extract_frames(tmp_path / "video.mp4", None) == (b"first", b"third")
 
 
 def test_extract_frames_wraps_timeout(
@@ -347,7 +393,7 @@ def test_extract_frames_wraps_missing_ffmpeg(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def missing_ffmpeg() -> str:
-        raise OSError("ffmpeg not found")
+        raise RuntimeError("ffmpeg not found")
 
     monkeypatch.setattr(titles_frames.imageio_ffmpeg, "get_ffmpeg_exe", missing_ffmpeg)
 
@@ -428,6 +474,60 @@ def test_generate_titles_omits_authorization_without_key(
         )
 
     assert seen["authorization"] is None
+
+
+def test_generate_titles_rejects_malformed_api_key() -> None:
+    secret = "sk-SECRET\nVALUE"
+    called = False
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json=_completion("Утренний свет на кухне"))
+
+    with (
+        _http_client(httpx.MockTransport(handler)) as http_client,
+        pytest.raises(TitleClientError, match="ключ") as error,
+    ):
+        generate_titles(
+            [b"one"],
+            "ru",
+            "",
+            "",
+            [],
+            _settings(api_key=SecretStr(secret)),
+            client=http_client,
+        )
+
+    assert called is False
+    assert secret not in str(error.value)
+    assert secret not in repr(error.value)
+    chain: BaseException | None = error.value
+    while chain is not None:
+        assert secret not in str(chain)
+        assert secret not in repr(chain)
+        chain = chain.__cause__ or chain.__context__
+
+
+def test_generate_titles_wraps_local_protocol_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(titles_client, "_sleep", lambda _: None)
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.LocalProtocolError("bad header value", request=request)
+
+    with (
+        _http_client(httpx.MockTransport(handler)) as http_client,
+        pytest.raises(TitleClientError, match="запрос") as error,
+    ):
+        generate_titles([b"one"], "ru", "", "", [], _settings(), client=http_client)
+
+    assert calls == 1
+    assert error.value.__cause__ is None
 
 
 def test_generate_titles_uses_default_client_with_timeout(
@@ -882,6 +982,66 @@ def test_assign_titles_takes_first_free_valid_variant(
     assert load_titles(_db_path(tmp_path), [sha256]) == {sha256: "Свет кадра aaaaaa"}
 
 
+def test_assign_titles_skips_title_equal_to_description(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sha256 = "a" * 64
+    _patch_generation(monkeypatch, variants={sha256: ("Утренний свет на кухне",)})
+    _stock(tmp_path, "ru", sha256)
+    add_downloaded_video(
+        _db_path(tmp_path),
+        sha256,
+        "Утренний свет на кухне #кухня",
+    )
+
+    result = assign_titles(tmp_path, _settings(), now=_NOW)
+
+    assert result == TitlePassResult(candidates=1, titled=0, skipped=1)
+    assert load_titles(_db_path(tmp_path), [sha256]) == {}
+
+
+def test_assign_titles_skips_normalized_description_match_and_tries_next(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sha256 = "a" * 64
+    _patch_generation(
+        monkeypatch,
+        variants={sha256: ("УТРЕННИЙ СВЕТ, НА КУХНЕ!", "Тихий вечер у окна")},
+    )
+    _stock(tmp_path, "ru", sha256)
+    add_downloaded_video(
+        _db_path(tmp_path),
+        sha256,
+        "Утренний свет на кухне #кухня",
+    )
+
+    result = assign_titles(tmp_path, _settings(), now=_NOW)
+
+    assert result == TitlePassResult(candidates=1, titled=1, skipped=0)
+    assert load_titles(_db_path(tmp_path), [sha256]) == {sha256: "Тихий вечер у окна"}
+
+
+def test_assign_titles_saves_title_different_from_description(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sha256 = "a" * 64
+    _patch_generation(monkeypatch, variants={sha256: ("Тихий вечер у окна",)})
+    _stock(tmp_path, "ru", sha256)
+    add_downloaded_video(
+        _db_path(tmp_path),
+        sha256,
+        "Утренний свет на кухне #кухня",
+    )
+
+    result = assign_titles(tmp_path, _settings(), now=_NOW)
+
+    assert result == TitlePassResult(candidates=1, titled=1, skipped=0)
+    assert load_titles(_db_path(tmp_path), [sha256]) == {sha256: "Тихий вечер у окна"}
+
+
 def test_assign_titles_moves_to_next_variant_on_norm_collision(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1028,6 +1188,14 @@ def test_assign_titles_creates_schema_on_empty_content(tmp_path: Path) -> None:
     result = assign_titles(tmp_path, _settings(), now=_NOW)
 
     assert result == TitlePassResult(candidates=0, titled=0, skipped=0)
+    connection = sqlite3.connect(_db_path(tmp_path))
+    try:
+        rows = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'titles'"
+        ).fetchall()
+    finally:
+        connection.close()
+    assert rows == [("titles",)]
     assert load_titles(_db_path(tmp_path), ["a" * 64]) == {}
 
 
