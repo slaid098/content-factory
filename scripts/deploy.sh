@@ -13,6 +13,10 @@ readonly STATE_FILE="${WORKDIR}/.deploy-image-tag"
 readonly HEALTHCHECK_URL="http://127.0.0.1:8000/api/v1/stock"
 readonly HEALTHCHECK_ATTEMPTS=30
 readonly HEALTHCHECK_INTERVAL=2
+readonly WORKER_STARTUP_SECONDS=60
+readonly WORKER_STABILITY_SECONDS=15
+readonly WORKER_INTERVAL=2
+readonly WORKER_LOG_TAIL=50
 readonly SHA_PATTERN='^[0-9a-f]{40}$'
 
 log() {
@@ -61,7 +65,7 @@ done
 
 cd "$WORKDIR"
 
-# Предыдущий тег нужен для отката, если новый образ не пройдёт healthcheck.
+# Предыдущий тег нужен для отката, если новый образ не пройдёт проверки.
 previous_tag="latest"
 if [[ -s "$STATE_FILE" ]]; then
     state_tag="$(head -n 1 -- "$STATE_FILE")"
@@ -100,6 +104,88 @@ healthcheck() {
     return 1
 }
 
+# Состояние контейнера в формате "status restart_count exit_code".
+inspect_worker() {
+    local container="$1"
+    docker inspect \
+        --format '{{.State.Status}} {{.State.RestartCount}} {{.State.ExitCode}}' \
+        "$container" 2>/dev/null
+}
+
+# Диагноз при провале воркера: состояние без секретов и ограниченный хвост логов.
+worker_diagnostics() {
+    local container="${1:-}"
+    local state status="unknown" restarts="unknown" exit_code="unknown"
+
+    if [[ -z "$container" ]]; then
+        log "worker: контейнер не найден (docker compose ps -q worker пуст)"
+    elif state="$(inspect_worker "$container")"; then
+        read -r status restarts exit_code <<<"$state"
+        log "worker: status=${status} restart_count=${restarts} exit_code=${exit_code}"
+    else
+        log "worker: не удалось прочитать состояние контейнера ${container}"
+    fi
+
+    if ! docker compose logs --no-color --tail "$WORKER_LOG_TAIL" worker >&2; then
+        warn "не удалось прочитать логи worker"
+    fi
+}
+
+# Успех: контейнер дошёл до running за окно запуска и остаётся running
+# с неизменным RestartCount в течение окна стабильности.
+workercheck() {
+    local attempt container="" state
+    local status="" restarts="" exit_code="" baseline_restarts=""
+    local startup_attempts=$((WORKER_STARTUP_SECONDS / WORKER_INTERVAL + 1))
+    local stability_attempts=$(((WORKER_STABILITY_SECONDS + WORKER_INTERVAL - 1) / WORKER_INTERVAL))
+
+    for ((attempt = 1; attempt <= startup_attempts; attempt++)); do
+        if ! container="$(docker compose ps -q worker 2>/dev/null)"; then
+            log "worker: docker compose ps завершился ошибкой (попытка ${attempt}/${startup_attempts})"
+        elif [[ -z "$container" ]]; then
+            log "worker: контейнер не найден (попытка ${attempt}/${startup_attempts})"
+        elif state="$(inspect_worker "$container")"; then
+            read -r status restarts exit_code <<<"$state"
+            if [[ "$status" == "running" ]]; then
+                log "worker: running, restart_count=${restarts} (попытка ${attempt})"
+                baseline_restarts="$restarts"
+                break
+            fi
+            log "worker: status=${status} restart_count=${restarts} exit_code=${exit_code} (попытка ${attempt}/${startup_attempts})"
+        else
+            log "worker: docker inspect завершился ошибкой (попытка ${attempt}/${startup_attempts})"
+        fi
+
+        if ((attempt < startup_attempts)); then
+            sleep "$WORKER_INTERVAL"
+        fi
+    done
+
+    if [[ -z "$baseline_restarts" ]]; then
+        log "worker: не достиг running за ${WORKER_STARTUP_SECONDS} с"
+        worker_diagnostics "$container"
+        return 1
+    fi
+
+    for ((attempt = 1; attempt <= stability_attempts; attempt++)); do
+        sleep "$WORKER_INTERVAL"
+        if ! state="$(inspect_worker "$container")"; then
+            log "worker: контейнер пропал в окне стабильности"
+            worker_diagnostics "$container"
+            return 1
+        fi
+        read -r status restarts exit_code <<<"$state"
+        if [[ "$status" != "running" || "$restarts" != "$baseline_restarts" ]]; then
+            log "worker: status=${status} restart_count=${restarts} exit_code=${exit_code}, ожидалось running с restart_count=${baseline_restarts}"
+            worker_diagnostics "$container"
+            return 1
+        fi
+    done
+
+    log "worker стабилен: running, restart_count=${baseline_restarts} не менялся ${WORKER_STABILITY_SECONDS} с"
+    return 0
+}
+
 log "деплой $sha (${IMAGE}:${tag})"
 
 log "обновление кода до $sha"
@@ -126,6 +212,13 @@ if ! healthcheck; then
         fail "healthcheck не прошёл, выполнен откат на ${previous_tag}"
     fi
     fail "healthcheck не прошёл, откат невозможен"
+fi
+
+if ! workercheck; then
+    if rollback; then
+        fail "проверка worker не прошла, выполнен откат на ${previous_tag}"
+    fi
+    fail "проверка worker не прошла, откат невозможен"
 fi
 
 printf '%s\n' "$tag" >"$STATE_FILE"

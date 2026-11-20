@@ -467,7 +467,7 @@ gh run watch
 Цепочка: `ci` → `build-push` (образ `latest` и `sha-<7>`) → `deploy`
 (`sudo /usr/local/sbin/content-factory-deploy <full-sha>`). Деплой-скрипт
 проверит SHA, обновит git-чекаут, выполнит `docker compose pull`, поднимет
-сервисы и проверит API.
+сервисы, дождётся здорового API и стабильного `worker`.
 
 Проверка на Linux 1:
 
@@ -529,13 +529,25 @@ sudo -n /usr/local/sbin/content-factory-deploy <full-sha>
    `docker compose up -d --remove-orphans`;
 6. до 30 раз с интервалом 2 с проверяет
    `http://127.0.0.1:8000/api/v1/stock`;
-7. при провале healthcheck возвращает предыдущий `IMAGE_TAG` и поднимает
-   прежний образ; если предыдущего образа нет локально, оставляет новый и
-   завершается с ненулевым кодом;
-8. только после успеха записывает новый тег в `.deploy-image-tag`;
-9. best-effort запускает `docker compose run --rm --no-deps worker prefect
-   deploy --all`: ошибка Prefect логируется, но не отменяет уже выполненный
-   `up -d`.
+7. проверяет `worker`: находит контейнер через `docker compose ps -q worker`
+   (пустой вывод — провал), до 60 с ждёт `State.Status == running`, затем не
+   меньше 15 с (опрос раз в 2 с) требует, чтобы статус оставался `running`, а
+   `State.RestartCount` не рос; при провале печатает `State.Status`,
+   `RestartCount`, `ExitCode` и ограниченный
+   `docker compose logs --tail 50 worker`;
+8. при провале healthcheck API или проверки `worker` возвращает предыдущий
+   `IMAGE_TAG` и поднимает прежний образ; если предыдущего образа нет
+   локально или его тег совпадает с новым, откат невозможен — скрипт
+   завершается с ненулевым кодом и не пишет state;
+9. только после обеих проверок записывает новый тег в `.deploy-image-tag`;
+10. best-effort запускает `docker compose run --rm --no-deps worker prefect
+    deploy --all`: ошибка Prefect логируется, но не отменяет уже выполненный
+    `up -d`.
+
+Сервис `init` — one-shot: он завершается с кодом 0, а скрипт отдельно его не
+проверяет. `api` и `worker` объявлены с
+`depends_on: condition: service_completed_successfully`, поэтому к моменту
+проверок `init` уже отработал.
 
 Скрипт не печатает `.env`, не включает `set -x` и не логирует секреты.
 Полный SHA остаётся в логе деплоя; тег `sha-<7>` может совпасть у двух

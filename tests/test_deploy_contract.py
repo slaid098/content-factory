@@ -24,6 +24,10 @@ def _load(name: str) -> dict[str, Any]:
     return yaml.safe_load((_ROOT / name).read_text(encoding="utf-8"))
 
 
+def _deploy_script() -> str:
+    return (_ROOT / _DEPLOY_SCRIPT).read_text(encoding="utf-8")
+
+
 def _workflow() -> dict[str, Any]:
     workflow = _load(str(_WORKFLOW))
     # PyYAML по правилам YAML 1.1 читает ключ `on` как boolean True.
@@ -138,7 +142,7 @@ def test_deploy_job_contract() -> None:
 
 
 def test_deploy_script_contract() -> None:
-    script = (_ROOT / _DEPLOY_SCRIPT).read_text(encoding="utf-8")
+    script = _deploy_script()
 
     assert script.startswith("#!/usr/bin/env bash\n")
     assert "readonly SHA_PATTERN='^[0-9a-f]{40}$'" in script
@@ -158,6 +162,42 @@ def test_deploy_script_contract() -> None:
     assert "set -x" not in script
 
 
+def test_deploy_script_checks_worker() -> None:
+    script = _deploy_script()
+
+    assert "docker compose ps -q worker" in script
+    assert "docker inspect" in script
+    assert ".State.Status" in script
+    assert ".State.RestartCount" in script
+    assert ".State.ExitCode" in script
+    assert "WORKER_STARTUP_SECONDS=60" in script
+    assert "WORKER_STABILITY_SECONDS=15" in script
+    assert "docker compose logs" in script
+    assert "--tail" in script
+    assert "ps -q init" not in script
+
+
+def test_deploy_script_checks_worker_before_state_write() -> None:
+    script = _deploy_script()
+
+    up = script.index("if ! docker compose up -d --remove-orphans; then")
+    worker_check = script.index("if ! workercheck; then")
+    state_write = script.index('printf \'%s\\n\' "$tag" >"$STATE_FILE"')
+
+    assert up < worker_check < state_write
+
+
+def test_deploy_script_rolls_back_when_worker_fails() -> None:
+    script = _deploy_script()
+
+    worker_check = script.index("if ! workercheck; then")
+    state_write = script.index('printf \'%s\\n\' "$tag" >"$STATE_FILE"')
+    failure_block = script[worker_check:state_write]
+
+    assert "if rollback; then" in failure_block
+    assert 'fail "проверка worker' in failure_block
+
+
 def test_deploy_runbook_contract() -> None:
     runbook = (_ROOT / _DEPLOY_README).read_text(encoding="utf-8")
 
@@ -168,6 +208,18 @@ def test_deploy_runbook_contract() -> None:
     assert "IMAGE_TAG" in runbook
     for name in _SECRETS:
         assert name in runbook
+
+
+def test_deploy_runbook_documents_worker_contract() -> None:
+    runbook = (_ROOT / _DEPLOY_README).read_text(encoding="utf-8")
+
+    assert "docker compose ps -q worker" in runbook
+    assert "State.Status" in runbook
+    assert "RestartCount" in runbook
+    assert "ExitCode" in runbook
+    assert "60 с" in runbook
+    assert "15 с" in runbook
+    assert "one-shot" in runbook
 
 
 def test_prefect_deployment_contract() -> None:
