@@ -36,6 +36,8 @@ export function createSettingsView(elements, options) {
   let loaded = false;
   let busy = false;
   let previewValid = false;
+  /** @type {string | null} */
+  let previewPayload = null;
 
   /**
    * Load settings once, or again when ``force`` is set.
@@ -82,10 +84,18 @@ export function createSettingsView(elements, options) {
       return;
     }
     let payload;
+    let current;
     try {
       payload = buildPayload();
+      current = JSON.stringify(payload);
     } catch (error) {
+      resetDiff();
       setStatus(error.message, true);
+      return;
+    }
+    if (current !== previewPayload) {
+      resetDiff();
+      setStatus("Настройки изменены. Нажмите «Проверить» заново.", false);
       return;
     }
     setBusy(true);
@@ -101,6 +111,7 @@ export function createSettingsView(elements, options) {
       const settings = asSettings(body.settings);
       fillForm(settings);
       previewValid = false;
+      previewPayload = null;
       const changed = Boolean(body.changed);
       if (changed) {
         const diff = typeof body.diff === "string" ? body.diff : "";
@@ -141,13 +152,21 @@ export function createSettingsView(elements, options) {
     setBusy(true);
     setMessage(elements.message, "");
     setStatus("Проверяем изменения…", false);
+    const sent = JSON.stringify(payload);
     try {
       const response = await requestJson(PREVIEW_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: sent,
       });
       const body = asObject(response);
+      const current = serializedForm();
+      if (current === null || current !== sent) {
+        resetDiff();
+        setStatus("Настройки изменены. Нажмите «Проверить» заново.", false);
+        return;
+      }
+      previewPayload = sent;
       const changed = Boolean(body.changed);
       const diff = typeof body.diff === "string" ? body.diff : "";
       if (changed && diff) {
@@ -237,8 +256,20 @@ export function createSettingsView(elements, options) {
     };
   }
 
+  /**
+   * @returns {string | null}
+   */
+  function serializedForm() {
+    try {
+      return JSON.stringify(buildPayload());
+    } catch {
+      return null;
+    }
+  }
+
   function resetDiff() {
     previewValid = false;
+    previewPayload = null;
     hideDiff();
     elements.apply.disabled = true;
   }
@@ -287,6 +318,7 @@ export function createSettingsView(elements, options) {
       return;
     }
     previewValid = false;
+    previewPayload = null;
     elements.apply.disabled = true;
     setStatus("Настройки изменены. Нажмите «Проверить» заново.", false);
   });

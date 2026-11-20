@@ -188,6 +188,16 @@ def test_settings_tab_previews_then_applies() -> None:
     assert "Бэкап:" in settings
 
 
+def test_settings_preview_is_invalidated_by_form_changes() -> None:
+    settings = _ui_text("settings.js")
+
+    assert "previewPayload" in settings
+    assert "serializedForm()" in settings
+    assert "body: sent" in settings
+    assert "current === null || current !== sent" in settings
+    assert "current !== previewPayload" in settings
+
+
 def test_page_keeps_random_uuid_fallback() -> None:
     app_script = _ui_text("app.js")
 
