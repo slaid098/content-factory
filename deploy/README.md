@@ -2,8 +2,9 @@
 
 Прод-контур — Linux 1 (`193.3.168.35`): Docker Compose поднимает API и
 Prefect-воркер, том `app_data` живёт на хосте, партнёр забирает готовые файлы
-по SFTP, конфиг и список запросов уходят в ночной бэкап. Prefect 3 работает на
-Linux 2 (`https://prefect.slaid098.dev/api`).
+по SFTP или через веб-страницу `content.slaid098.dev`, конфиг и список
+запросов уходят в ночной бэкап. Prefect 3 работает на Linux 2
+(`https://prefect.slaid098.dev/api`).
 
 Проект лежит в `/root/dockers/content-factory`, как остальные compose-проекты
 Linux 1. Корень принадлежит root, поэтому деплой-скрипт запускается через
@@ -655,3 +656,208 @@ sudo docker compose ps
 переустановите соответствующую root-овую копию вручную. Если менялся
 `compose.yaml`, новый образ всё равно приходит из GHCR; локальный
 `build: .` остаётся только для разработки (`docker compose up -d --build`).
+
+## 12. Веб-выдача для партнёра
+
+Партнёру не нужен SFTP, чтобы забрать готовые видео: API отдаёт страницу
+`GET /` и JSON выдачи, а NPM на `92.119.114.77` терминирует TLS для
+`content.slaid098.dev`, пускает только IP партнёра и подставляет токен
+выдачи. Страница и её скрипты токена не содержат.
+
+Схема запроса:
+
+```
+браузер партнёра
+  → NPM 92.119.114.77:443 (TLS, Access List)
+  → 172.20.0.1:8001 в сети digital_factory_app_network
+  → SSH-туннель linux2 → 127.0.0.1:8000 API на linux1
+```
+
+`172.20.0.1` — шлюз сети `digital_factory_app_network`, в которой живёт
+контейнер NPM. Из контейнера адрес хоста linux2 доступен как шлюз этой сети,
+а не как `127.0.0.1`. Адрес API для NPM — `http://172.20.0.1:8001`; туннель
+слушает и `172.20.0.1:8001` (для NPM), и `127.0.0.1:8001` (для проверки с
+хоста).
+
+### 12.1 SSH-туннель linux2 → linux1
+
+На linux2 создайте служебного пользователя и ключ:
+
+```bash
+sudo useradd --system --create-home --shell /usr/sbin/nologin tunnel
+sudo install -d -m 700 -o tunnel -g tunnel /home/tunnel/.ssh
+sudo -u tunnel ssh-keygen -t ed25519 -N "" -f /home/tunnel/.ssh/id_ed25519
+sudo -u tunnel sh -c 'ssh-keyscan -H 193.3.168.35 >> ~/.ssh/known_hosts'
+```
+
+Публичный ключ добавьте на linux1 пользователю, от которого разрешён вход
+(в примере ниже — `deploy`), с ограничением только на один forward:
+
+```
+restrict,port-forwarding,permitopen="127.0.0.1:8000" ssh-ed25519 AAAA... tunnel@linux2
+```
+
+`restrict` запрещает PTY, агент и остальные пересылки, а `port-forwarding`
+возвращает только TCP-forward; `permitopen` оставляет единственный адрес
+`127.0.0.1:8000`. Пользователь туннеля не получает shell.
+
+Юнит `/etc/systemd/system/content-factory-tunnel.service`:
+
+```ini
+[Unit]
+Description=SSH tunnel to content-factory API on linux1
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+User=tunnel
+Group=tunnel
+ExecStart=/usr/bin/ssh -N \
+  -o BatchMode=yes \
+  -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -L 127.0.0.1:8001:127.0.0.1:8000 \
+  -L 172.20.0.1:8001:127.0.0.1:8000 \
+  deploy@193.3.168.35
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`ExitOnForwardFailure` не даёт юниту «зависнуть» без туннеля: если порт
+занят или адрес `172.20.0.1` ещё не появился, ssh завершается, и systemd
+перезапускает его. На linux2 Docker поставлен из snap, поэтому вместо
+`docker.service` может понадобиться `After=snap.docker.dockerd.service`;
+проверьте `systemctl list-units --type=service | grep -i docker`. Если сеть
+`digital_factory_app_network` поднимается не сразу, `RestartSec=5` закрывает
+разрыв.
+
+Установка и проверка:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now content-factory-tunnel.service
+systemctl status content-factory-tunnel.service
+curl -fsS http://127.0.0.1:8001/api/v1/stock
+```
+
+Адрес шлюза сети проверяется на linux2:
+
+```bash
+docker network inspect digital_factory_app_network \
+  -f '{{ (index .IPAM.Config 0).Gateway }}'
+```
+
+Он должен совпадать с адресом в юните и в NPM. Если сеть называется иначе,
+подставьте её имя и её шлюз.
+
+### 12.2 NPM: proxy host, TLS и Access List
+
+В NPM → Access Lists создайте список «Партнёр» с IP партнёра (один адрес,
+например `203.0.113.10`). В NPM → Hosts → Proxy Hosts → Add:
+
+| Поле | Значение |
+|---|---|
+| Domain Names | `content.slaid098.dev` |
+| Scheme | `http` |
+| Forward Hostname / IP | `172.20.0.1` |
+| Forward Port | `8001` |
+| Block Common Exploits | включено |
+| Websockets Support | выключено |
+| Access List | «Партнёр» |
+
+DNS-запись `content.slaid098.dev → 92.119.114.77` уже существует; отдельный
+A-рекорд не создаётся.
+
+На вкладке SSL запросите сертификат Let's Encrypt, включите `Force SSL`,
+`HTTP/2 Support` и при желании `HSTS Enabled`. Без `Force SSL` партнёр
+сможет открыть страницу по HTTP в обход HSTS. Если выпуск сертификата
+упирается в Access List, временно отключите список на время выпуска и
+включите обратно после сохранения сертификата.
+
+Токен подставляется только для `/api/v1/content/`: NPM не должен отправлять
+его на страницу и в публичный сток. Откройте у proxy host вкладку Custom
+Locations, добавьте location:
+
+| Поле | Значение |
+|---|---|
+| Location | `/api/v1/content/` |
+| Scheme | `http` |
+| Forward Hostname / IP | `172.20.0.1` |
+| Forward Port | `8001` |
+
+В поле Advanced configuration этой custom location вставьте:
+
+```nginx
+proxy_set_header Authorization "Bearer <токен>";
+proxy_read_timeout 300s;
+proxy_send_timeout 300s;
+```
+
+`<токен>` — значение `CONTENT_FACTORY_DELIVERY_TOKEN` из `.env` на linux1.
+В репозиторий и в страницу оно не попадает. `proxy_read_timeout 300s`
+нужен, потому что сборка десяти видео занимает минуты; таймаут меньше
+пяти минут оборвёт POST, пока API ещё пишет архив.
+
+NPM сам добавляет к custom location стандартные `Host`, `X-Real-IP`,
+`X-Forwarded-For` и `X-Forwarded-Proto`. Не добавляйте `Authorization` в
+общий Advanced configuration proxy host: тогда заголовок уйдёт и на `/`, и в
+`/api/v1/stock`, хотя им он не нужен.
+
+Проверьте конфиг и примените изменения:
+
+```bash
+sudo docker exec nginx-proxy-manager nginx -t
+```
+
+Контейнер NPM может называться иначе; имя смотрите в `docker ps`. NPM
+применяет конфиг сам после сохранения, `nginx -t` — только проверка.
+
+### 12.3 Проверка доступа
+
+С разрешённого IP:
+
+```bash
+curl -fsS -o /dev/null -w '%{http_code}\n' https://content.slaid098.dev/   # 200
+curl -fsS https://content.slaid098.dev/api/v1/stock | head -c 300
+curl -fsS "https://content.slaid098.dev/api/v1/content/topics?language=ru"
+
+request_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+curl -fsS -X POST https://content.slaid098.dev/api/v1/content/deliveries \
+  -H "Content-Type: application/json" \
+  -d "{\"language\":\"ru\",\"count\":1,\"request_id\":\"$request_id\"}" \
+  -o delivery.zip
+unzip -l delivery.zip
+curl -fsS -o delivery-again.zip \
+  "https://content.slaid098.dev/api/v1/content/archives/ru/$request_id.zip"
+```
+
+Повторное скачивание не пересобирает архив и не тратит остаток. В браузере
+с разрешённого IP страница показывает остаток по языкам, темы, список
+архивов и обратный отсчёт; сборка скачивает `delivery-<request_id>.zip`.
+
+С чужого IP (например, с мобильного интернета) NPM возвращает `403`:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://content.slaid098.dev/   # 403
+```
+
+Локальная проверка без NPM: `http://127.0.0.1:8000/` открывает страницу, но
+запросы к `/api/v1/content/*` без токена получают `401`, и страница пишет
+«Нет доступа к API». Обхода авторизации нет.
+
+### 12.4 Ротация токена
+
+1. Замените `CONTENT_FACTORY_DELIVERY_TOKEN` в `.env` на linux1.
+2. Пересоздайте API, чтобы контейнер прочитал новое значение:
+   `sudo env IMAGE_TAG="$(sudo cat .deploy-image-tag)" docker compose up -d api`.
+3. Обновите `proxy_set_header Authorization` в custom location NPM и
+   сохраните proxy host.
+4. Повторите проверки из §12.3; старый токен после шага 2 даёт `401`.
+
+Токен хранится в конфиге NPM на linux2 и в `.env` на linux1. Доступ к
+админке NPM и к `/root/dockers/content-factory/.env` должен быть только у
+эксплуатации; в браузер, логи API и git токен не попадает.
