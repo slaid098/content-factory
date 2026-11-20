@@ -14,6 +14,9 @@ dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.32",
   "prefect>=3.6,<3.7",
+  # Prefect 3.6 импортирует backport на Python 3.12, но не объявляет его
+  # в своих зависимостях; без пакета воркер падает при старте.
+  "importlib-metadata>=4.4",
   "httpx>=0.27",
   "pyyaml>=6.0",
   "pydantic>=2.9",
