@@ -262,7 +262,7 @@ async function loadTopics() {
 }
 
 function renderTopics() {
-  const total = stockTotal();
+  const total = stockCount();
   const cards = [buildTopic("Все темы", total)];
   for (const topic of state.topics) {
     cards.push(buildTopic(topic.query, topic.count));
@@ -288,6 +288,11 @@ function buildTopic(label, count) {
     el("span", "topic-count", formatCount(count)),
   );
   return row;
+}
+
+function stockCount() {
+  const row = state.languages.find((item) => item.language === state.language);
+  return row ? row.stock : 0;
 }
 
 function stockTotal() {

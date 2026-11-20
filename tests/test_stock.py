@@ -272,6 +272,54 @@ def test_collect_stock_keeps_stock_above_target_at_zero_deficit(tmp_path: Path) 
     assert row.video_bytes == 15
 
 
+def test_collect_stock_does_not_count_whitespace_only_titles(tmp_path: Path) -> None:
+    _touch(tmp_path / "content" / "ru" / "a.mp4", b"123")
+    add_title(tmp_path / "db" / "db.sqlite3", "a", "   ", norm="whitespace")
+
+    snapshot, _ = collect_stock(
+        tmp_path,
+        {"ru": LanguageConfig(enabled=True, stock_target=10)},
+        now=_MOMENT,
+    )
+
+    row = snapshot.languages[0]
+    assert row.stock == 1
+    assert row.titled == 0
+    assert row.untitled == 1
+    assert row.video_bytes == 3
+
+
+def test_collect_stock_treats_unreadable_database_path_as_untitled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _touch(tmp_path / "content" / "ru" / "a.mp4", b"123")
+    db_path = tmp_path / "db" / "db.sqlite3"
+    original_is_file = Path.is_file
+
+    def _deny(self: Path, *args: object, **kwargs: object) -> bool:
+        if self == db_path:
+            raise PermissionError("permission denied")
+        return original_is_file(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_file", _deny)
+
+    snapshot, state = collect_stock(
+        tmp_path,
+        {"ru": LanguageConfig(enabled=True, stock_target=10)},
+        now=_MOMENT,
+    )
+
+    row = snapshot.languages[0]
+    assert row.stock == 1
+    assert row.titled == 0
+    assert row.untitled == 1
+    assert state.last_production_at is None
+    assert state.captcha_streak == 0
+    assert state.zero_runs == 0
+    assert not (tmp_path / "db").exists()
+
+
 def test_collect_stock_keeps_file_whose_size_cannot_be_read(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

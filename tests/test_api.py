@@ -11,6 +11,7 @@ from content_factory.api.app import create_app
 from content_factory.db.connection import connect
 from content_factory.db.runtime_state import save_state
 from content_factory.schemas.state.state import RuntimeState
+from content_factory.services.stock import service as stock_service
 from delivery_helpers import add_title
 
 _MOMENT = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
@@ -93,6 +94,72 @@ def test_stock_reports_titled_untitled_and_video_bytes(
     assert row["video_bytes"] == 15
     assert row["deficit"] == 147
     assert row["titled"] + row["untitled"] == row["stock"]
+
+
+def test_stock_does_not_count_whitespace_only_titles(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("CONTENT_FACTORY_DATA_DIR", str(tmp_path))
+    _touch(tmp_path / "content" / "ru" / "a.mp4")
+    add_title(tmp_path / "db" / "db.sqlite3", "a", "   ", norm="whitespace")
+
+    response = _client().get("/api/v1/stock")
+
+    assert response.status_code == 200
+    row = response.json()["languages"][0]
+    assert row["stock"] == 1
+    assert row["titled"] == 0
+    assert row["untitled"] == 1
+
+
+def test_stock_survives_malformed_runtime_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("CONTENT_FACTORY_DATA_DIR", str(tmp_path))
+    _touch(tmp_path / "content" / "ru" / "a.mp4")
+    connection = connect(tmp_path / "db" / "db.sqlite3")
+    try:
+        save_state(connection, RuntimeState.empty())
+        connection.execute(
+            "UPDATE runtime_state SET updated_at = ? WHERE id = 1",
+            ("not-a-timestamp",),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    response = _client().get("/api/v1/stock")
+
+    assert response.status_code == 200
+    row = response.json()["languages"][0]
+    assert row["stock"] == 1
+    assert row["titled"] == 0
+    assert row["untitled"] == 1
+    assert row["video_bytes"] == 5
+
+
+def test_stock_survives_unreadable_titles_database(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("CONTENT_FACTORY_DATA_DIR", str(tmp_path))
+    _touch(tmp_path / "content" / "ru" / "a.mp4")
+
+    def _fail(*_args: object) -> dict[str, str]:
+        raise PermissionError("permission denied")
+
+    monkeypatch.setattr(stock_service, "load_titles", _fail)
+
+    response = _client().get("/api/v1/stock")
+
+    assert response.status_code == 200
+    row = response.json()["languages"][0]
+    assert row["stock"] == 1
+    assert row["titled"] == 0
+    assert row["untitled"] == 1
+    assert not (tmp_path / "db").exists()
 
 
 def test_stock_without_data_directory_is_empty_and_read_only(

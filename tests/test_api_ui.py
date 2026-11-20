@@ -184,6 +184,31 @@ def test_stock_panel_shows_titles_and_disk_usage() -> None:
     assert "ждём обработку названий" in app_script
 
 
+def test_topics_count_all_stock_while_availability_uses_titled() -> None:
+    app_script = _ui_text("app.js")
+
+    render_topics = app_script.split("function renderTopics()", 1)[1].split(
+        "function buildTopic", 1
+    )[0]
+    assert "stockCount()" in render_topics
+    assert "stockTotal()" not in render_topics
+    assert "они входят в «Все темы»" in render_topics
+
+    stock_count = app_script.split("function stockCount()", 1)[1].split("function stockTotal", 1)[0]
+    assert "row.stock" in stock_count
+
+    stock_total = app_script.split("function stockTotal()", 1)[1].split(
+        "function updateAvailable", 1
+    )[0]
+    assert "row.titled" in stock_total
+
+    update_available = app_script.split("function updateAvailable()", 1)[1].split(
+        "function setBusy", 1
+    )[0]
+    assert "stockTotal()" in update_available
+    assert "stockCount()" not in update_available
+
+
 def test_archives_header_counts_only_local_archives() -> None:
     archives = _ui_text("archives.js")
     app_script = _ui_text("app.js")

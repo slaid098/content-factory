@@ -42,10 +42,14 @@ def collect_stock(
     enabled = {code: config for code, config in sorted(languages.items()) if config.enabled}
     content_dir = data_dir / CONTENT_DIR
     files = {code: _mp4_files(content_dir / code) for code in enabled}
-    titles = load_titles(
-        data_dir / DB_DIR / DB_FILENAME,
-        [path.stem for paths in files.values() for path in paths],
-    )
+    hashes = [path.stem for paths in files.values() for path in paths]
+    try:
+        titles = load_titles(data_dir / DB_DIR / DB_FILENAME, hashes)
+    except OSError as ex:
+        logger.bind(error=ex, error_type=type(ex).__name__).warning(
+            "Не удалось прочитать названия видео"
+        )
+        titles = {}
     rows = tuple(
         _language_stock(code, enabled[code], paths, titles) for code, paths in files.items()
     )
@@ -61,7 +65,7 @@ def _language_stock(
 ) -> LanguageStock:
     """Build the stock row of one language from its files and stored titles."""
     stock = len(paths)
-    titled = sum(1 for path in paths if path.stem in titles)
+    titled = sum(1 for path in paths if titles.get(path.stem, "").strip())
     return LanguageStock(
         language=code,
         stock=stock,
@@ -115,15 +119,15 @@ def _file_size(path: Path) -> int:
 def _read_runtime_state(data_dir: Path) -> RuntimeState:
     """Read the loop state without creating a database file."""
     db_path = data_dir / DB_DIR / DB_FILENAME
-    if not db_path.is_file():
-        return RuntimeState.empty()
     try:
+        if not db_path.is_file():
+            return RuntimeState.empty()
         connection = connect_readonly(db_path)
         try:
             return read_state(connection)
         finally:
             connection.close()
-    except (OSError, sqlite3.Error) as ex:
+    except (OSError, sqlite3.Error, ValueError, TypeError) as ex:
         logger.bind(path=str(db_path), error=ex, error_type=type(ex).__name__).warning(
             "Не удалось прочитать состояние цикла"
         )
