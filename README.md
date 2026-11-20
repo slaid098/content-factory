@@ -60,12 +60,16 @@ curl -f -X POST http://127.0.0.1:8000/api/v1/content/deliveries \
   -o delivery.zip
 ```
 
-Тело запроса: `language` (`^[a-z]{2}$`), `count` (1–10), `request_id` (UUID).
-Ответ `200` — zip с `NNN.mp4` и `NNN.json` (sidecar `{"title": "..."}`);
-`204` — в языке нет `.mp4`; `401` — нет или неверный Bearer-токен; `422` —
-невалидное тело; `503` — токен не настроен.
+Тело запроса: `language` (`^[a-z]{2}$`), `count` (1–10), `request_id` (UUID),
+необязательный `query` (тема, до 200 символов). Ответ `200` — zip с `NNN.mp4`
+и `NNN.json` (sidecar `{"title": "..."}`); `204` — в языке или выбранной теме
+нет `.mp4`; `401` — нет или неверный Bearer-токен; `422` — невалидное тело;
+`503` — токен не настроен.
 
-Выданные `.mp4` удаляются из `content/<language>/`, zip хранится в
+Остаток по темам отдаёт `GET /api/v1/content/topics?language=ru`, список
+живых архивов — `GET /api/v1/content/archives`, повторное скачивание —
+`GET /api/v1/content/archives/<language>/<request_id>.zip`. Выданные `.mp4`
+удаляются из `content/<language>/`, zip хранится в
 `app_data/archive/<language>/<request_id>.zip`. Повтор с тем же `request_id`
 в пределах TTL (по умолчанию 24 часа) возвращает тот же архив. Старые архивы
 удаляет APScheduler раз в час. Полный контракт:

@@ -21,6 +21,10 @@ POST /api/v1/content/deliveries
 | `language` | строка по regex `^[a-z]{2}$` |
 | `count` | целое от 1 до 10 |
 | `request_id` | UUID |
+| `query` | необязательная тема, строка от 1 до 200 символов |
+
+Если `query` не передан, выбираются файлы всех тем. Если передан — только
+файлы, у которых `videos.query` совпадает точно, с учётом регистра.
 
 ## Авторизация
 
@@ -42,6 +46,26 @@ POST /api/v1/content/deliveries
 | `503` | `CONTENT_FACTORY_DELIVERY_TOKEN` не задан | JSON с ошибкой |
 
 Если файлов меньше, чем `count`, отдаются все имеющиеся.
+
+## Темы стока
+
+```
+GET /api/v1/content/topics?language=ru
+```
+
+Ответ — остаток `.mp4` по темам для одного языка:
+
+```json
+{
+  "language": "ru",
+  "topics": [{"query": "заправка", "count": 3}],
+  "unclassified": 2
+}
+```
+
+`topics` содержит только темы с `count > 0` и отсортирован по `query`.
+`unclassified` — файлы без строки в `downloads`/`videos` или с пустым
+`videos.query`.
 
 ## Формат архива
 
@@ -87,6 +111,38 @@ app_data/archive/<language>/<request_id>.zip
 
 TTL задаётся `CONTENT_FACTORY_DELIVERY_RETENTION_HOURS` (по умолчанию `24`,
 минимум `1`).
+
+## Список и скачивание архивов
+
+```
+GET /api/v1/content/archives
+```
+
+Возвращает массив живых архивов, новые сверху:
+
+```json
+[
+  {
+    "language": "ru",
+    "request_id": "3f1c1b0e-6f1a-4f6e-9d2e-0f6a7b8c9d10",
+    "size": 123456,
+    "created_at": "2026-05-01T12:00:00Z",
+    "expires_at": "2026-05-02T12:00:00Z"
+  }
+]
+```
+
+`created_at` берётся из mtime файла, `expires_at = created_at + TTL`. Архивы
+старше TTL не показываются, даже если cleanup ещё не успел их удалить.
+Файлы `.tmp` и имена, не являющиеся UUID, пропускаются.
+
+```
+GET /api/v1/content/archives/{language}/{request_id}.zip
+```
+
+Отдаёт сохранённый zip (`application/zip`, имя
+`delivery-<request_id>.zip`) без повторной сборки и без изменения стока.
+Если архива нет или истёк TTL — `404`.
 
 ## Идемпотентность
 
@@ -134,7 +190,9 @@ unzip -l delivery.zip
 - Меньше файлов, чем `count` — отдаются все.
 - Нет строки в `videos`/`downloads` или пустое описание — fallback title,
   выдача работает.
-- БД недоступна — fallback titles.
+- БД недоступна — fallback titles; при `query` совпадений нет, ответ `204`.
+- `query` задан, но совпадений нет — `204`, сток не меняется.
+- Архив удалён между списком и скачиванием — `404`, не `500`.
 - Ошибка сборки zip — `.tmp` удаляется, исходники остаются, ответ `500`.
 - Ошибка удаления исходника после сборки — логируется, zip отдаётся.
 - `language="ru/"`, `count=0`, `count=11`, не-UUID — `422`.

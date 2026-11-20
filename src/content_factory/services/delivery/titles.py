@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import re
-import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
 
-from loguru import logger
-
-from content_factory.db.connection import connect_readonly
+from content_factory.services.delivery.metadata import load_video_meta
 
 _TITLE_LIMIT = 100
 _HASHTAG = re.compile(r"#\S+")
@@ -52,23 +49,4 @@ def load_descriptions(db_path: Path, hashes: Sequence[str]) -> dict[str, str]:
     Returns:
         Mapping from SHA-256 to the stored description.
     """
-    if not hashes or not db_path.is_file():
-        return {}
-    placeholders = ", ".join("?" for _ in hashes)
-    query = (
-        "SELECT downloads.sha256 AS sha256, videos.description AS description "
-        "FROM downloads JOIN videos ON videos.video_id = downloads.video_id "
-        f"WHERE downloads.sha256 IN ({placeholders})"
-    )
-    try:
-        connection = connect_readonly(db_path)
-        try:
-            rows = connection.execute(query, list(hashes)).fetchall()
-        finally:
-            connection.close()
-    except (OSError, sqlite3.Error) as ex:
-        logger.bind(error=ex, error_type=type(ex).__name__).warning(
-            "Не удалось прочитать описания видео, используются fallback-заголовки"
-        )
-        return {}
-    return {str(row["sha256"]): str(row["description"] or "") for row in rows}
+    return {sha256: meta.description for sha256, meta in load_video_meta(db_path, hashes).items()}
