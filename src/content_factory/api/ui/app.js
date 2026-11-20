@@ -1,18 +1,16 @@
-/** Partner delivery page: stock, topics, archive build and archive list. */
+/** Partner delivery page: stock, async archive build, queries and settings. */
 
-import {
-  DELIVERY_TIMEOUT_MS,
-  MESSAGES,
-  readBlob,
-  request,
-  requestJson,
-} from "./api.js";
+import { MESSAGES, requestJson } from "./api.js";
 import { createArchivesView } from "./archives.js";
-import { el, saveBlob } from "./dom.js";
+import { byId, el, setMessage, setText, toggle } from "./dom.js";
 import { formatCount, formatDateTime, languageName } from "./format.js";
+import { createJobsView } from "./jobs.js";
+import { createQueriesView } from "./queries.js";
+import { createSettingsView } from "./settings.js";
+import { createTabs } from "./tabs.js";
 
 const REFRESH_MS = 60000;
-const MAX_COUNT = 10;
+const MAX_COUNT_FALLBACK = 100;
 
 const ui = {
   stockList: byId("stock-list"),
@@ -20,7 +18,9 @@ const ui = {
   stockEmpty: byId("stock-empty"),
   stockUpdated: byId("stock-updated"),
   language: byId("language"),
+  queriesLanguage: byId("queries-language"),
   topicList: byId("topic-list"),
+  topicsLanguage: byId("topics-language"),
   topicsMessage: byId("topics-message"),
   unclassified: byId("unclassified"),
   form: byId("delivery-form"),
@@ -36,7 +36,62 @@ const archives = createArchivesView({
   list: byId("archives"),
   empty: byId("archives-empty"),
   message: byId("archives-message"),
-  lastArchive: byId("last-archive"),
+});
+
+const jobs = createJobsView(
+  {
+    container: byId("delivery-job"),
+    title: byId("job-title"),
+    state: byId("job-state"),
+    message: byId("job-message"),
+    timer: byId("job-timer"),
+    link: /** @type {HTMLAnchorElement} */ (byId("job-link")),
+    check: /** @type {HTMLButtonElement} */ (byId("job-check")),
+  },
+  { onFinished: (job) => void refreshAfterJob(job) },
+);
+
+const queries = createQueriesView({
+  language: /** @type {HTMLSelectElement} */ (ui.queriesLanguage),
+  search: /** @type {HTMLInputElement} */ (byId("queries-search")),
+  summary: byId("queries-summary"),
+  message: byId("queries-message"),
+  list: byId("queries-list"),
+  empty: byId("queries-empty"),
+  form: /** @type {HTMLFormElement} */ (byId("query-form")),
+  input: /** @type {HTMLInputElement} */ (byId("new-query")),
+  add: /** @type {HTMLButtonElement} */ (byId("query-add")),
+  status: byId("query-status"),
+  refresh: /** @type {HTMLButtonElement} */ (byId("queries-refresh")),
+});
+
+const settings = createSettingsView(
+  {
+    form: /** @type {HTMLFormElement} */ (byId("settings-form")),
+    languages: byId("settings-languages"),
+    batch: /** @type {HTMLInputElement} */ (byId("settings-batch")),
+    interval: /** @type {HTMLInputElement} */ (byId("settings-interval")),
+    maxDuration: /** @type {HTMLInputElement} */ (byId("settings-max-duration")),
+    maxQueries: /** @type {HTMLInputElement} */ (byId("settings-max-queries")),
+    filterMax: /** @type {HTMLInputElement} */ (byId("settings-filter-max")),
+    workers: /** @type {HTMLInputElement} */ (byId("settings-workers")),
+    deliveryMax: /** @type {HTMLInputElement} */ (byId("settings-delivery-max")),
+    preview: /** @type {HTMLButtonElement} */ (byId("settings-preview")),
+    apply: /** @type {HTMLButtonElement} */ (byId("settings-apply")),
+    status: byId("settings-status"),
+    diff: byId("settings-diff"),
+    diffText: byId("settings-diff-text"),
+    backup: byId("settings-backup"),
+    message: byId("settings-message"),
+    refresh: /** @type {HTMLButtonElement} */ (byId("settings-refresh")),
+  },
+  { onLimits: applyLimits },
+);
+
+const tabs = createTabs({
+  tabs: [byId("tab-delivery"), byId("tab-queries"), byId("tab-settings")],
+  panels: [byId("panel-delivery"), byId("panel-queries"), byId("panel-settings")],
+  onChange: onTabChange,
 });
 
 const state = {
@@ -47,43 +102,65 @@ const state = {
   /** @type {Array<{query: string, count: number}>} */
   topics: [],
   unclassified: 0,
-  /** @type {string | null} */
-  selectedQuery: null,
+  maxCount: MAX_COUNT_FALLBACK,
   busy: false,
   refreshing: false,
+  queriesLoaded: false,
 };
 
-function byId(id) {
-  const node = document.getElementById(id);
-  if (!node) {
-    throw new Error(`Не найден элемент #${id}`);
+/**
+ * @param {Record<string, unknown>} job
+ */
+async function refreshAfterJob(job) {
+  const ready = job.status === "ready" || job.status === "ready_local";
+  setStatus(
+    job.status === "ready"
+      ? "Архив готов — скачайте его по ссылке."
+      : job.status === "ready_local"
+        ? "Архив готов локально — скачайте его с сервера."
+        : "",
+    false,
+  );
+  await loadStock();
+  await Promise.allSettled([
+    loadTopics(),
+    archives.load(ready ? String(job.request_id) : null),
+  ]);
+  if (state.queriesLoaded && state.language !== null) {
+    await queries.load(state.language);
   }
-  return node;
 }
 
 async function loadStock() {
+  const previous = state.language;
   try {
     const data = await requestJson("/api/v1/stock");
     const rows = Array.isArray(data.languages) ? data.languages : [];
-    state.languages = rows;
-    if (!rows.some((row) => row.language === state.language)) {
-      state.language = rows.length > 0 ? rows[0].language : null;
+    state.languages = rows.map((row) => ({
+      language: String(row.language),
+      stock: Number(row.stock) || 0,
+      target: Number(row.target) || 0,
+    }));
+    if (!state.languages.some((row) => row.language === state.language)) {
+      state.language = state.languages.length > 0 ? state.languages[0].language : null;
+    }
+    renderStock();
+    syncLanguageSelects();
+    setMessage(ui.stockMessage, "");
+    setText(ui.stockUpdated, `обновлено ${formatDateTime(String(data.generated_at))}`);
+    if (state.language !== previous) {
       state.topics = [];
       state.unclassified = 0;
-      state.selectedQuery = null;
+      renderTopics();
     }
-    renderStock(rows);
-    renderLanguages();
-    hideMessage(ui.stockMessage);
-    ui.stockUpdated.textContent = `обновлено ${formatDateTime(String(data.generated_at))}`;
   } catch (error) {
-    showMessage(ui.stockMessage, error.message);
+    setMessage(ui.stockMessage, error.message);
   }
+  return state.language !== previous;
 }
 
-/** @param {Array<{language: string, stock: number, target: number}>} rows */
-function renderStock(rows) {
-  const items = rows.map((row) => {
+function renderStock() {
+  const items = state.languages.map((row) => {
     const item = el("li", "stock-item");
     const head = el("div", "stock-head");
     head.append(
@@ -107,35 +184,52 @@ function renderStock(rows) {
   });
 
   ui.stockList.replaceChildren(...items);
-  ui.stockList.hidden = rows.length === 0;
-  ui.stockEmpty.hidden = rows.some((row) => row.stock > 0);
+  toggle(ui.stockList, items.length !== 0);
+  toggle(ui.stockEmpty, !state.languages.some((row) => row.stock > 0));
 }
 
-function renderLanguages() {
+function syncLanguageSelects() {
+  fillLanguageSelect(ui.language, true);
+  fillLanguageSelect(ui.queriesLanguage, false);
+  updateAvailable();
+}
+
+/**
+ * @param {HTMLSelectElement} select
+ * @param {boolean} withStock
+ */
+function fillLanguageSelect(select, withStock) {
   if (state.languages.length === 0) {
     const placeholder = el("option", "", "Нет доступных языков");
     placeholder.disabled = true;
     placeholder.selected = true;
-    ui.language.replaceChildren(placeholder);
-    ui.language.disabled = true;
+    select.replaceChildren(placeholder);
+    select.disabled = true;
     return;
   }
   const options = state.languages.map((row) => {
-    const option = el("option", "", `${languageName(row.language)} — ${formatCount(row.stock)}`);
+    const label = withStock
+      ? `${languageName(row.language)} — ${formatCount(row.stock)}`
+      : languageName(row.language);
+    const option = el("option", "", label);
     option.value = row.language;
-    option.selected = row.language === state.language;
     return option;
   });
-  ui.language.replaceChildren(...options);
-  ui.language.disabled = false;
+  select.replaceChildren(...options);
+  select.disabled = false;
+  if (state.language !== null) {
+    select.value = state.language;
+  }
 }
 
 async function loadTopics() {
-  if (state.language === null) {
+  const language = state.language;
+  if (language === null) {
+    state.topics = [];
+    state.unclassified = 0;
     renderTopics();
     return;
   }
-  const language = state.language;
   try {
     const data = await requestJson(
       `/api/v1/content/topics?language=${encodeURIComponent(language)}`,
@@ -143,65 +237,47 @@ async function loadTopics() {
     if (language !== state.language) {
       return;
     }
-    state.topics = Array.isArray(data.topics) ? data.topics : [];
+    state.topics = (Array.isArray(data.topics) ? data.topics : []).map((row) => ({
+      query: String(row.query),
+      count: Number(row.count) || 0,
+    }));
     state.unclassified = Number(data.unclassified) || 0;
-    hideMessage(ui.topicsMessage);
-    renderTopics();
+    setMessage(ui.topicsMessage, "");
   } catch (error) {
-    showMessage(ui.topicsMessage, error.message);
-    if (state.topics.length === 0) {
-      renderTopics();
+    if (language === state.language) {
+      setMessage(ui.topicsMessage, error.message);
     }
   }
+  renderTopics();
 }
 
 function renderTopics() {
-  if (
-    state.selectedQuery !== null &&
-    !state.topics.some((topic) => topic.query === state.selectedQuery)
-  ) {
-    state.selectedQuery = null;
-  }
-
   const total = stockTotal();
-  const cards = [buildTopic("", "Все темы", total, state.selectedQuery === null)];
+  const cards = [buildTopic("Все темы", total)];
   for (const topic of state.topics) {
-    cards.push(
-      buildTopic(topic.query, topic.query, topic.count, state.selectedQuery === topic.query),
-    );
+    cards.push(buildTopic(topic.query, topic.count));
   }
   ui.topicList.replaceChildren(...cards);
-
-  ui.unclassified.hidden = state.unclassified === 0;
-  ui.unclassified.textContent =
-    `Без темы: ${formatCount(state.unclassified)} — они входят в «Все темы».`;
+  setText(ui.topicsLanguage, state.language === null ? "" : languageName(state.language));
+  toggle(ui.unclassified, state.unclassified !== 0);
+  ui.unclassified.textContent = state.unclassified
+    ? `Без темы: ${formatCount(state.unclassified)} — они входят в «Все темы».`
+    : "";
   updateAvailable();
 }
 
 /**
- * @param {string} query
  * @param {string} label
  * @param {number} count
- * @param {boolean} checked
  * @returns {HTMLElement}
  */
-function buildTopic(query, label, count, checked) {
-  const wrapper = el("label", "topic");
-  const input = el("input");
-  input.type = "radio";
-  input.name = "topic";
-  input.value = query;
-  input.checked = checked;
-  input.disabled = count === 0;
-  input.addEventListener("change", () => {
-    state.selectedQuery = input.value === "" ? null : input.value;
-    updateAvailable();
-  });
-
-  const body = el("span", "topic-body");
-  body.append(el("span", "topic-name", label), el("span", "topic-count", formatCount(count)));
-  wrapper.append(input, body);
-  return wrapper;
+function buildTopic(label, count) {
+  const row = el("li", "topic");
+  row.append(
+    el("span", "topic-name", label),
+    el("span", "topic-count", formatCount(count)),
+  );
+  return row;
 }
 
 function stockTotal() {
@@ -209,17 +285,9 @@ function stockTotal() {
   return row ? row.stock : 0;
 }
 
-function availableTotal() {
-  if (state.selectedQuery === null) {
-    return stockTotal();
-  }
-  const topic = state.topics.find((item) => item.query === state.selectedQuery);
-  return topic ? topic.count : 0;
-}
-
 function updateAvailable() {
-  const total = availableTotal();
-  const limit = Math.max(1, Math.min(MAX_COUNT, total));
+  const total = stockTotal();
+  const limit = Math.max(1, Math.min(state.maxCount, total));
   ui.count.max = String(limit);
   const current = Number.parseInt(ui.count.value, 10);
   if (!Number.isFinite(current) || current < 1) {
@@ -229,15 +297,20 @@ function updateAvailable() {
   }
 
   ui.available.textContent = total > 0 ? `доступно ${formatCount(total)}` : "видео пока нет";
-  ui.countHint.textContent =
-    total > 0
-      ? `Не больше ${Math.min(MAX_COUNT, total)} за раз.`
-      : "Выберите другую тему или дождитесь поступления видео.";
-  ui.count.disabled = total === 0;
+  if (total === 0) {
+    ui.countHint.textContent = "Видео этого языка пока нет — выберите другой язык.";
+  } else {
+    const suffix = state.maxCount < total ? " (лимит из настроек)" : "";
+    ui.countHint.textContent = `Не больше ${formatCount(limit)} за раз${suffix}.`;
+  }
+  ui.count.disabled = state.busy || total === 0;
   ui.deliver.disabled = state.busy || total === 0;
-  ui.deliver.title = total === 0 ? "В выбранной теме нет видео" : "";
+  ui.deliver.title = total === 0 ? "В стоке выбранного языка нет видео" : "";
 }
 
+/**
+ * @param {boolean} busy
+ */
 function setBusy(busy) {
   state.busy = busy;
   ui.form.setAttribute("aria-busy", String(busy));
@@ -254,44 +327,50 @@ function setStatus(text, isError) {
   ui.deliveryStatus.classList.toggle("is-error", isError);
 }
 
+/**
+ * @param {string} code
+ */
+function selectLanguage(code) {
+  if (!code || code === state.language) {
+    syncLanguageSelects();
+    return;
+  }
+  state.language = code;
+  state.topics = [];
+  state.unclassified = 0;
+  syncLanguageSelects();
+  renderTopics();
+  void loadTopics();
+  if (state.queriesLoaded) {
+    void queries.load(code);
+  }
+}
+
+/**
+ * @param {SubmitEvent} event
+ */
 async function submitDelivery(event) {
   event.preventDefault();
-  const total = availableTotal();
+  const total = stockTotal();
   if (state.busy || state.language === null || total === 0) {
     return;
   }
-
-  const parsed = Number.parseInt(ui.count.value, 10);
-  const count = Math.min(MAX_COUNT, total, Number.isFinite(parsed) ? Math.max(1, parsed) : 1);
+  const count = clampCount(ui.count.value, total);
   ui.count.value = String(count);
-
   const requestId = createRequestId();
-  const body = { language: state.language, count, request_id: requestId };
-  if (state.selectedQuery !== null) {
-    body.query = state.selectedQuery;
-  }
-
   setBusy(true);
-  setStatus(`Собираем ${count} видео. Это может занять несколько минут.`, false);
+  setStatus(`Собираем ${formatCount(count)} видео. Это может занять несколько минут.`, false);
   try {
-    const response = await request(
-      "/api/v1/content/deliveries",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      },
-      DELIVERY_TIMEOUT_MS,
-    );
-    if (response.status === 204) {
-      setStatus(MESSAGES.emptyTopic, true);
-      await refreshCounts();
-      return;
+    const job = await jobs.start(state.language, count, requestId);
+    if (job.status === "building") {
+      setStatus("Сборка идёт. Статус обновляется автоматически.", false);
+    } else if (job.status === "empty") {
+      setStatus(MESSAGES.empty, true);
+    } else if (job.status === "failed") {
+      setStatus("Сборка не удалась. Подробности в карточке.", true);
+    } else {
+      setStatus("Архив готов — скачайте его по ссылке.", false);
     }
-    saveBlob(await readBlob(response), `delivery-${requestId}.zip`);
-    setStatus(`Архив delivery-${requestId}.zip скачан.`, false);
-    await loadStock();
-    await Promise.allSettled([loadTopics(), archives.load(requestId)]);
   } catch (error) {
     setStatus(error.message, true);
   } finally {
@@ -299,9 +378,43 @@ async function submitDelivery(event) {
   }
 }
 
-async function refreshCounts() {
-  await loadStock();
-  await Promise.allSettled([loadTopics()]);
+/**
+ * @param {string} raw
+ * @param {number} total
+ * @returns {number}
+ */
+function clampCount(raw, total) {
+  const parsed = Number.parseInt(raw, 10);
+  const requested = Number.isFinite(parsed) ? Math.max(1, parsed) : 1;
+  return Math.min(state.maxCount, total, requested);
+}
+
+/**
+ * @param {Record<string, unknown>} settings
+ */
+function applyLimits(settings) {
+  // settings.delivery.max_count приходит из GET /api/v1/content/settings; без него — 100.
+  const delivery = settings.delivery;
+  const raw =
+    delivery && typeof delivery === "object"
+      ? Number(/** @type {Record<string, unknown>} */ (delivery).max_count)
+      : Number.NaN;
+  state.maxCount =
+    Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : MAX_COUNT_FALLBACK;
+  updateAvailable();
+}
+
+/**
+ * @param {string} panelId
+ */
+function onTabChange(panelId) {
+  if (panelId === "panel-queries" && !state.queriesLoaded && state.language !== null) {
+    state.queriesLoaded = true;
+    void queries.load(state.language);
+  }
+  if (panelId === "panel-settings") {
+    void settings.load();
+  }
 }
 
 async function refreshAll() {
@@ -312,6 +425,9 @@ async function refreshAll() {
   try {
     await loadStock();
     await Promise.allSettled([loadTopics(), archives.load()]);
+    if (state.queriesLoaded && state.language !== null) {
+      await queries.load(state.language);
+    }
   } finally {
     state.refreshing = false;
   }
@@ -335,45 +451,27 @@ function createRequestId() {
   ].join("-");
 }
 
-/**
- * @param {HTMLElement} node
- * @param {string} text
- */
-function showMessage(node, text) {
-  node.textContent = text;
-  node.hidden = false;
-}
-
-/** @param {HTMLElement} node */
-function hideMessage(node) {
-  node.textContent = "";
-  node.hidden = true;
-}
-
 function bindEvents() {
   ui.language.addEventListener("change", () => {
-    state.language = ui.language.value;
-    state.selectedQuery = null;
-    state.topics = [];
-    state.unclassified = 0;
-    renderTopics();
-    void loadTopics();
+    selectLanguage(ui.language.value);
+  });
+  ui.queriesLanguage.addEventListener("change", () => {
+    selectLanguage(ui.queriesLanguage.value);
   });
   ui.form.addEventListener("submit", (event) => {
-    void submitDelivery(event).catch((error) => {
-      setStatus(error.message, true);
-    });
+    void submitDelivery(event);
   });
   ui.refresh.addEventListener("click", () => {
     void refreshAll();
   });
+  ui.count.addEventListener("change", updateAvailable);
 }
 
 async function init() {
   bindEvents();
+  tabs.show("panel-delivery");
   await loadStock();
-  await loadTopics();
-  await archives.load();
+  await Promise.allSettled([loadTopics(), archives.load(), settings.load()]);
   window.setInterval(() => {
     void refreshAll();
   }, REFRESH_MS);

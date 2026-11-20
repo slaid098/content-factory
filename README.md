@@ -50,6 +50,15 @@ uvicorn main:app --host 127.0.0.1 --port 8000
 
 ## Выдача контента
 
+Ручная выдача идёт через веб-страницу `GET /` с вкладками «Выдача»,
+«Запросы» и «Настройки». На вкладке «Выдача» выбирают язык и количество
+видео, страница запускает асинхронную сборку, опрашивает её статус и
+показывает готовую ссылку; темы стока выводятся только для чтения. «Запросы»
+показывают список с остатком и позволяют добавить новый запрос, «Настройки» —
+проверить diff и применить runtime-конфиг с бэкапом. Лимит одного архива —
+`delivery.max_count` из настроек, по умолчанию 100, максимум 300; страница
+берёт его из `GET /api/v1/content/settings` и ограничивает остатком языка.
+
 Воркеры забирают готовые видео по языку через HTTP, не читая SFTP-каталоги:
 
 ```bash
@@ -70,7 +79,10 @@ curl -f -X POST http://127.0.0.1:8000/api/v1/content/deliveries \
 Для ручной выдачи сотен видео есть асинхронный
 `POST /api/v1/content/deliveries/link`: он отвечает `202`, собирает zip в фоне,
 заливает его на Litterbox на 24 часа и оставляет на сервере sidecar со ссылкой.
-Статус — `GET /api/v1/content/deliveries/<language>/<request_id>`.
+Статус — `GET /api/v1/content/deliveries/<language>/<request_id>`. Страница
+опрашивает его раз в 3 секунды: `ready` даёт внешнюю ссылку, `ready_local` —
+локальный архив, `empty` — «нет видео», `409` — «сборка уже идёт». Скачивание
+идёт обычным переходом по ссылке, без `fetch` и blob.
 
 Остаток по темам отдаёт `GET /api/v1/content/topics?language=ru`, список
 живых архивов — `GET /api/v1/content/archives`, повторное скачивание —
@@ -78,8 +90,10 @@ curl -f -X POST http://127.0.0.1:8000/api/v1/content/deliveries \
 удаляются из `content/<language>/`, zip хранится в
 `app_data/archive/<language>/<request_id>.zip`. Повтор с тем же `request_id`
 в пределах TTL (по умолчанию 24 часа) возвращает тот же архив. Старые архивы
-удаляет APScheduler раз в час. Полный контракт:
-[docs/content-delivery.md](docs/content-delivery.md).
+удаляет APScheduler раз в час. Полные контракты:
+[docs/content-delivery.md](docs/content-delivery.md),
+[docs/content-queries.md](docs/content-queries.md),
+[docs/runtime-settings.md](docs/runtime-settings.md).
 
 ## Деплой
 

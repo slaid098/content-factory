@@ -21,6 +21,13 @@ const LANGUAGE_NAMES = {
   tr: "Турецкий",
   uk: "Украинский",
 };
+const STATUS_NAMES = {
+  building: "сборка",
+  ready: "готово",
+  ready_local: "локально",
+  empty: "нет видео",
+  failed: "ошибка",
+};
 
 /**
  * @param {number} value
@@ -90,6 +97,14 @@ export function formatRemaining(expiresAt, now = Date.now()) {
  */
 export function languageName(code) {
   return LANGUAGE_NAMES[code] ?? String(code).toUpperCase();
+}
+
+/**
+ * @param {string} status
+ * @returns {string}
+ */
+export function statusLabel(status) {
+  return STATUS_NAMES[status] ?? status;
 }
 
 /**

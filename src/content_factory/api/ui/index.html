@@ -14,69 +14,208 @@
         <p class="eyebrow">content-factory</p>
         <h1>Выдача видео</h1>
         <p class="lead">
-          Готовые ролики по языкам. Соберите архив и скачайте его: архив живёт
-          24 часа, повторное скачивание не тратит остаток.
+          Готовые ролики по языкам. Соберите архив и скачайте его: внешняя
+          ссылка живёт 24 часа, локальный архив можно забрать с сервера.
         </p>
       </div>
       <p class="muted hero-time" id="stock-updated" aria-live="polite"></p>
     </header>
 
+    <nav class="tabs" role="tablist" aria-label="Разделы страницы">
+      <button type="button" class="tab is-active" id="tab-delivery" role="tab"
+              aria-selected="true" aria-controls="panel-delivery" tabindex="0">Выдача</button>
+      <button type="button" class="tab" id="tab-queries" role="tab"
+              aria-selected="false" aria-controls="panel-queries" tabindex="-1">Запросы</button>
+      <button type="button" class="tab" id="tab-settings" role="tab"
+              aria-selected="false" aria-controls="panel-settings" tabindex="-1">Настройки</button>
+    </nav>
+
     <main class="layout">
-      <section class="panel stock-panel" aria-labelledby="stock-title">
-        <div class="panel-head">
-          <h2 id="stock-title">Остаток на диске</h2>
-          <button type="button" class="ghost" id="refresh">Обновить</button>
-        </div>
-        <ul class="stock-list" id="stock-list"></ul>
-        <p class="message" id="stock-message" role="status" aria-live="polite" hidden></p>
-        <p class="empty" id="stock-empty" hidden>Видео пока нет.</p>
-      </section>
-
-      <section class="panel" aria-labelledby="delivery-title">
-        <div class="panel-head">
-          <h2 id="delivery-title">Собрать архив</h2>
-          <span class="muted" id="available"></span>
-        </div>
-
-        <form id="delivery-form" novalidate>
-          <div class="field">
-            <label class="field-label" for="language">Язык</label>
-            <select id="language" name="language"></select>
+      <section class="tab-panel" id="panel-delivery" role="tabpanel"
+               aria-labelledby="tab-delivery" tabindex="0">
+        <section class="panel stock-panel" aria-labelledby="stock-title">
+          <div class="panel-head">
+            <h2 id="stock-title">Остаток на диске</h2>
+            <button type="button" class="ghost" id="refresh">Обновить</button>
           </div>
+          <ul class="stock-list" id="stock-list"></ul>
+          <p class="message" id="stock-message" role="status" aria-live="polite" hidden></p>
+          <p class="empty" id="stock-empty" hidden>Видео пока нет.</p>
 
-          <fieldset class="topics" id="topics">
-            <legend class="field-label">Тема</legend>
-            <div class="topic-list" id="topic-list"></div>
+          <section class="topics" id="topics" aria-labelledby="topics-title">
+            <div class="panel-head topics-head">
+              <h3 id="topics-title">Темы в стоке</h3>
+              <span class="muted" id="topics-language"></span>
+            </div>
+            <ul class="topic-list" id="topic-list"></ul>
             <p class="hint" id="topics-message" role="status" aria-live="polite" hidden></p>
             <p class="hint" id="unclassified" hidden></p>
-          </fieldset>
+          </section>
+        </section>
 
-          <div class="field">
-            <label class="field-label" for="count">Сколько видео</label>
-            <div class="field-row">
-              <input id="count" name="count" type="number" inputmode="numeric"
-                     min="1" max="1" step="1" value="1">
-              <span class="hint" id="count-hint">Не больше 10 за раз.</span>
+        <div class="delivery-grid">
+          <section class="panel" aria-labelledby="delivery-title">
+            <div class="panel-head">
+              <h2 id="delivery-title">Собрать архив</h2>
+              <span class="muted" id="available"></span>
+            </div>
+
+            <form id="delivery-form" novalidate>
+              <div class="field">
+                <label class="field-label" for="language">Язык</label>
+                <select id="language" name="language"></select>
+              </div>
+
+              <div class="field">
+                <label class="field-label" for="count">Сколько видео</label>
+                <div class="field-row">
+                  <input id="count" name="count" type="number" inputmode="numeric"
+                         min="1" max="100" step="1" value="1">
+                  <span class="hint" id="count-hint">Не больше 100 за раз.</span>
+                </div>
+              </div>
+
+              <div class="actions">
+                <button type="submit" class="primary" id="deliver">Собрать архив</button>
+                <span class="status" id="delivery-status" role="status" aria-live="polite"></span>
+              </div>
+            </form>
+
+            <article class="job" id="delivery-job" aria-live="polite" hidden>
+              <div class="panel-head job-head">
+                <h3 id="job-title">Сборка архива</h3>
+                <span class="badge" id="job-state"></span>
+              </div>
+              <p class="status" id="job-message"></p>
+              <div class="job-foot">
+                <span class="timer" id="job-timer" hidden></span>
+                <a class="button primary" id="job-link" hidden>Скачать архив</a>
+                <button type="button" class="ghost" id="job-check" hidden>Проверить</button>
+              </div>
+            </article>
+          </section>
+
+          <section class="panel archives-panel" aria-labelledby="archives-title">
+            <div class="panel-head">
+              <h2 id="archives-title">Готовые архивы</h2>
+              <span class="muted">24 часа</span>
+            </div>
+            <p class="message" id="archives-message" role="status" aria-live="polite" hidden></p>
+            <ul class="archive-list" id="archives"></ul>
+            <p class="empty" id="archives-empty" hidden>Архивов пока нет.</p>
+          </section>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="panel-queries" role="tabpanel"
+               aria-labelledby="tab-queries" tabindex="0" hidden>
+        <section class="panel" aria-labelledby="queries-title">
+          <div class="panel-head">
+            <h2 id="queries-title">Поисковые запросы</h2>
+            <button type="button" class="ghost" id="queries-refresh">Обновить</button>
+          </div>
+
+          <div class="queries-toolbar">
+            <div class="field">
+              <label class="field-label" for="queries-language">Язык</label>
+              <select id="queries-language"></select>
+            </div>
+            <div class="field">
+              <label class="field-label" for="queries-search">Поиск по списку</label>
+              <input id="queries-search" type="search" autocomplete="off"
+                     placeholder="Например, заправка">
             </div>
           </div>
 
-          <div class="actions">
-            <button type="submit" class="primary" id="deliver">Собрать архив</button>
-            <span class="status" id="delivery-status" role="status" aria-live="polite"></span>
-          </div>
-        </form>
+          <p class="hint" id="queries-summary"></p>
+          <p class="message" id="queries-message" role="status" aria-live="polite" hidden></p>
+          <ul class="query-list" id="queries-list"></ul>
+          <p class="empty" id="queries-empty" hidden>Запросов пока нет.</p>
 
-        <div class="last-archive" id="last-archive" hidden></div>
+          <form class="query-form" id="query-form" novalidate>
+            <div class="field">
+              <label class="field-label" for="new-query">Новый запрос</label>
+              <div class="field-row">
+                <input id="new-query" name="query" type="text" maxlength="200"
+                       autocomplete="off" placeholder="Введите поисковый запрос">
+                <button type="submit" class="primary" id="query-add">Добавить</button>
+              </div>
+            </div>
+            <span class="status" id="query-status" role="status" aria-live="polite"></span>
+          </form>
+        </section>
       </section>
 
-      <section class="panel archives-panel" aria-labelledby="archives-title">
-        <div class="panel-head">
-          <h2 id="archives-title">Готовые архивы</h2>
-          <span class="muted">24 часа</span>
-        </div>
-        <p class="message" id="archives-message" role="status" aria-live="polite" hidden></p>
-        <ul class="archive-list" id="archives"></ul>
-        <p class="empty" id="archives-empty" hidden>Архивов пока нет.</p>
+      <section class="tab-panel" id="panel-settings" role="tabpanel"
+               aria-labelledby="tab-settings" tabindex="0" hidden>
+        <section class="panel" aria-labelledby="settings-title">
+          <div class="panel-head">
+            <h2 id="settings-title">Настройки производства</h2>
+            <button type="button" class="ghost" id="settings-refresh">Обновить</button>
+          </div>
+          <p class="hint">
+            «Проверить» показывает diff без записи. «Применить» сохраняет файл:
+            сервер сначала делает бэкап, затем заменяет конфиг атомарно.
+          </p>
+          <p class="message" id="settings-message" role="status" aria-live="polite" hidden></p>
+
+          <form id="settings-form" novalidate>
+            <div class="field">
+              <span class="field-label">Языки</span>
+              <div class="settings-languages" id="settings-languages"></div>
+            </div>
+
+            <div class="settings-grid">
+              <div class="field">
+                <label class="field-label" for="settings-batch">run.batch</label>
+                <input id="settings-batch" type="number" inputmode="numeric"
+                       min="1" max="1000" step="1">
+              </div>
+              <div class="field">
+                <label class="field-label" for="settings-interval">run.interval</label>
+                <input id="settings-interval" type="text" autocomplete="off"
+                       placeholder="6h">
+              </div>
+              <div class="field">
+                <label class="field-label" for="settings-max-duration">run.max_duration</label>
+                <input id="settings-max-duration" type="text" autocomplete="off"
+                       placeholder="45m">
+              </div>
+              <div class="field">
+                <label class="field-label" for="settings-max-queries">search.max_queries</label>
+                <input id="settings-max-queries" type="number" inputmode="numeric"
+                       min="1" max="500" step="1">
+              </div>
+              <div class="field">
+                <label class="field-label" for="settings-filter-max">filter.max</label>
+                <input id="settings-filter-max" type="number" inputmode="numeric"
+                       min="1" max="10000" step="1">
+              </div>
+              <div class="field">
+                <label class="field-label" for="settings-workers">download.workers</label>
+                <input id="settings-workers" type="number" inputmode="numeric"
+                       min="1" max="8" step="1">
+              </div>
+              <div class="field">
+                <label class="field-label" for="settings-delivery-max">delivery.max_count</label>
+                <input id="settings-delivery-max" type="number" inputmode="numeric"
+                       min="1" max="300" step="1">
+              </div>
+            </div>
+
+            <div class="actions">
+              <button type="button" class="secondary" id="settings-preview">Проверить</button>
+              <button type="submit" class="primary" id="settings-apply" disabled>Применить</button>
+              <span class="status" id="settings-status" role="status" aria-live="polite"></span>
+            </div>
+          </form>
+
+          <div class="settings-diff" id="settings-diff" hidden>
+            <h3>Изменения</h3>
+            <pre id="settings-diff-text"></pre>
+            <p class="hint" id="settings-backup" hidden></p>
+          </div>
+        </section>
       </section>
     </main>
 

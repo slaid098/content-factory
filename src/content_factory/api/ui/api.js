@@ -2,11 +2,14 @@
 
 export const MESSAGES = {
   unauthorized: "Нет доступа к API. Откройте страницу с разрешённого адреса.",
-  emptyTopic: "В выбранной теме нет видео.",
+  empty: "В стоке этого языка нет видео.",
+  busy: "Сборка уже идёт. Дождитесь её завершения и попробуйте снова.",
   archiveGone: "Архив уже удалён.",
+  jobGone: "Задача не найдена или её срок истёк.",
   offline: "Сервер недоступен. Проверьте соединение и попробуйте ещё раз.",
   timeout: "Сервер не ответил вовремя. Попробуйте ещё раз.",
   disabled: "Выдача выключена на сервере.",
+  invalid: "Сервер отклонил данные. Проверьте поля формы.",
   badResponse: "Сервер вернул неожиданный ответ.",
 };
 
@@ -26,30 +29,18 @@ export class ApiError extends Error {
 }
 
 /**
- * GET a JSON body.
+ * Request a JSON body from a same-origin API route.
  * @param {string} url
+ * @param {RequestInit} [options]
  * @param {number} [timeoutMs]
  * @returns {Promise<unknown>}
  */
-export async function requestJson(url, timeoutMs = READ_TIMEOUT_MS) {
-  const response = await request(url, {}, timeoutMs);
+export async function requestJson(url, options = {}, timeoutMs = READ_TIMEOUT_MS) {
+  const response = await request(url, options, timeoutMs);
   try {
     return await response.json();
   } catch {
     throw new ApiError(MESSAGES.badResponse, response.status);
-  }
-}
-
-/**
- * Read a response body as a blob, mapping a broken stream to the offline text.
- * @param {Response} response
- * @returns {Promise<Blob>}
- */
-export async function readBlob(response) {
-  try {
-    return await response.blob();
-  } catch {
-    throw new ApiError(MESSAGES.offline, 0);
   }
 }
 
@@ -68,12 +59,12 @@ export async function request(url, options = {}, timeoutMs = READ_TIMEOUT_MS) {
       ...options,
       signal: controller.signal,
       headers: {
-        Accept: "application/json, application/zip",
+        Accept: "application/json",
         ...options.headers,
       },
     });
     if (!response.ok) {
-      throw statusError(response.status);
+      throw await statusError(response);
     }
     return response;
   } catch (error) {
@@ -90,18 +81,43 @@ export async function request(url, options = {}, timeoutMs = READ_TIMEOUT_MS) {
 }
 
 /**
- * @param {number} status
- * @returns {ApiError}
+ * Map an unsuccessful response to a message the page can show as is.
+ * @param {Response} response
+ * @returns {Promise<ApiError>}
  */
-function statusError(status) {
-  if (status === 401) {
-    return new ApiError(MESSAGES.unauthorized, status);
+async function statusError(response) {
+  if (response.status === 401) {
+    return new ApiError(MESSAGES.unauthorized, 401);
   }
-  if (status === 404) {
-    return new ApiError(MESSAGES.archiveGone, status);
+  if (response.status === 503) {
+    return new ApiError(MESSAGES.disabled, 503);
   }
-  if (status === 503) {
-    return new ApiError(MESSAGES.disabled, status);
+  if (response.status === 404) {
+    return new ApiError(MESSAGES.archiveGone, 404);
   }
-  return new ApiError(`Сервер вернул ошибку (код ${status}).`, status);
+  if (response.status === 409) {
+    return new ApiError(MESSAGES.busy, 409);
+  }
+  const detail = await errorDetail(response);
+  if (response.status === 422) {
+    return new ApiError(detail || MESSAGES.invalid, 422);
+  }
+  return new ApiError(detail || `Сервер вернул ошибку (код ${response.status}).`, response.status);
+}
+
+/**
+ * Read a human-readable ``detail`` from an error JSON body.
+ * @param {Response} response
+ * @returns {Promise<string>}
+ */
+async function errorDetail(response) {
+  try {
+    const data = await response.json();
+    if (data && typeof data.detail === "string") {
+      return data.detail;
+    }
+  } catch {
+    return "";
+  }
+  return "";
 }
