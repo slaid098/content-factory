@@ -12,9 +12,19 @@ import pytest
 
 from content_factory.constants import ARCHIVE_DIR, CONTENT_DIR
 from content_factory.exceptions import DeliveryError
-from content_factory.services.delivery.archives import find_archive, list_archives
+from content_factory.schemas.content.delivery import DeliveryJobInfo
+from content_factory.services.delivery.archives import (
+    find_archive,
+    list_archives,
+    resolve_archive,
+)
 from content_factory.services.delivery.metadata import VideoMeta, load_video_meta
-from content_factory.services.delivery.service import cleanup_expired_archives, deliver
+from content_factory.services.delivery.service import (
+    cleanup_expired_archives,
+    count_archive_files,
+    deliver,
+)
+from content_factory.services.delivery.sidecars import save_job
 from content_factory.services.delivery.titles import load_descriptions, normalize_title
 from content_factory.services.delivery.topics import collect_topics
 from delivery_helpers import REQUEST_ID, add_downloaded_video, touch_mp4
@@ -44,6 +54,34 @@ def _touch_archive(
 def _zip_entries(data: bytes) -> list[str]:
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         return archive.namelist()
+
+
+def _sidecar(
+    data_dir: Path,
+    *,
+    status: str,
+    created_at: datetime = _MOMENT,
+    expires_at: datetime | None = None,
+    size: int = 0,
+    files: int = 0,
+    url: str | None = None,
+    error: str | None = None,
+    language: str = "ru",
+    request_id: UUID = REQUEST_ID,
+) -> DeliveryJobInfo:
+    job = DeliveryJobInfo(
+        request_id=request_id,
+        language=language,
+        status=status,  # type: ignore[arg-type]
+        created_at=created_at,
+        expires_at=expires_at or created_at + timedelta(hours=24),
+        size=size,
+        files=files,
+        url=url,
+        error=error,
+    )
+    save_job(data_dir, job)
+    return job
 
 
 def _zip_title(data: bytes, entry: str = "001.json") -> str:
@@ -632,3 +670,134 @@ def test_find_archive_returns_none_when_stat_fails(
     monkeypatch.setattr(Path, "stat", _deny)
 
     assert find_archive(tmp_path, "ru", REQUEST_ID, 24, now=_MOMENT) is None
+
+
+def test_count_archive_files_counts_mp4_entries(tmp_path: Path) -> None:
+    touch_mp4(tmp_path / CONTENT_DIR / "ru" / "a.mp4", b"first")
+    touch_mp4(tmp_path / CONTENT_DIR / "ru" / "b.mp4", b"second")
+    archive = deliver(tmp_path, "ru", 10, REQUEST_ID, retention_hours=24)
+    assert archive is not None
+
+    assert count_archive_files(archive) == 2
+
+
+def test_list_archives_includes_remote_sidecar_without_zip(tmp_path: Path) -> None:
+    _sidecar(
+        tmp_path,
+        status="ready",
+        size=303,
+        files=2,
+        url="https://litter.catbox.moe/example.zip",
+    )
+
+    archives = list_archives(tmp_path, 24, now=_MOMENT)
+
+    assert len(archives) == 1
+    assert archives[0].storage == "remote"
+    assert archives[0].url == "https://litter.catbox.moe/example.zip"
+    assert archives[0].size == 303
+    assert archives[0].files == 2
+    assert archives[0].created_at == _MOMENT
+    assert archives[0].expires_at == _MOMENT + timedelta(hours=24)
+
+
+def test_list_archives_includes_ready_local_sidecar_with_zip(tmp_path: Path) -> None:
+    _touch_archive(tmp_path, data=b"local")
+    _sidecar(tmp_path, status="ready_local", size=5, files=1)
+
+    archives = list_archives(tmp_path, 24, now=_MOMENT)
+
+    assert len(archives) == 1
+    assert archives[0].storage == "local"
+    assert archives[0].url is None
+    assert archives[0].files == 1
+
+
+def test_list_archives_skips_ready_local_without_zip(tmp_path: Path) -> None:
+    _sidecar(tmp_path, status="ready_local", size=5, files=1)
+
+    assert list_archives(tmp_path, 24, now=_MOMENT) == ()
+
+
+def test_list_archives_prefers_remote_sidecar_over_local_zip(tmp_path: Path) -> None:
+    _touch_archive(tmp_path, data=b"still-here")
+    _sidecar(
+        tmp_path,
+        status="ready",
+        size=10,
+        files=1,
+        url="https://litter.catbox.moe/example.zip",
+    )
+
+    archives = list_archives(tmp_path, 24, now=_MOMENT)
+
+    assert len(archives) == 1
+    assert archives[0].storage == "remote"
+
+
+def test_resolve_archive_returns_remote_url_without_zip(tmp_path: Path) -> None:
+    _sidecar(
+        tmp_path,
+        status="ready",
+        size=10,
+        files=1,
+        url="https://litter.catbox.moe/example.zip",
+    )
+
+    location = resolve_archive(tmp_path, "ru", REQUEST_ID, 24, now=_MOMENT)
+
+    assert location is not None
+    assert location.storage == "remote"
+    assert location.url == "https://litter.catbox.moe/example.zip"
+    assert location.path is None
+    assert find_archive(tmp_path, "ru", REQUEST_ID, 24, now=_MOMENT) is None
+
+
+def test_resolve_archive_ready_local_without_zip_is_missing(tmp_path: Path) -> None:
+    _sidecar(tmp_path, status="ready_local", size=10, files=1)
+
+    assert resolve_archive(tmp_path, "ru", REQUEST_ID, 24, now=_MOMENT) is None
+
+
+def test_resolve_archive_removes_expired_sidecar(tmp_path: Path) -> None:
+    _sidecar(
+        tmp_path,
+        status="ready",
+        url="https://litter.catbox.moe/expired.zip",
+        created_at=_MOMENT - timedelta(hours=25),
+        expires_at=_MOMENT - timedelta(hours=1),
+    )
+
+    assert resolve_archive(tmp_path, "ru", REQUEST_ID, 24, now=_MOMENT) is None
+    assert not (tmp_path / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.json").exists()
+
+
+def test_cleanup_removes_expired_sidecar_and_local_zip(tmp_path: Path) -> None:
+    archive = _touch_archive(
+        tmp_path,
+        data=b"local",
+        created_at=_MOMENT - timedelta(hours=25),
+    )
+    _sidecar(
+        tmp_path,
+        status="ready_local",
+        created_at=_MOMENT - timedelta(hours=25),
+        expires_at=_MOMENT - timedelta(hours=1),
+    )
+
+    cleanup_expired_archives(tmp_path, 24, now=_MOMENT)
+
+    assert not archive.exists()
+    assert not (tmp_path / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.json").exists()
+
+
+def test_cleanup_keeps_fresh_sidecar(tmp_path: Path) -> None:
+    _sidecar(
+        tmp_path,
+        status="ready",
+        url="https://litter.catbox.moe/fresh.zip",
+    )
+
+    cleanup_expired_archives(tmp_path, 24, now=_MOMENT)
+
+    assert (tmp_path / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.json").is_file()

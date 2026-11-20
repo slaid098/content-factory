@@ -13,6 +13,7 @@ from content_factory.exceptions.errors import ConfigError
 from content_factory.schemas.config.runtime import (
     AlertsConfig,
     CaptchaConfig,
+    DeliveryConfig,
     DownloadConfig,
     FilterConfig,
     LanguageConfig,
@@ -104,6 +105,7 @@ def _build(data: Mapping[str, Any]) -> RuntimeConfig:
     download = cast(Mapping[str, Any], data["download"])
     captcha = cast(Mapping[str, Any], data["captcha"])
     alerts = cast(Mapping[str, Any], data["alerts"])
+    delivery = cast(Mapping[str, Any], data["delivery"])
     languages = cast(Mapping[str, Mapping[str, Any]], data["languages"])
 
     config = RuntimeConfig(
@@ -134,6 +136,15 @@ def _build(data: Mapping[str, Any]) -> RuntimeConfig:
         ),
         alerts=AlertsConfig(cooldown=_duration(alerts, "cooldown", "alerts.cooldown")),
         languages={code: _language(code, value) for code, value in languages.items()},
+        delivery=DeliveryConfig(
+            max_count=_int(
+                delivery,
+                "max_count",
+                "delivery.max_count",
+                minimum=1,
+                maximum=300,
+            )
+        ),
     )
     if config.run.pause_between_languages > config.run.max_duration:
         raise ConfigError("run.pause_between_languages не может превышать run.max_duration")
@@ -146,13 +157,16 @@ def _int(
     location: str,
     *,
     minimum: int,
+    maximum: int | None = None,
 ) -> int:
-    """Return an integer field, rejecting booleans and values below *minimum*."""
+    """Return an integer field, rejecting booleans and out-of-range values."""
     value = section[key]
     if isinstance(value, bool) or not isinstance(value, int):
         raise ConfigError(f"{location}: ожидалось целое число")
     if value < minimum:
         raise ConfigError(f"{location}: значение должно быть не меньше {minimum}")
+    if maximum is not None and value > maximum:
+        raise ConfigError(f"{location}: значение должно быть не больше {maximum}")
     return value
 
 

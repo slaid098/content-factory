@@ -16,6 +16,7 @@ from content_factory.constants import ARCHIVE_DIR, CONTENT_DIR, DB_DIR, DB_FILEN
 from content_factory.exceptions.errors import DeliveryError
 from content_factory.services.delivery.archives import is_archive_expired
 from content_factory.services.delivery.metadata import VideoMeta, load_video_meta
+from content_factory.services.delivery.sidecars import read_job_file
 from content_factory.services.delivery.titles import load_descriptions, normalize_title
 
 _DELIVERY_LOCK = threading.Lock()
@@ -96,6 +97,23 @@ def deliver(
         return archive_path
 
 
+def count_archive_files(archive_path: Path) -> int:
+    """Return the number of ``NNN.mp4`` entries in a built delivery archive.
+
+    Args:
+        archive_path: Path to a zip archive written by :func:`deliver`.
+
+    Returns:
+        Number of video entries, one per delivered video.
+
+    Raises:
+        OSError: The archive cannot be read.
+        zipfile.BadZipFile: The file is not a valid zip archive.
+    """
+    with zipfile.ZipFile(archive_path) as archive:
+        return sum(1 for name in archive.namelist() if name.endswith(".mp4"))
+
+
 def cleanup_expired_archives(
     data_dir: Path,
     retention_hours: int = 24,
@@ -118,6 +136,7 @@ def cleanup_expired_archives(
     """
     moment = now or datetime.now(UTC)
     removed = 0
+    sidecars_removed = 0
     with _DELIVERY_LOCK:
         archive_root = data_dir / ARCHIVE_DIR
         try:
@@ -132,13 +151,70 @@ def cleanup_expired_archives(
             ).warning("Не удалось прочитать каталог архивов")
             return 0
         for directory in language_dirs:
-            removed += _cleanup_directory(directory, moment, retention_hours)
-    logger.bind(removed=removed).info("Очистка архива выдач: удалено {} zip", removed)
+            zips, sidecars = _cleanup_directory(directory, moment, retention_hours)
+            removed += zips
+            sidecars_removed += sidecars
+    logger.bind(removed=removed, sidecars=sidecars_removed).info(
+        "Очистка архива выдач: удалено {} zip и {} sidecar",
+        removed,
+        sidecars_removed,
+    )
     return removed
 
 
-def _cleanup_directory(directory: Path, now: datetime, retention_hours: int) -> int:
-    """Remove expired zips of one language directory."""
+def _cleanup_directory(
+    directory: Path,
+    now: datetime,
+    retention_hours: int,
+) -> tuple[int, int]:
+    """Remove expired zips and sidecars of one language directory."""
+    sidecars_removed = _cleanup_sidecars(directory, now)
+    return _cleanup_zip_files(directory, now, retention_hours), sidecars_removed
+
+
+def _cleanup_sidecars(directory: Path, now: datetime) -> int:
+    """Remove expired sidecars together with their local zips."""
+    try:
+        sidecars = list(directory.glob("*.json"))
+    except OSError as ex:
+        logger.bind(path=str(directory), error=ex, error_type=type(ex).__name__).warning(
+            "Не удалось прочитать каталог sidecar {}",
+            directory.name,
+        )
+        return 0
+    removed = 0
+    for sidecar in sidecars:
+        job = read_job_file(sidecar)
+        if job is None or job.expires_at > now:
+            continue
+        try:
+            sidecar.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as ex:
+            logger.bind(path=str(sidecar), error=ex, error_type=type(ex).__name__).warning(
+                "Не удалось удалить sidecar {}",
+                sidecar.name,
+            )
+            continue
+        removed += 1
+        _remove_job_zip(directory, job.request_id)
+    return removed
+
+
+def _remove_job_zip(directory: Path, request_id: UUID) -> None:
+    """Remove the local zip that belongs to an expired sidecar."""
+    try:
+        (directory / f"{request_id}{_ZIP_SUFFIX}").unlink(missing_ok=True)
+    except OSError as ex:
+        logger.bind(error=ex, error_type=type(ex).__name__).warning(
+            "Не удалось удалить архив {}",
+            request_id,
+        )
+
+
+def _cleanup_zip_files(directory: Path, now: datetime, retention_hours: int) -> int:
+    """Remove expired zips without a live sidecar."""
     try:
         archives = list(directory.glob(f"*{_ZIP_SUFFIX}"))
     except OSError as ex:

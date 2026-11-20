@@ -60,11 +60,17 @@ curl -f -X POST http://127.0.0.1:8000/api/v1/content/deliveries \
   -o delivery.zip
 ```
 
-Тело запроса: `language` (`^[a-z]{2}$`), `count` (1–10), `request_id` (UUID),
-необязательный `query` (тема, до 200 символов). Ответ `200` — zip с `NNN.mp4`
-и `NNN.json` (sidecar `{"title": "..."}`); `204` — в языке или выбранной теме
-нет `.mp4`; `401` — нет или неверный Bearer-токен; `422` — невалидное тело;
-`503` — токен не настроен.
+Тело запроса: `language` (`^[a-z]{2}$`), `count` (1–300, фактический
+максимум — `delivery.max_count` в runtime-конфиге, по умолчанию 100),
+`request_id` (UUID), необязательный `query` (тема, до 200 символов). Ответ
+`200` — zip с `NNN.mp4` и `NNN.json` (sidecar `{"title": "..."}`); `204` — в
+языке или выбранной теме нет `.mp4`; `401` — нет или неверный Bearer-токен;
+`422` — невалидное тело или `count` выше лимита; `503` — токен не настроен.
+
+Для ручной выдачи сотен видео есть асинхронный
+`POST /api/v1/content/deliveries/link`: он отвечает `202`, собирает zip в фоне,
+заливает его на Litterbox на 24 часа и оставляет на сервере sidecar со ссылкой.
+Статус — `GET /api/v1/content/deliveries/<language>/<request_id>`.
 
 Остаток по темам отдаёт `GET /api/v1/content/topics?language=ru`, список
 живых архивов — `GET /api/v1/content/archives`, повторное скачивание —
