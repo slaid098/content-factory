@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from content_factory.api.app import create_app
 
-_UI_DIR = Path(__file__).resolve().parents[1] / "src" / "content_factory" / "api" / "ui"
+_UI_DIR = Path(__file__).resolve().parents[3] / "src" / "content_factory" / "api" / "ui"
 _FORBIDDEN = ("Bearer ", "CONTENT_FACTORY_DELIVERY_TOKEN", "Authorization")
 _EXTERNAL_URL = re.compile(r"https?://", re.IGNORECASE)
 _UI_FILES = sorted(path.name for path in _UI_DIR.iterdir() if path.is_file())

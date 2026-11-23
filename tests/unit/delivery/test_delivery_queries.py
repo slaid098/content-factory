@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from tests.unit.common.delivery_helpers import add_downloaded_video, touch_mp4
 
 from content_factory.constants import CONTENT_DIR, QUERIES_DIR
 from content_factory.db.delivery import load_language_queries
@@ -13,7 +14,6 @@ from content_factory.services.delivery.queries import (
     list_language_queries,
     normalize_query,
 )
-from delivery_helpers import add_downloaded_video, touch_mp4
 
 _HEADER = "# Добавлено из интерфейса"
 

@@ -10,6 +10,12 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from tests.unit.common.delivery_helpers import (
+    REQUEST_ID,
+    add_downloaded_video,
+    add_title,
+    touch_mp4,
+)
 
 from content_factory.constants import ARCHIVE_DIR, CONTENT_DIR
 from content_factory.db.video_meta import load_video_meta
@@ -29,7 +35,6 @@ from content_factory.services.delivery.service import (
 )
 from content_factory.services.delivery.sidecars import save_job
 from content_factory.services.delivery.topics import collect_topics
-from delivery_helpers import REQUEST_ID, add_downloaded_video, add_title, touch_mp4
 
 _MOMENT = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
 

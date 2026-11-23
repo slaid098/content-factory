@@ -5,11 +5,11 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from tests.unit.common.delivery_helpers import add_downloaded_video, touch_mp4
 
 from content_factory.api.app import create_app
 from content_factory.constants import CONTENT_DIR, QUERIES_DIR
 from content_factory.exceptions import DeliveryError
-from delivery_helpers import add_downloaded_video, touch_mp4
 
 _TOKEN = "delivery-secret"
 _HEADER = "# Добавлено из интерфейса"

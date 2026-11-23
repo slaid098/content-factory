@@ -5,6 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from tests.unit.supplier.supplier_helpers import make_config, make_metadata, make_video
 
 from content_factory.exceptions.errors import ConfigError, SupplierError
 from content_factory.schemas.supplier.results import FilterDecision, FilterResult
@@ -12,7 +13,6 @@ from content_factory.schemas.supplier.settings import SupplierConfig
 from content_factory.schemas.supplier.video import STATUS_APPROVED, Video, VideoMetadata
 from content_factory.services.supplier.filter import Filter, filter_videos
 from content_factory.services.supplier.repository import Repository
-from supplier_helpers import make_config, make_metadata, make_video
 
 
 class FakeSink:

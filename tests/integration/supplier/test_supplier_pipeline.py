@@ -5,6 +5,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from tests.unit.supplier.supplier_helpers import make_config, make_metadata, make_video
 
 from content_factory.schemas.supplier.progress import Budget
 from content_factory.schemas.supplier.results import (
@@ -25,7 +26,6 @@ from content_factory.schemas.supplier.video import (
 from content_factory.services.supplier import pipeline
 from content_factory.services.supplier.pipeline import run_language
 from content_factory.services.supplier.repository import Repository
-from supplier_helpers import make_config, make_metadata, make_video
 
 
 class _UnusedStage:

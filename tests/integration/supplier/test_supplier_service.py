@@ -8,6 +8,12 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
+from tests.unit.supplier.supplier_helpers import (
+    make_metadata,
+    make_runtime,
+    make_supplier_settings,
+    make_video,
+)
 
 from content_factory.config.settings import Settings
 from content_factory.constants import CONTENT_DIR, DB_DIR, DB_FILENAME, QUERIES_DIR
@@ -26,12 +32,6 @@ from content_factory.schemas.supplier.video import (
 )
 from content_factory.services.supplier import downloader, finder, service
 from content_factory.services.supplier.repository import Repository
-from supplier_helpers import (
-    make_metadata,
-    make_runtime,
-    make_supplier_settings,
-    make_video,
-)
 
 RU_URL = "https://www.tiktok.com/@alice/video/111"
 EN_URL = "https://www.tiktok.com/@bob/video/222"
