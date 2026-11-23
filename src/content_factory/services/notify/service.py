@@ -5,14 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 
-import httpx
-from loguru import logger
-
 from content_factory.config.settings import Settings
 from content_factory.schemas.notify.alert import AlertKind
-
-_API = "https://api.telegram.org/bot{token}/sendMessage"
-_TIMEOUT = 10.0
+from content_factory.services.notify import client
 
 
 def send_critical(
@@ -27,7 +22,7 @@ def send_critical(
     """Отправить критичный алерт, если кулдаун этого вида истёк.
 
     Без ``TELEGRAM_BOT_TOKEN`` и ``TELEGRAM_CHAT_ID`` отправка выключена.
-    Ошибка Telegram логируется и не прерывает flow.
+    Ошибка Telegram логируется клиентом и не прерывает flow.
 
     Args:
         kind: Вид алерта; кулдаун считается отдельно для каждого вида.
@@ -46,7 +41,7 @@ def send_critical(
     moment = now or datetime.now(UTC)
     if _in_cooldown(kind, last_sent, cooldown, moment):
         return None
-    if not _send(settings, kind, text):
+    if not client.send_message(settings, kind, text):
         return None
     return moment
 
@@ -60,22 +55,3 @@ def _in_cooldown(
     """Return whether the same alert kind was sent too recently."""
     last = last_sent.get(kind.value)
     return last is not None and now - last < timedelta(seconds=cooldown)
-
-
-def _send(settings: Settings, kind: AlertKind, text: str) -> bool:
-    """Post one message to Telegram and report whether it was accepted."""
-    payload = {
-        "chat_id": settings.telegram_chat_id,
-        "text": f"[content-factory] {kind.value}: {text}",
-        "disable_web_page_preview": True,
-    }
-    url = _API.format(token=settings.telegram_bot_token)
-    try:
-        response = httpx.post(url, json=payload, timeout=_TIMEOUT)
-        response.raise_for_status()
-    except Exception as ex:
-        logger.bind(kind=kind.value, error=ex, error_type=type(ex).__name__).warning(
-            "Не удалось отправить алерт {}", kind.value
-        )
-        return False
-    return True
