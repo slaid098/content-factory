@@ -27,7 +27,7 @@ _LANGUAGE = re.compile(r"[a-z]{2}")
 
 
 @dataclass(frozen=True, slots=True)
-class ArchiveLocation:
+class _ArchiveLocation:
     """Where one live archive can be fetched from."""
 
     storage: Literal["local", "remote"]
@@ -35,7 +35,7 @@ class ArchiveLocation:
     url: str | None
 
 
-def archive_expires_at(created_at: datetime, retention_hours: int) -> datetime:
+def _archive_expires_at(created_at: datetime, retention_hours: int) -> datetime:
     """Return the moment an archive stops being served.
 
     Args:
@@ -64,7 +64,7 @@ def is_archive_expired(
     Returns:
         True when the archive must not be served anymore.
     """
-    return archive_expires_at(created_at, retention_hours) <= now
+    return _archive_expires_at(created_at, retention_hours) <= now
 
 
 def list_archives(
@@ -121,7 +121,7 @@ def resolve_archive(
     retention_hours: int,
     *,
     now: datetime | None = None,
-) -> ArchiveLocation | None:
+) -> _ArchiveLocation | None:
     """Return a live local path or remote URL of one archive.
 
     A ready sidecar with a URL is always remote, even when the local zip was
@@ -136,12 +136,12 @@ def resolve_archive(
             _discard_expired_job(data_dir, job)
             return None
         if job.status == "ready" and job.url:
-            return ArchiveLocation(storage="remote", path=None, url=job.url)
+            return _ArchiveLocation(storage="remote", path=None, url=job.url)
         if job.status == "ready_local":
             path = _zip_path(data_dir, language, request_id)
             try:
                 if path.is_file():
-                    return ArchiveLocation(storage="local", path=path, url=None)
+                    return _ArchiveLocation(storage="local", path=path, url=None)
             except OSError as ex:
                 logger.bind(error=ex, error_type=type(ex).__name__).warning(
                     "Не удалось прочитать архив {}",
@@ -154,7 +154,7 @@ def resolve_archive(
         return None
     if is_archive_expired(stored_at, retention_hours, now=moment):
         return None
-    return ArchiveLocation(storage="local", path=path, url=None)
+    return _ArchiveLocation(storage="local", path=path, url=None)
 
 
 def find_archive(
@@ -257,7 +257,7 @@ def _read_archive(
         request_id=request_id,
         size=stat.st_size,
         created_at=created_at,
-        expires_at=archive_expires_at(created_at, retention_hours),
+        expires_at=_archive_expires_at(created_at, retention_hours),
         storage="local",
     )
 
