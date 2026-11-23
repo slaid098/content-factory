@@ -14,7 +14,14 @@ from pydantic import SecretStr
 from tests.unit.common.delivery_helpers import add_downloaded_video, add_title, touch_mp4
 
 from content_factory.config.settings import TitlesSettings, load_titles_settings
-from content_factory.constants import CONTENT_DIR, DB_DIR, DB_FILENAME
+from content_factory.constants import (
+    ARCHIVE_DIR,
+    CONFIG_DIR,
+    CONTENT_DIR,
+    DB_DIR,
+    DB_FILENAME,
+    QUERIES_DIR,
+)
 from content_factory.db import titles as titles_db
 from content_factory.db.titles import ensure_schema, load_titles, recent_titles, save_title
 from content_factory.db.video_meta import load_video_meta
@@ -1248,6 +1255,24 @@ def test_titles_flow_returns_disabled_without_key(
         logger.remove(sink)
     assert called is False
     assert any("titles: TITLES_API_KEY не задан" in message for message in messages)
+
+
+def test_titles_flow_creates_data_directories(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "app_data"
+    monkeypatch.setattr(titles_flow, "get_settings", lambda: _simple_settings(data_dir))
+    monkeypatch.setattr(
+        titles_flow,
+        "load_titles_settings",
+        lambda: TitlesSettings(api_key=None),
+    )
+
+    assert titles_flow.titles.fn() == "disabled"
+
+    for name in (CONFIG_DIR, DB_DIR, CONTENT_DIR, ARCHIVE_DIR, QUERIES_DIR):
+        assert (data_dir / name).is_dir()
 
 
 def test_titles_flow_returns_result(
