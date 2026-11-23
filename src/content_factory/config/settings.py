@@ -180,7 +180,11 @@ def get_settings() -> Settings:
 
 
 def load_settings() -> Settings:
-    """Read settings from the environment and prepare the data directory."""
+    """Read the process settings from the environment once.
+
+    Ensure the data directory tree exists; later calls reuse the cached
+    settings without reading the environment again.
+    """
     settings = get_settings()
     prepare_data_dirs(settings)
     return settings
