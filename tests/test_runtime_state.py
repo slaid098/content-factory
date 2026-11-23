@@ -74,6 +74,33 @@ def test_connect_passes_timeout_to_driver(
     assert captured["timeout"] == 30
 
 
+def test_connect_closes_connection_when_setup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeConnection:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake = FakeConnection()
+
+    def fake_connect(*_args: object, **_kwargs: object) -> FakeConnection:
+        return fake
+
+    def fail_configure(_connection: object) -> None:
+        raise RuntimeError("pragma failed")
+
+    monkeypatch.setattr("content_factory.db.connection.sqlite3.connect", fake_connect)
+    monkeypatch.setattr("content_factory.db.connection._configure", fail_configure)
+
+    with pytest.raises(RuntimeError, match="pragma failed"):
+        connect(tmp_path / "db" / "db.sqlite3")
+
+    assert fake.closed
+
+
 def test_connect_readonly_keeps_timeouts_and_row_factory(tmp_path: Path) -> None:
     db_path = tmp_path / "db" / "db.sqlite3"
     connect(db_path).close()

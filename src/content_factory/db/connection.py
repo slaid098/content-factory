@@ -25,8 +25,12 @@ def connect(db_path: Path) -> sqlite3.Connection:
     """
     db_path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(db_path, timeout=_TIMEOUT_SECONDS)
-    _configure(connection)
-    connection.execute("PRAGMA journal_mode=WAL")
+    try:
+        _configure(connection)
+        connection.execute("PRAGMA journal_mode=WAL")
+    except BaseException:
+        connection.close()
+        raise
     return connection
 
 

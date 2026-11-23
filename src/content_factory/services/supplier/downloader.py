@@ -247,8 +247,8 @@ def _finalize_download(
     final_path: Path,
 ) -> tuple[str, DownloadedVideo | None]:
     """Move the staged file and persist the download under a cross-process lock."""
-    lock_file = lock_path(cfg.db_path.parent, SUPPLIER_LOCK)
     try:
+        lock_file = lock_path(cfg.db_path.parent, SUPPLIER_LOCK)
         with locked(lock_file):
             moved = False
             try:

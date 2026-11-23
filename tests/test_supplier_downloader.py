@@ -340,6 +340,34 @@ def test_download_videos_removes_file_when_save_fails(
     assert not (cfg.content_dir / "unique.tmp").exists()
 
 
+def test_download_videos_reports_unusable_lock_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    blocker = tmp_path / "blocked"
+    blocker.write_text("not a directory", encoding="utf-8")
+    cfg = make_config(tmp_path, db_path=blocker / "db" / "db.sqlite3")
+    video = make_video()
+
+    def fake_fetch(_video: Video, config: SupplierConfig) -> tuple[Path, str, int]:
+        config.content_dir.mkdir(parents=True, exist_ok=True)
+        staged = config.content_dir / "locked.tmp"
+        staged.write_bytes(b"video")
+        return staged, "locked", 5
+
+    monkeypatch.setattr(downloader, "_fetch_to_tmp", fake_fetch)
+    sink = FakeSink()
+
+    result = download_videos(cfg, [video], sink)
+
+    assert result.failed == 1
+    assert result.downloaded == ()
+    assert len(sink.failures) == 1
+    assert "каталог блокировок" in sink.failures[0][1]
+    assert not (cfg.content_dir / "locked.tmp").exists()
+    assert not (cfg.content_dir / "locked.mp4").exists()
+
+
 def test_download_videos_keeps_committed_file_when_save_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

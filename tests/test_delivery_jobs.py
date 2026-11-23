@@ -414,6 +414,19 @@ def test_build_slot_is_exclusive_across_processes(data_dir: Path) -> None:
     assert not (data_dir / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.json").exists()
 
 
+def test_unusable_lock_dir_maps_to_json_delivery_error(data_dir: Path) -> None:
+    (data_dir / DB_DIR).write_text("not a directory", encoding="utf-8")
+    request = DeliveryRequest(language="ru", count=1, request_id=REQUEST_ID)
+
+    with pytest.raises(DeliveryError):
+        start_delivery_job(data_dir, request, retention_hours=24)
+
+    response = _post(_client())
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "delivery failed"}
+
+
 def test_repeated_post_for_ready_job_keeps_stock_and_status(
     data_dir: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -108,8 +108,8 @@ def start_delivery_job(
         DeliveryError: The sidecar cannot be written or the worker cannot start.
     """
     moment = now or datetime.now(UTC)
-    start_lock = lock_path(data_dir / DB_DIR, DELIVERY_START_LOCK)
     try:
+        start_lock = lock_path(data_dir / DB_DIR, DELIVERY_START_LOCK)
         with locked(start_lock):
             return _start_under_lock(data_dir, request, moment, retention_hours)
     except LockError as ex:
