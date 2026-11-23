@@ -46,7 +46,7 @@ SETTINGS_LOCK = "settings"
 SUPPLIER_LOCK = "supplier"
 QUERIES_LOCK = "queries"
 
-DEFAULT_TIMEOUT = 300.0
+_DEFAULT_TIMEOUT = 300.0
 _LOCK_SUFFIX = ".lock"
 _LOCK_MODE = 0o600
 _POLL_SECONDS = 0.05
@@ -112,7 +112,7 @@ def lock_path(db_dir: Path, name: str) -> Path:
     return db_dir / f"{name}{_LOCK_SUFFIX}"
 
 
-def acquire(path: Path, *, timeout: float = DEFAULT_TIMEOUT) -> FileLock:
+def acquire(path: Path, *, timeout: float = _DEFAULT_TIMEOUT) -> FileLock:
     """Acquire the exclusive lock, polling until *timeout* seconds pass.
 
     Args:
@@ -142,7 +142,7 @@ def acquire(path: Path, *, timeout: float = DEFAULT_TIMEOUT) -> FileLock:
 
 
 @contextmanager
-def locked(path: Path, *, timeout: float = DEFAULT_TIMEOUT) -> Iterator[None]:
+def locked(path: Path, *, timeout: float = _DEFAULT_TIMEOUT) -> Iterator[None]:
     """Hold the exclusive lock for the duration of the block."""
     lock = acquire(path, timeout=timeout)
     try:
