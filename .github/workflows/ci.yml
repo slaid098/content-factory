@@ -88,11 +88,15 @@ jobs:
         env:
           ENGINE_GIT_TOKEN: ${{ secrets.ENGINE_GIT_TOKEN }}
         run: |
-          if [ -z "${ENGINE_GIT_TOKEN}" ]; then
+          token=$(printf '%s' "${ENGINE_GIT_TOKEN}" | tr -d '[:space:]')
+          if [ -z "${token}" ]; then
             echo "::error::Секрет ENGINE_GIT_TOKEN не задан."
             exit 1
           fi
-          git config --global url."https://oauth2:${ENGINE_GIT_TOKEN}@git.slaid098.dev/".insteadOf "https://git.slaid098.dev/"
+          api="https://git.slaid098.dev/api/v1/repos/slaid098/agent-skills"
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: token ${token}" "${api}" || true)
+          echo "engine token API status: ${code}"
+          git config --global url."https://oauth2:${token}@git.slaid098.dev/".insteadOf "https://git.slaid098.dev/"
 
       - name: Build baseline
         if: steps.baseline.outputs.cache-hit != 'true'
