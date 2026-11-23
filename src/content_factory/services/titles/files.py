@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
-_LANGUAGE_DIR = re.compile(r"^[a-z]{2}$")
+from content_factory.constants import LANGUAGE_CODE_RE
 
 
 def stock_files(content_dir: Path) -> list[tuple[str, Path]]:
     """List language directories and their mp4 files in stable order.
 
-    Only directories named with exactly two lowercase Latin letters are
+    Only directories named with two or three lowercase Latin letters are
     treated as languages; other entries and non-mp4 files are ignored.
 
     Args:
@@ -24,7 +23,7 @@ def stock_files(content_dir: Path) -> list[tuple[str, Path]]:
         return []
     files: list[tuple[str, Path]] = []
     for directory in sorted(content_dir.iterdir(), key=lambda path: path.name):
-        if not directory.is_dir() or _LANGUAGE_DIR.fullmatch(directory.name) is None:
+        if not directory.is_dir() or LANGUAGE_CODE_RE.fullmatch(directory.name) is None:
             continue
         for path in sorted(directory.iterdir(), key=lambda item: item.name):
             if path.is_file() and path.suffix == ".mp4":

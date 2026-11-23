@@ -43,7 +43,7 @@ def deliver(
 
     Args:
         data_dir: Root of the runtime data directory.
-        language: Validated two-letter language code.
+        language: Validated two- or three-letter language code.
         count: Maximum number of videos to deliver.
         request_id: Client request identifier, also the archive file name.
         query: Exact ``videos.query`` topic; ``None`` selects every topic.

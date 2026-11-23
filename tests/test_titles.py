@@ -1159,6 +1159,20 @@ def test_assign_titles_ignores_foreign_files_and_directories(
     assert result == TitlePassResult(candidates=1, titled=1, skipped=0)
 
 
+def test_assign_titles_scans_three_letter_language_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    _patch_generation(monkeypatch, calls=calls)
+    _stock(tmp_path, "eng", "a" * 64)
+
+    result = assign_titles(tmp_path, _settings(), now=_NOW)
+
+    assert result == TitlePassResult(candidates=1, titled=1, skipped=0)
+    assert calls[0]["language"] == "eng"
+
+
 def test_assign_titles_updates_recent_titles_during_pass(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

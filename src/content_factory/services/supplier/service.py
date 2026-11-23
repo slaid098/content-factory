@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import tempfile
 import time
@@ -14,7 +13,13 @@ from pathlib import Path
 from loguru import logger
 
 from content_factory.config.settings import Settings, SupplierSettings, build_supplier_config
-from content_factory.constants import CONTENT_DIR, DB_DIR, DB_FILENAME, QUERIES_DIR
+from content_factory.constants import (
+    CONTENT_DIR,
+    DB_DIR,
+    DB_FILENAME,
+    LANGUAGE_CODE_RE,
+    QUERIES_DIR,
+)
 from content_factory.exceptions.errors import SupplierError
 from content_factory.schemas.config.runtime import RuntimeConfig
 from content_factory.schemas.supplier.progress import Budget
@@ -30,7 +35,6 @@ from content_factory.services.supplier.repository import Repository
 
 _SEED_QUERIES_DIR = Path(__file__).parent / "queries"
 _STOP_PLAN = frozenset({StopReason.CAPTCHA, StopReason.DURATION_EXCEEDED})
-_LANGUAGE_RE = re.compile(r"^[a-z]{2,3}$")
 _STALE_TMP_SECONDS = 24 * 60 * 60
 
 
@@ -114,7 +118,7 @@ def produce(
 def _validate_languages(languages: Mapping[str, int]) -> None:
     """Reject language codes that cannot be used as path components."""
     for language in languages:
-        if _LANGUAGE_RE.fullmatch(language) is None:
+        if LANGUAGE_CODE_RE.fullmatch(language) is None:
             raise SupplierError(f"недопустимый код языка: {language!r}")
 
 

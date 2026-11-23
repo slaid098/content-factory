@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from content_factory.constants import LANGUAGE_CODE_RE
+
 
 class QueryCount(BaseModel):
     """One search query with the remaining stock found by it."""
@@ -31,7 +33,7 @@ class QueryCreateRequest(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    language: str = Field(pattern=r"^[a-z]{2}$")
+    language: str = Field(pattern=LANGUAGE_CODE_RE.pattern)
     query: str
 
 

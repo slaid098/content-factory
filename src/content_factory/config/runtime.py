@@ -41,6 +41,15 @@ def load_runtime_config(path: Path, *, seed: bool = True) -> RuntimeConfig:
     return validate_runtime_config(raw)
 
 
+def default_config() -> RuntimeConfig:
+    """Build the built-in runtime configuration from ``DEFAULT_CONFIG``.
+
+    The raw mapping stays the only source of default values: the typed
+    configuration, the seeded template and the settings editor all follow it.
+    """
+    return validate_runtime_config(DEFAULT_CONFIG)
+
+
 def validate_runtime_config(raw: Mapping[str, Any]) -> RuntimeConfig:
     """Validate a raw runtime mapping merged over the built-in defaults.
 

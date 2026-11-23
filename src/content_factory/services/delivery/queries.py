@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
 import sqlite3
 import stat
 import tempfile
@@ -14,7 +13,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from content_factory.constants import DB_DIR, DB_FILENAME, QUERIES_DIR
+from content_factory.constants import DB_DIR, DB_FILENAME, LANGUAGE_CODE_RE, QUERIES_DIR
 from content_factory.db.connection import connect_readonly
 from content_factory.exceptions.errors import DeliveryError, SupplierError
 from content_factory.schemas.content.queries import QueriesResponse, QueryCount
@@ -22,7 +21,6 @@ from content_factory.services import supplier
 from content_factory.services.delivery.topics import collect_topics
 
 _HEADER = "# Добавлено из интерфейса"
-_LANGUAGE_RE = re.compile(r"^[a-z]{2}$")
 _MAX_QUERY_LENGTH = 200
 _WRITE_LOCK = threading.Lock()
 
@@ -36,13 +34,13 @@ def list_language_queries(data_dir: Path, language: str) -> QueriesResponse:
 
     Args:
         data_dir: Root of the runtime data directory.
-        language: Validated two-letter language code.
+        language: Validated two- or three-letter language code.
 
     Returns:
         The query list, unclassified stock count and total stock count.
 
     Raises:
-        ValueError: The language code is not two lowercase letters.
+        ValueError: The language code is not two or three lowercase letters.
         DeliveryError: The query file exists but cannot be read.
     """
     _validate_language(language)
@@ -113,7 +111,7 @@ def add_language_query(data_dir: Path, language: str, query: str) -> tuple[str, 
 
     Args:
         data_dir: Root of the runtime data directory.
-        language: Validated two-letter language code.
+        language: Validated two- or three-letter language code.
         query: Raw query from the request body.
 
     Returns:
@@ -142,7 +140,7 @@ def add_language_query(data_dir: Path, language: str, query: str) -> tuple[str, 
 
 def _validate_language(language: str) -> None:
     """Reject language codes that cannot be used as file names."""
-    if _LANGUAGE_RE.fullmatch(language) is None:
+    if LANGUAGE_CODE_RE.fullmatch(language) is None:
         raise ValueError(f"недопустимый код языка: {language!r}")
 
 

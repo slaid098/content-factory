@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from content_factory.constants import LANGUAGE_CODE_RE
+
 DeliveryStatus = Literal["building", "ready", "ready_local", "empty", "failed"]
 
 
@@ -16,7 +18,7 @@ class DeliveryRequest(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    language: str = Field(pattern=r"^[a-z]{2}$")
+    language: str = Field(pattern=LANGUAGE_CODE_RE.pattern)
     count: int = Field(ge=1, le=300)
     request_id: UUID
     query: str | None = Field(default=None, min_length=1, max_length=200)

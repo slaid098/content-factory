@@ -102,9 +102,21 @@ def test_list_without_stock_keeps_zero_counts(tmp_path: Path) -> None:
     assert response.total == 0
 
 
-def test_list_rejects_invalid_language(tmp_path: Path) -> None:
+def test_list_accepts_three_letter_language(tmp_path: Path) -> None:
+    path = tmp_path / QUERIES_DIR / "eng.txt"
+    path.parent.mkdir(parents=True)
+    path.write_text("query\n", encoding="utf-8")
+
+    response = list_language_queries(tmp_path, "eng")
+
+    assert response.language == "eng"
+    assert [item.query for item in response.queries] == ["query"]
+
+
+@pytest.mark.parametrize("language", ["r", "RU", "ru-RU", "ru/", "../ru", ""])
+def test_list_rejects_invalid_language(tmp_path: Path, language: str) -> None:
     with pytest.raises(ValueError, match="недопустимый код языка"):
-        list_language_queries(tmp_path, "../ru")
+        list_language_queries(tmp_path, language)
 
 
 def test_list_wraps_unreadable_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -219,9 +231,10 @@ def test_add_duplicate_inside_interface_section_is_skipped(tmp_path: Path) -> No
     assert path.read_text(encoding="utf-8") == original
 
 
-def test_add_rejects_invalid_language(tmp_path: Path) -> None:
+@pytest.mark.parametrize("language", ["r", "RU", "ru-RU", "../ru"])
+def test_add_rejects_invalid_language(tmp_path: Path, language: str) -> None:
     with pytest.raises(ValueError, match="недопустимый код языка"):
-        add_language_query(tmp_path, "../ru", "запрос")
+        add_language_query(tmp_path, language, "запрос")
 
 
 def test_add_wraps_unreadable_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

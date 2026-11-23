@@ -169,13 +169,17 @@ def test_queries_allows_configured_disabled_language(data_dir: Path) -> None:
     assert response.json() == {"language": "en", "queries": [], "unclassified": 0, "total": 0}
 
 
-def test_queries_unknown_configured_language_returns_422(data_dir: Path) -> None:
-    response = _get(_client(), "/api/v1/content/queries?language=de")
+@pytest.mark.parametrize("language", ["de", "eng"])
+def test_queries_unknown_configured_language_returns_422(
+    data_dir: Path,
+    language: str,
+) -> None:
+    response = _get(_client(), f"/api/v1/content/queries?language={language}")
 
     assert response.status_code == 422
 
 
-@pytest.mark.parametrize("language", ["RU", "r", "ru/", "ru%2F.."])
+@pytest.mark.parametrize("language", ["RU", "r", "ru-RU", "ru/", "ru%2F.."])
 def test_queries_invalid_language_returns_422(data_dir: Path, language: str) -> None:
     response = _get(
         _client(),
@@ -263,7 +267,7 @@ def test_create_query_unknown_configured_language_returns_422(data_dir: Path) ->
     assert not (data_dir / QUERIES_DIR / "de.txt").exists()
 
 
-@pytest.mark.parametrize("language", ["RU", "r", "ru/", ""])
+@pytest.mark.parametrize("language", ["RU", "r", "ru-RU", "ru/", ""])
 def test_create_query_invalid_language_returns_422(data_dir: Path, language: str) -> None:
     response = _post(_client(), {"language": language, "query": "новый"})
 

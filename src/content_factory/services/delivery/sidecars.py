@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from datetime import datetime
 from pathlib import Path
 from uuid import UUID
@@ -10,12 +9,11 @@ from uuid import UUID
 from loguru import logger
 from pydantic import ValidationError
 
-from content_factory.constants import ARCHIVE_DIR
+from content_factory.constants import ARCHIVE_DIR, LANGUAGE_CODE_RE
 from content_factory.schemas.content.delivery import DeliveryJobInfo
 
 _SIDECAR_SUFFIX = ".json"
 _TMP_SUFFIX = ".tmp"
-_LANGUAGE = re.compile(r"[a-z]{2}")
 
 
 def is_job_expired(job: DeliveryJobInfo, *, now: datetime) -> bool:
@@ -32,7 +30,7 @@ def load_job(
 
     The path is built only from a validated language and a UUID.
     """
-    if not _LANGUAGE.fullmatch(language):
+    if not LANGUAGE_CODE_RE.fullmatch(language):
         return None
     return _read_job(_job_path(data_dir, language, request_id), language, request_id)
 
@@ -52,7 +50,7 @@ def save_job(data_dir: Path, job: DeliveryJobInfo) -> None:
 
 def delete_job(data_dir: Path, language: str, request_id: UUID) -> None:
     """Delete one sidecar, tolerating its absence and a race."""
-    if not _LANGUAGE.fullmatch(language):
+    if not LANGUAGE_CODE_RE.fullmatch(language):
         return
     try:
         _job_path(data_dir, language, request_id).unlink(missing_ok=True)
@@ -89,14 +87,14 @@ def read_job_file(path: Path) -> DeliveryJobInfo | None:
     except ValueError:
         return None
     language = path.parent.name
-    if not _LANGUAGE.fullmatch(language):
+    if not LANGUAGE_CODE_RE.fullmatch(language):
         return None
     return _read_job(path, language, request_id)
 
 
 def _job_path(data_dir: Path, language: str, request_id: UUID) -> Path:
     """Build the sidecar path from validated pieces only."""
-    if not _LANGUAGE.fullmatch(language):
+    if not LANGUAGE_CODE_RE.fullmatch(language):
         raise ValueError("invalid language")
     return data_dir / ARCHIVE_DIR / language / f"{request_id}{_SIDECAR_SUFFIX}"
 
@@ -105,7 +103,9 @@ def language_directories(root: Path) -> list[Path]:
     """Return language directories of the archive root, or none on error."""
     try:
         return sorted(
-            path for path in root.iterdir() if path.is_dir() and _LANGUAGE.fullmatch(path.name)
+            path
+            for path in root.iterdir()
+            if path.is_dir() and LANGUAGE_CODE_RE.fullmatch(path.name)
         )
     except FileNotFoundError:
         return []

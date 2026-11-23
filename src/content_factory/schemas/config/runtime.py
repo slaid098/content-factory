@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +95,6 @@ class RuntimeConfig:
     captcha: CaptchaConfig
     alerts: AlertsConfig
     languages: dict[str, LanguageConfig]
-    # Kept last with a default so configurations built before the manual
-    # delivery key existed stay valid.
-    delivery: DeliveryConfig = field(default_factory=lambda: DeliveryConfig(max_count=100))
+    # Required: DEFAULT_CONFIG.delivery is the single source of the default
+    # value, so the schema never carries a second copy of it.
+    delivery: DeliveryConfig

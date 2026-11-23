@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from content_factory.config.defaults import default_config
+from content_factory.config.runtime import default_config
 from content_factory.config.settings import Settings, SupplierSettings
 from content_factory.db.connection import connect
 from content_factory.db.runtime_state import load_state, save_state

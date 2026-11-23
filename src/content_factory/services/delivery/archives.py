@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -11,7 +10,7 @@ from uuid import UUID
 
 from loguru import logger
 
-from content_factory.constants import ARCHIVE_DIR
+from content_factory.constants import ARCHIVE_DIR, LANGUAGE_CODE_RE
 from content_factory.schemas.content.archives import ArchiveInfo
 from content_factory.schemas.content.delivery import DeliveryJobInfo
 from content_factory.services.delivery.sidecars import (
@@ -23,7 +22,6 @@ from content_factory.services.delivery.sidecars import (
 )
 
 _ZIP_SUFFIX = ".zip"
-_LANGUAGE = re.compile(r"[a-z]{2}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,7 +125,7 @@ def resolve_archive(
     A ready sidecar with a URL is always remote, even when the local zip was
     not deleted. A ``ready_local`` sidecar without its zip is gone (``404``).
     """
-    if not _LANGUAGE.fullmatch(language):
+    if not LANGUAGE_CODE_RE.fullmatch(language):
         return None
     moment = now or datetime.now(UTC)
     job = load_job(data_dir, language, request_id)
@@ -169,7 +167,7 @@ def find_archive(
 
     Args:
         data_dir: Root of the runtime data directory.
-        language: Validated two-letter language code.
+        language: Validated two- or three-letter language code.
         request_id: Client request identifier.
         retention_hours: Archive lifetime in hours.
         now: Moment used to check the archive age; defaults to UTC now.

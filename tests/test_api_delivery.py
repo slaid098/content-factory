@@ -291,6 +291,7 @@ def test_delivery_uses_canonical_request_id_in_filename(data_dir: Path) -> None:
         {"language": "ru/"},
         {"language": "RU"},
         {"language": "r"},
+        {"language": "ru-RU"},
         {"count": 0},
         {"count": 301},
         {"request_id": "not-a-uuid"},
@@ -467,6 +468,7 @@ def test_topics_without_stock_returns_empty_breakdown(data_dir: Path) -> None:
     [
         "/api/v1/content/topics?language=RU",
         "/api/v1/content/topics?language=r",
+        "/api/v1/content/topics?language=ru-RU",
         "/api/v1/content/topics?language=ru%2F..",
         "/api/v1/content/archives/RU/" + REQUEST_ID_TEXT + ".zip",
         "/api/v1/content/archives/ru/not-a-uuid.zip",

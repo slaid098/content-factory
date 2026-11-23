@@ -18,7 +18,7 @@ def collect_topics(data_dir: Path, language: str) -> TopicsResponse:
 
     Args:
         data_dir: Root of the runtime data directory.
-        language: Validated two-letter language code.
+        language: Validated two- or three-letter language code.
 
     Returns:
         Topic counts sorted by query and the number of unclassified files.
