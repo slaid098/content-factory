@@ -656,8 +656,9 @@ sudo docker compose ps
 Если менялся `prefect.yaml`, деплой-скрипт сам выполнит `prefect deploy
 --all`. Если менялся `scripts/deploy.sh` или `scripts/backup_app_data.sh`,
 переустановите соответствующую root-овую копию вручную. Если менялся
-`compose.yaml`, новый образ всё равно приходит из GHCR; локальный
-`build: .` остаётся только для разработки (`docker compose up -d --build`).
+`compose.yaml`, новый образ всё равно приходит из GHCR; локальная сборка из
+`docker/prod/Dockerfile` (контекст — корень репозитория) остаётся только для
+разработки (`docker compose up -d --build`).
 
 ## 12. Веб-выдача для партнёра
 
