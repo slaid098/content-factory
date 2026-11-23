@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 import stat
 import tempfile
 import threading
@@ -11,13 +10,11 @@ import unicodedata
 from contextlib import suppress
 from pathlib import Path
 
-from loguru import logger
-
 from content_factory.constants import DB_DIR, DB_FILENAME, LANGUAGE_CODE_RE, QUERIES_DIR
-from content_factory.db.connection import connect_readonly
 from content_factory.exceptions.errors import DeliveryError, SupplierError
 from content_factory.schemas.content.queries import QueriesResponse, QueryCount
 from content_factory.services import supplier
+from content_factory.services.delivery.metadata import load_language_queries
 from content_factory.services.delivery.topics import collect_topics
 
 _HEADER = "# Добавлено из интерфейса"
@@ -49,7 +46,7 @@ def list_language_queries(data_dir: Path, language: str) -> QueriesResponse:
     except SupplierError as ex:
         raise DeliveryError(f"не удалось прочитать запросы {language}: {ex}") from ex
 
-    db_queries = _database_queries(data_dir / DB_DIR / DB_FILENAME, language)
+    db_queries = load_language_queries(data_dir / DB_DIR / DB_FILENAME, language)
     counts: dict[str, int] = {}
     unclassified = 0
     total = 0
@@ -142,28 +139,6 @@ def _validate_language(language: str) -> None:
     """Reject language codes that cannot be used as file names."""
     if LANGUAGE_CODE_RE.fullmatch(language) is None:
         raise ValueError(f"недопустимый код языка: {language!r}")
-
-
-def _database_queries(db_path: Path, language: str) -> list[str] | None:
-    """Return distinct database queries of a language, or ``None`` without a DB."""
-    if not db_path.is_file():
-        return None
-    try:
-        connection = connect_readonly(db_path)
-        try:
-            rows = connection.execute(
-                "SELECT DISTINCT query FROM videos "
-                "WHERE language = ? AND query <> '' ORDER BY query",
-                (language,),
-            ).fetchall()
-        finally:
-            connection.close()
-    except (OSError, sqlite3.Error) as ex:
-        logger.bind(error=ex, error_type=type(ex).__name__).warning(
-            "Не удалось прочитать запросы из базы"
-        )
-        return None
-    return [str(row["query"]) for row in rows]
 
 
 def _read_existing(path: Path) -> tuple[str, bool]:

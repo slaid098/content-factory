@@ -12,14 +12,15 @@ from uuid import UUID
 import pytest
 
 from content_factory.constants import ARCHIVE_DIR, CONTENT_DIR
+from content_factory.db.video_meta import load_video_meta
 from content_factory.exceptions import DeliveryError
 from content_factory.schemas.content.delivery import DeliveryJobInfo
+from content_factory.schemas.content.video import VideoMeta
 from content_factory.services.delivery.archives import (
     find_archive,
     list_archives,
     resolve_archive,
 )
-from content_factory.services.delivery.metadata import VideoMeta, load_video_meta
 from content_factory.services.delivery.service import (
     _build_archive,
     cleanup_expired_archives,
@@ -487,6 +488,32 @@ def test_load_video_meta_maps_description_and_query(tmp_path: Path) -> None:
     meta = load_video_meta(db_path, ["a" * 64, "missing"])
 
     assert meta == {"a" * 64: VideoMeta(description="Описание", query="курятник")}
+
+
+def test_load_video_meta_selects_only_requested_hashes(tmp_path: Path) -> None:
+    db_path = tmp_path / "db" / "db.sqlite3"
+    add_downloaded_video(db_path, "a" * 64, "Первое", query="курятник")
+    add_downloaded_video(db_path, "b" * 64, "Второе", query="заправка")
+    add_downloaded_video(db_path, "c" * 64, "Третье", query="исторический")
+
+    meta = load_video_meta(db_path, ["a" * 64, "c" * 64, "missing"])
+
+    assert meta == {
+        "a" * 64: VideoMeta(description="Первое", query="курятник"),
+        "c" * 64: VideoMeta(description="Третье", query="исторический"),
+    }
+
+
+def test_load_video_meta_returns_empty_without_database(tmp_path: Path) -> None:
+    assert load_video_meta(tmp_path / "db" / "missing.sqlite3", ["a" * 64]) == {}
+
+
+def test_load_video_meta_returns_empty_on_broken_database(tmp_path: Path) -> None:
+    db_path = tmp_path / "db" / "db.sqlite3"
+    db_path.parent.mkdir(parents=True)
+    db_path.write_bytes(b"not a database")
+
+    assert load_video_meta(db_path, ["a" * 64]) == {}
 
 
 def test_collect_topics_counts_by_query_and_unclassified(tmp_path: Path) -> None:

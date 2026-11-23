@@ -14,6 +14,7 @@ src/content_factory/
   api/          # FastAPI, только localhost
   config/       # env-настройки и loguru
   constants/    # имена каталогов app_data
+  db/           # SQLite-доступ и SQL слоя БД
   exceptions/   # ошибки сервиса
   schemas/      # типы-данные
   services/     # доменные капсулы: поставщик, сток, алерты, выдача

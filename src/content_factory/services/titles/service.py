@@ -13,7 +13,8 @@ from content_factory.config.settings import TitlesSettings
 from content_factory.constants import CONTENT_DIR, DB_DIR, DB_FILENAME
 from content_factory.db.connection import connect
 from content_factory.db.titles import ensure_schema, load_titles, recent_titles, save_title
-from content_factory.db.video_meta import VideoMeta, load_video_meta
+from content_factory.db.video_meta import load_video_meta
+from content_factory.schemas.content.video import VideoMeta
 from content_factory.services.titles.client import TitleError, generate_titles
 from content_factory.services.titles.files import stock_files
 from content_factory.services.titles.frames import extract_frames

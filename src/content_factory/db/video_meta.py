@@ -1,24 +1,15 @@
-"""Video metadata shared by delivery and title generation."""
+"""Read video metadata from the database for delivery and title generation."""
 
 from __future__ import annotations
 
 import sqlite3
 from collections.abc import Sequence
-from dataclasses import dataclass
 from pathlib import Path
 
 from loguru import logger
 
 from content_factory.db.connection import connect_readonly
-
-
-@dataclass(frozen=True, slots=True)
-class VideoMeta:
-    """Description, search topic and duration of one downloaded video."""
-
-    description: str
-    query: str
-    duration: int | None = None
+from content_factory.schemas.content.video import VideoMeta
 
 
 def load_video_meta(db_path: Path, hashes: Sequence[str]) -> dict[str, VideoMeta]:
