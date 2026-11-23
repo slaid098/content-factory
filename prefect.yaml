@@ -37,3 +37,10 @@ deployments:
         timezone: UTC
         active: true
     concurrency_limit: 1
+
+  - name: generate_batch
+    description: "Ручной батч дейтинг-роликов: Vast.ai + ComfyUI, без расписания"
+    entrypoint: src/content_factory/flows/generate_batch/flow.py:generate_batch
+    work_pool:
+      name: content-factory
+    concurrency_limit: 1

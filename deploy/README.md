@@ -205,8 +205,8 @@ namei -l /root/dockers/content-factory/app_data/content
 отсутствие права записи для group/other. `/root` при этом остаётся
 `drwx------`.
 
-`app_data/config`, `app_data/db`, `app_data/queries` и `app_data/archive`
-принадлежат `10001` (пользователь `app` в контейнере) и закрыты от остальных
+`app_data/config`, `app_data/db`, `app_data/queries`, `app_data/archive` и
+`app_data/generated` принадлежат `10001` (пользователь `app` в контейнере) и закрыты от остальных
 (`0750`); это делает одноразовый сервис `init` при каждом `docker compose up`.
 `archive` лежит вне SFTP-chroot `content/` и партнёру не виден.
 
@@ -261,6 +261,13 @@ SUPPLIER_PROXY=
 # Bearer-токен выдачи контента; пустое значение выключает endpoint (503).
 CONTENT_FACTORY_DELIVERY_TOKEN=
 CONTENT_FACTORY_DELIVERY_RETENTION_HOURS=24
+# Генератор дейтинг-роликов (flow generate_batch). VAST_API_TOKEN — ключ
+# Vast.ai с правом аренды; GENERATOR_AI_KEY — ключ текстовой модели.
+VAST_API_TOKEN=
+GENERATOR_AI_KEY=
+GENERATOR_AI_URL=https://ollama.com/v1
+GENERATOR_AI_MODEL=deepseek-v4.1-flash
+GENERATOR_MAX_COST_PER_HOUR=
 EOF
 ```
 
@@ -276,6 +283,11 @@ EOF
 | `SUPPLIER_PROXY` | нет | — | прокси движка: `http://`, `https://`, `socks5://`, `socks5h://` |
 | `CONTENT_FACTORY_DELIVERY_TOKEN` | нет | — | Bearer-токен `POST /api/v1/content/deliveries`; пусто — выдача выключена |
 | `CONTENT_FACTORY_DELIVERY_RETENTION_HOURS` | нет | `24` | TTL zip-архивов выдачи, часов (≥ 1) |
+| `VAST_API_TOKEN` | для генерации | — | ключ Vast.ai с правом аренды серверов |
+| `GENERATOR_AI_KEY` | для генерации | — | ключ OpenAI-совместимой текстовой модели |
+| `GENERATOR_AI_URL` | нет | `https://ollama.com/v1` | адрес текстовой модели без завершающего `/` |
+| `GENERATOR_AI_MODEL` | нет | `deepseek-v4.1-flash` | имя модели для текстов роликов |
+| `GENERATOR_MAX_COST_PER_HOUR` | нет | — | глобальный потолок цены сервера, $/час; пусто — только `profile.max_cost` |
 | `CONTENT_FACTORY_LOG_LEVEL` | нет | `INFO` | уровень loguru в API и воркере |
 
 `IMAGE_TAG` в `.env` не задаётся: его экспортирует деплой-скрипт. Значение по

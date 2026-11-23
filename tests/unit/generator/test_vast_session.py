@@ -1,0 +1,436 @@
+"""Vast.ai session: rental passes, readiness, teardown and stale cleanup."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import httpx
+import pytest
+from tests.unit.generator.helpers import fixture_profile
+
+from content_factory.config.settings import GeneratorSettings
+from content_factory.exceptions.generator import RentError
+from content_factory.schemas.generator.server import ServerConnection, ServerInfo
+from content_factory.services.generator import vast
+from content_factory.services.generator.vast import (
+    VastSession,
+    _float_or_none,
+    _healthy,
+    _offers,
+    connection_from_instance,
+    destroy_verified,
+    reap_stale,
+)
+from content_factory.services.generator.vast_cli import _VastTransient
+
+
+def _settings(tmp_path: Path, **kwargs: Any) -> GeneratorSettings:
+    values: dict[str, Any] = {
+        "output_dir": tmp_path / "generated",
+        "vast_api_token": "token",
+        "server_ready_timeout": 60,
+        "comfy_health_timeout": 10,
+    }
+    values.update(kwargs)
+    return GeneratorSettings(**values)
+
+
+def _connection() -> ServerConnection:
+    return ServerConnection(contract_id="1", ip="1.2.3.4", port=8188, gpu="L40S", image="img")
+
+
+def _instance(port: str = "40000") -> dict[str, Any]:
+    return {
+        "id": "c1",
+        "public_ipaddr": "1.2.3.4",
+        "ports": {"8188/tcp": [{"HostPort": port}]},
+        "gpu_name": "L40S",
+        "image_uuid": "img",
+        "label": "content-factory-generator",
+    }
+
+
+class _Provider:
+    """In-memory Vast.ai account with controllable calls."""
+
+    def __init__(
+        self,
+        offers: list[dict[str, Any]] | None = None,
+        instances: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
+        self.offers = offers or []
+        self.instances = instances or {}
+        self.queries: list[dict[str, Any]] = []
+        self.created: list[dict[str, Any]] = []
+        self.destroyed: list[str] = []
+        self.fail_list = False
+        self.destroy_error: Exception | None = None
+
+    def search_offers(self, query: dict[str, Any]) -> list[dict[str, Any]]:
+        self.queries.append(dict(query))
+        return [dict(offer) for offer in self.offers]
+
+    def create_instance(self, config: dict[str, Any]) -> str:
+        self.created.append(dict(config))
+        return f"c{len(self.created)}"
+
+    def show_instance(self, contract_id: str) -> dict[str, Any]:
+        instance = self.instances.get(str(contract_id))
+        if instance is None:
+            raise RentError(f"Instance {contract_id} not found")
+        return dict(instance)
+
+    def list_instances(self) -> list[dict[str, Any]]:
+        if self.fail_list:
+            raise RentError("list is down")
+        return [dict(item) for item in self.instances.values()]
+
+    def destroy_instance(self, contract_id: str) -> bool:
+        if self.destroy_error is not None:
+            raise self.destroy_error
+        self.destroyed.append(str(contract_id))
+        self.instances.pop(str(contract_id), None)
+        return True
+
+
+def _clock_pair() -> tuple[list[float], Any, Any]:
+    state = [0.0]
+
+    def clock() -> float:
+        return state[0]
+
+    def sleep(seconds: float) -> None:
+        state[0] += seconds
+
+    return state, clock, sleep
+
+
+def test_open_rents_ready_server_and_reports_cost(tmp_path: Path, monkeypatch) -> None:
+    provider = _Provider(
+        offers=[{"id": "1", "public_ipaddr": "1.2.3.4", "dph_total": 0.4}],
+        instances={"c1": _instance()},
+    )
+    monkeypatch.setattr(vast, "_healthy", lambda connection: True)
+    profile = fixture_profile(tmp_path / "profiles")
+    session = VastSession(profile, _settings(tmp_path), provider=provider)
+
+    info = session.open()
+
+    assert info.connection.url() == "http://1.2.3.4:40000"
+    assert info.cost_per_hour == 0.4
+    assert provider.created[0]["label"] == "content-factory-generator"
+    assert provider.created[0]["onstart_cmd"] == "bash /start.sh"
+    assert provider.queries[0]["verified"] == {"eq": True}
+
+
+def test_open_without_offers_reports_no_server(tmp_path: Path, monkeypatch) -> None:
+    provider = _Provider(offers=[])
+    monkeypatch.setattr(vast, "_healthy", lambda connection: True)
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"), _settings(tmp_path), provider=provider
+    )
+
+    with pytest.raises(RentError, match="годного сервера"):
+        session.open()
+
+
+def test_rent_skips_duplicate_offers_and_ips(tmp_path: Path) -> None:
+    provider = _Provider(
+        offers=[
+            {"id": "1", "public_ipaddr": "1.2.3.4"},
+            {"id": "1", "public_ipaddr": "5.6.7.8"},
+            {"id": "2", "public_ipaddr": "1.2.3.4"},
+            {"id": "3"},
+        ]
+    )
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"), _settings(tmp_path), provider=provider
+    )
+    calls: list[str] = []
+
+    def rent_offer(provider: _Provider, offer: dict[str, Any]) -> ServerInfo:
+        calls.append(str(offer["id"]))
+        if offer["id"] == "3":
+            return ServerInfo(connection=_connection(), cost_per_hour=None)
+        raise RentError("bad offer")
+
+    session._rent_offer = rent_offer  # type: ignore[method-assign]
+
+    info = session._rent(provider)
+
+    assert calls == ["1", "3"]
+    assert info.connection.contract_id == "1"
+
+
+def test_rent_offer_without_id_is_an_error(tmp_path: Path) -> None:
+    session = VastSession(fixture_profile(tmp_path / "profiles"), _settings(tmp_path))
+
+    with pytest.raises(RentError, match="без id"):
+        session._rent_offer(_Provider(), {})
+
+
+def test_wait_ready_timeout_destroys_the_failed_server(tmp_path: Path, monkeypatch) -> None:
+    provider = _Provider(offers=[{"id": "1"}], instances={})
+    profile = fixture_profile(tmp_path / "profiles")
+    _, clock, sleep = _clock_pair()
+    monkeypatch.setattr(vast, "_healthy", lambda connection: True)
+    session = VastSession(
+        profile,
+        _settings(tmp_path),
+        provider=provider,
+        sleep=sleep,
+        clock=clock,
+    )
+
+    with pytest.raises(RentError, match="годного сервера"):
+        session.open()
+
+    assert provider.destroyed == ["c1"]
+    assert session._contract_id is None
+
+
+def test_wait_health_retries_until_timeout(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(vast, "_healthy", lambda connection: False)
+    _, clock, sleep = _clock_pair()
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(tmp_path),
+        sleep=sleep,
+        clock=clock,
+    )
+
+    with pytest.raises(RentError, match="ComfyUI не ожил"):
+        session._wait_health(_connection())
+
+
+def test_wait_health_accepts_a_live_server(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(vast, "_healthy", lambda connection: True)
+    session = VastSession(fixture_profile(tmp_path / "profiles"), _settings(tmp_path))
+
+    assert session._wait_health(_connection()).port == 8188
+
+
+def test_destroy_is_verified_once(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+    provider = _Provider(offers=[{"id": "1"}], instances={"c1": _instance()})
+    monkeypatch.setattr(vast, "_healthy", lambda connection: True)
+    session = VastSession(profile, _settings(tmp_path), provider=provider)
+    session.open()
+    verified: list[str] = []
+    monkeypatch.setattr(vast, "destroy_verified", lambda provider, cid: verified.append(cid))
+
+    session.destroy()
+    session.destroy()
+
+    assert verified == ["c1"]
+    assert session._contract_id is None
+    assert session._contracts == set()
+
+
+def test_destroy_verifies_every_created_contract(tmp_path: Path, monkeypatch) -> None:
+    session = VastSession(fixture_profile(tmp_path / "profiles"), _settings(tmp_path))
+    session._provider = _Provider()
+    session._contracts = {"a", "b"}
+    session._contract_id = "b"
+    verified: list[str] = []
+    monkeypatch.setattr(vast, "destroy_verified", lambda provider, cid: verified.append(cid))
+
+    session.destroy()
+
+    assert verified == ["a", "b"]
+    assert session._contracts == set()
+    assert session._contract_id is None
+
+
+def test_destroy_without_provider_reports_a_tracked_contract(tmp_path: Path) -> None:
+    session = VastSession(fixture_profile(tmp_path / "profiles"), _settings(tmp_path))
+    session._contracts.add("c1")
+
+    with pytest.raises(RentError, match="нет провайдера"):
+        session.destroy()
+
+
+def test_failed_rental_teardown_keeps_the_contract_for_the_final_destroy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    session = VastSession(fixture_profile(tmp_path / "profiles"), _settings(tmp_path))
+    provider = _Provider()
+    session._provider = provider
+    session._contract_id = "c1"
+    session._contracts.add("c1")
+    calls: list[str] = []
+
+    def fake_destroy(provider: _Provider, contract_id: str) -> bool:
+        calls.append(contract_id)
+        if len(calls) == 1:
+            raise RentError("still there")
+        return True
+
+    monkeypatch.setattr(vast, "destroy_verified", fake_destroy)
+
+    with pytest.raises(RentError, match="не уничтожен после сбоя аренды"):
+        session._destroy_after_failure(provider, "c1")
+
+    assert session._contract_id == "c1"
+    assert session._contracts == {"c1"}
+
+    session.destroy()
+
+    assert calls == ["c1", "c1"]
+    assert session._contract_id is None
+    assert session._contracts == set()
+
+
+def test_teardown_failure_stops_the_rental_loop(tmp_path: Path, monkeypatch) -> None:
+    provider = _Provider(offers=[{"id": "1"}, {"id": "2"}], instances={})
+    _, clock, sleep = _clock_pair()
+    monkeypatch.setattr(vast, "_healthy", lambda connection: True)
+    monkeypatch.setattr(
+        vast,
+        "destroy_verified",
+        lambda provider, contract_id: (_ for _ in ()).throw(RentError("still there")),
+    )
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(tmp_path),
+        provider=provider,
+        sleep=sleep,
+        clock=clock,
+    )
+
+    with pytest.raises(RentError, match="не уничтожен после сбоя аренды"):
+        session.open()
+
+    assert len(provider.queries) == 1
+    assert session._contract_id == "c1"
+    assert session._contracts == {"c1"}
+
+
+def test_connection_is_none_for_broken_ports_and_falls_back_for_metadata() -> None:
+    assert connection_from_instance("7", {"public_ipaddr": "1.2.3.4", "ports": []}) is None
+    assert (
+        connection_from_instance(
+            "7",
+            {"public_ipaddr": "1.2.3.4", "ports": {"8188/tcp": [{"HostPort": "x"}]}},
+        )
+        is None
+    )
+
+    connection = connection_from_instance(
+        "7",
+        {"public_ipaddr": "1.2.3.4", "ports": {"8188/tcp": [{"HostPort": 40000}]}},
+    )
+
+    assert connection is not None
+    assert connection.gpu == "Unknown"
+    assert connection.image == ""
+
+
+def test_stale_reap_skips_unavailable_list(tmp_path: Path) -> None:
+    provider = _Provider()
+    provider.fail_list = True
+
+    assert reap_stale(provider, 6, now=1_000_000.0) == []
+
+
+def test_stale_reap_keeps_going_when_one_destroy_fails(tmp_path: Path, monkeypatch) -> None:
+    now = 1_000_000.0
+    instances = {
+        "1": {"id": "1", "label": "content-factory-generator", "start_date": now - 7 * 3600},
+        "2": {"id": "2", "label": "content-factory-generator", "start_date": now - 8 * 3600},
+        "3": {"id": "3", "label": "someone-else", "start_date": now - 9 * 3600},
+        "4": {"id": "4", "label": "content-factory-generator", "start_date": "broken"},
+    }
+    provider = _Provider(instances=instances)
+    calls: list[str] = []
+
+    def fake_destroy(provider: _Provider, cid: str) -> bool:
+        calls.append(cid)
+        if cid == "2":
+            raise RentError("cannot destroy")
+        return True
+
+    monkeypatch.setattr(vast, "destroy_verified", fake_destroy)
+
+    assert reap_stale(provider, 6, now=now) == ["1"]
+    assert calls == ["1", "2"]
+
+
+def test_destroy_verified_accepts_gone_instance() -> None:
+    provider = _Provider()
+    provider.destroy_error = RentError("boom")
+
+    assert destroy_verified(provider, "7") is True
+
+
+def test_destroy_verified_retries_until_the_instance_disappears() -> None:
+    provider = _Provider(instances={"7": {"id": "7"}})
+    provider.destroy_instance = lambda cid: True  # type: ignore[method-assign]
+    remaining = [2]
+
+    def show(cid: str) -> dict[str, Any]:
+        if remaining[0] > 0:
+            remaining[0] -= 1
+            return {"id": cid}
+        raise RentError(f"Instance {cid} not found")
+
+    provider.show_instance = show  # type: ignore[method-assign]
+
+    assert destroy_verified(provider, "7", attempts=3, pause=0, sleep=lambda _: None) is True
+    assert remaining[0] == 0
+
+
+def test_destroy_verified_fails_when_list_stays_broken() -> None:
+    provider = _Provider(instances={"7": {"id": "7"}})
+
+    def show(cid: str) -> dict[str, Any]:
+        raise RentError("api is down")
+
+    provider.show_instance = show  # type: ignore[method-assign]
+
+    with pytest.raises(RentError, match="не уничтожен"):
+        destroy_verified(provider, "7", attempts=2, pause=0, sleep=lambda _: None)
+
+
+def test_offers_respect_profile_and_global_cost_ceiling(tmp_path: Path) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+    provider = _Provider()
+
+    _offers(provider, profile, _settings(tmp_path), None)
+    _offers(provider, profile, _settings(tmp_path, max_cost_per_hour=0.5), True)
+
+    assert provider.queries[0]["dph_total"] == {"lte": profile.max_cost}
+    assert "verified" not in provider.queries[0]
+    assert provider.queries[1]["dph_total"] == {"lte": 0.5}
+    assert provider.queries[1]["verified"] == {"eq": True}
+
+
+def test_offers_treat_transient_search_as_empty(tmp_path: Path) -> None:
+    provider = _Provider()
+    provider.search_offers = lambda query: (_ for _ in ()).throw(_VastTransient("timeout"))  # type: ignore[method-assign]
+
+    assert (
+        _offers(provider, fixture_profile(tmp_path / "profiles"), _settings(tmp_path), None) == []
+    )
+
+
+def test_healthy_checks_comfy_system_stats(monkeypatch) -> None:
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+    monkeypatch.setattr(vast.httpx, "get", lambda url, timeout: _Response())
+    assert _healthy(_connection()) is True
+
+    def broken(url: str, timeout: httpx.Timeout) -> Any:
+        raise httpx.ConnectError("no route")
+
+    monkeypatch.setattr(vast.httpx, "get", broken)
+    assert _healthy(_connection()) is False
+
+
+def test_float_or_none_parses_numbers() -> None:
+    assert _float_or_none(None) is None
+    assert _float_or_none("1.5") == 1.5
+    assert _float_or_none("broken") is None

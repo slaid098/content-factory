@@ -6,9 +6,9 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# curl нужен healthcheck-у compose.
+# curl нужен healthcheck-у compose, ffmpeg/ffprobe — постобработке видео.
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y curl \
+    && apt-get install --no-install-recommends -y curl ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml README.md prefect.yaml ./

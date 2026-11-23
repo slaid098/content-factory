@@ -42,6 +42,7 @@ except ImportError:  # pragma: no cover - Windows has no fcntl
 DELIVERY_LOCK = "delivery"
 DELIVERY_BUILD_LOCK = "delivery-build"
 DELIVERY_START_LOCK = "delivery-start"
+GENERATOR_LOCK = "generator"
 SETTINGS_LOCK = "settings"
 SUPPLIER_LOCK = "supplier"
 QUERIES_LOCK = "queries"
