@@ -52,7 +52,7 @@ jobs:
     timeout-minutes: 5
     env:
       AUDIT_ENGINE_REPO: https://git.slaid098.dev/slaid098/agent-skills
-      AUDIT_ENGINE_VERSION: "0.5.0"
+      AUDIT_ENGINE_VERSION: "0.6.0"
     steps:
       - uses: actions/checkout@v4
         with:
