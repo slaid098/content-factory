@@ -253,15 +253,7 @@ def _build_and_publish(
 ) -> DeliveryJobInfo:
     """Run the archive build and upload, mapping every outcome to a status."""
     try:
-        archive = deliver(
-            data_dir,
-            request.language,
-            request.count,
-            request.request_id,
-            query=request.query,
-            retention_hours=retention_hours,
-            now=created_at,
-        )
+        archive = _build_archive(data_dir, request, created_at, retention_hours)
     except DeliveryError as ex:
         logger.bind(
             request_id=str(request.request_id),
@@ -278,8 +270,7 @@ def _build_and_publish(
     if archive is None:
         return _job_state(request, created_at, retention_hours, status="empty")
     try:
-        size = archive.stat().st_size
-        files = count_archive_files(archive)
+        size, files = _read_archive_metrics(archive)
     except (OSError, zipfile.BadZipFile) as ex:
         logger.bind(
             request_id=str(request.request_id),
@@ -302,11 +293,44 @@ def _build_and_publish(
             files,
             "архив больше 1 ГБ, заливка пропущена",
         )
+    return _publish_or_fallback(request, created_at, retention_hours, archive, size, files)
+
+
+def _build_archive(
+    data_dir: Path,
+    request: DeliveryRequest,
+    created_at: datetime,
+    retention_hours: int,
+) -> Path | None:
+    """Build one archive for the request through the delivery capsule."""
+    return deliver(
+        data_dir,
+        request.language,
+        request.count,
+        request.request_id,
+        query=request.query,
+        retention_hours=retention_hours,
+        now=created_at,
+    )
+
+
+def _read_archive_metrics(archive: Path) -> tuple[int, int]:
+    """Return the archive size in bytes and its delivered file count."""
+    return archive.stat().st_size, count_archive_files(archive)
+
+
+def _publish_or_fallback(
+    request: DeliveryRequest,
+    created_at: datetime,
+    retention_hours: int,
+    archive: Path,
+    size: int,
+    files: int,
+) -> DeliveryJobInfo:
+    """Upload the archive, or keep the zip for a local-only fallback."""
     try:
         url = upload_archive(archive)
-    except ArchiveTooLargeError as ex:
-        return _ready_local(request, created_at, retention_hours, size, files, str(ex))
-    except UploadError as ex:
+    except (ArchiveTooLargeError, UploadError) as ex:
         return _ready_local(request, created_at, retention_hours, size, files, str(ex))
     except Exception as ex:  # noqa: BLE001 - keep the zip for a manual retry
         logger.bind(
@@ -321,6 +345,19 @@ def _build_and_publish(
             files,
             "не удалось загрузить архив на файлообменник",
         )
+    return _published_state(request, created_at, retention_hours, archive, size, files, url)
+
+
+def _published_state(
+    request: DeliveryRequest,
+    created_at: datetime,
+    retention_hours: int,
+    archive: Path,
+    size: int,
+    files: int,
+    url: str,
+) -> DeliveryJobInfo:
+    """Remove the uploaded zip and report the ready job."""
     _remove_archive(archive, request.request_id)
     return _job_state(
         request,
