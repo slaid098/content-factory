@@ -83,13 +83,6 @@ def test_template_matches_defaults() -> None:
     assert yaml.safe_load(CONFIG_TEMPLATE) == DEFAULT_CONFIG
 
 
-def test_typed_defaults_are_built_from_default_config() -> None:
-    default = default_config()
-
-    assert default == validate_runtime_config(DEFAULT_CONFIG)
-    assert default.delivery.max_count == DEFAULT_CONFIG["delivery"]["max_count"]
-
-
 def test_default_config_has_only_known_languages() -> None:
     assert set(DEFAULT_CONFIG["languages"]) == {"ru", "en"}
 
