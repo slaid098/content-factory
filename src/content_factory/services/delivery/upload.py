@@ -9,16 +9,15 @@ import httpx
 from content_factory.exceptions.errors import ArchiveTooLargeError, UploadError
 
 FILEBIN_URL = "https://filebin.net"
-FILEBIN_BIN_PREFIX = "cf-"
+_FILEBIN_BIN_PREFIX = "cf-"
 MAX_ARCHIVE_BYTES = 1024**3
-MAX_UPLOAD_BYTES = MAX_ARCHIVE_BYTES
-UPLOAD_TIMEOUT_SECONDS = 300.0
+_UPLOAD_TIMEOUT_SECONDS = 300.0
 
 
 def upload_archive(
     archive: Path,
     *,
-    timeout: float = UPLOAD_TIMEOUT_SECONDS,
+    timeout: float = _UPLOAD_TIMEOUT_SECONDS,
     client: httpx.Client | None = None,
 ) -> str:
     """Upload one zip archive to Filebin and return its public URL.
@@ -81,7 +80,7 @@ def upload_archive(
 
 def _public_url(archive: Path) -> str:
     """Build the deterministic public URL of one archive on Filebin."""
-    bin_id = f"{FILEBIN_BIN_PREFIX}{archive.stem}"
+    bin_id = f"{_FILEBIN_BIN_PREFIX}{archive.stem}"
     return f"{FILEBIN_URL}/{bin_id}/{archive.name}"
 
 

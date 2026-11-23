@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from content_factory.constants import ARCHIVE_DIR
 from content_factory.schemas.content.delivery import DeliveryJobInfo
 
-SIDECAR_SUFFIX = ".json"
+_SIDECAR_SUFFIX = ".json"
 _TMP_SUFFIX = ".tmp"
 _LANGUAGE = re.compile(r"[a-z]{2}")
 
@@ -34,12 +34,12 @@ def load_job(
     """
     if not _LANGUAGE.fullmatch(language):
         return None
-    return _read_job(job_path(data_dir, language, request_id), language, request_id)
+    return _read_job(_job_path(data_dir, language, request_id), language, request_id)
 
 
 def save_job(data_dir: Path, job: DeliveryJobInfo) -> None:
     """Write one sidecar atomically next to its local archive."""
-    path = job_path(data_dir, job.language, job.request_id)
+    path = _job_path(data_dir, job.language, job.request_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f"{path.name}{_TMP_SUFFIX}")
     try:
@@ -55,7 +55,7 @@ def delete_job(data_dir: Path, language: str, request_id: UUID) -> None:
     if not _LANGUAGE.fullmatch(language):
         return
     try:
-        job_path(data_dir, language, request_id).unlink(missing_ok=True)
+        _job_path(data_dir, language, request_id).unlink(missing_ok=True)
     except OSError as ex:
         logger.bind(error=ex, error_type=type(ex).__name__).warning(
             "Не удалось удалить sidecar выдачи {}",
@@ -68,7 +68,7 @@ def iter_jobs(data_dir: Path) -> tuple[DeliveryJobInfo, ...]:
     jobs: list[DeliveryJobInfo] = []
     for directory in language_directories(data_dir / ARCHIVE_DIR):
         try:
-            paths = sorted(directory.glob(f"*{SIDECAR_SUFFIX}"))
+            paths = sorted(directory.glob(f"*{_SIDECAR_SUFFIX}"))
         except OSError as ex:
             logger.bind(path=str(directory), error=ex, error_type=type(ex).__name__).warning(
                 "Не удалось прочитать каталог sidecar {}",
@@ -94,11 +94,11 @@ def read_job_file(path: Path) -> DeliveryJobInfo | None:
     return _read_job(path, language, request_id)
 
 
-def job_path(data_dir: Path, language: str, request_id: UUID) -> Path:
+def _job_path(data_dir: Path, language: str, request_id: UUID) -> Path:
     """Build the sidecar path from validated pieces only."""
     if not _LANGUAGE.fullmatch(language):
         raise ValueError("invalid language")
-    return data_dir / ARCHIVE_DIR / language / f"{request_id}{SIDECAR_SUFFIX}"
+    return data_dir / ARCHIVE_DIR / language / f"{request_id}{_SIDECAR_SUFFIX}"
 
 
 def language_directories(root: Path) -> list[Path]:
