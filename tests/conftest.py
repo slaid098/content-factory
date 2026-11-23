@@ -10,6 +10,8 @@ from typing import Any
 import pytest
 from loguru import logger
 
+from content_factory.config.settings import get_settings
+
 
 def pytest_configure(config: pytest.Config) -> None:
     """Требует 90% покрытия только от полного прогона.
@@ -30,6 +32,14 @@ def pytest_configure(config: pytest.Config) -> None:
     plugin = config.pluginmanager.getplugin("_cov")
     if plugin is not None:
         plugin.options.cov_fail_under = 0
+
+
+@pytest.fixture(autouse=True)
+def _reset_settings_cache() -> Iterator[None]:
+    """Drop cached env settings so monkeypatched variables reach each test."""
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 @pytest.fixture

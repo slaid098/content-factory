@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from loguru import logger
 
 from content_factory.config.runtime import load_runtime_config
-from content_factory.config.settings import Settings
+from content_factory.config.settings import Settings, get_settings
 from content_factory.constants import CONFIG_DIR, CONFIG_FILENAME, LANGUAGE_CODE_RE
 from content_factory.exceptions.errors import DeliveryBusyError, DeliveryError
 from content_factory.schemas.content.archives import ArchiveInfo
@@ -37,7 +37,7 @@ def require_delivery_token(
     Raises:
         HTTPException: 503 when delivery is not configured, 401 otherwise.
     """
-    settings = Settings()
+    settings = get_settings()
     if settings.delivery_token is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

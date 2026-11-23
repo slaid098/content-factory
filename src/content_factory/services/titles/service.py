@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import sqlite3
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
@@ -14,8 +13,10 @@ from content_factory.constants import CONTENT_DIR, DB_DIR, DB_FILENAME
 from content_factory.db.connection import connect
 from content_factory.db.titles import ensure_schema, load_titles, recent_titles, save_title
 from content_factory.db.video_meta import load_video_meta
+from content_factory.exceptions.titles import TitleError
+from content_factory.schemas.content.titles import TitlePassResult
 from content_factory.schemas.content.video import VideoMeta
-from content_factory.services.titles.client import TitleError, generate_titles
+from content_factory.services.titles.client import generate_titles
 from content_factory.services.titles.files import stock_files
 from content_factory.services.titles.frames import extract_frames
 from content_factory.services.titles.text import (
@@ -25,17 +26,11 @@ from content_factory.services.titles.text import (
     validate_title,
 )
 
+if TYPE_CHECKING:
+    import sqlite3
+
 _RECENT_LIMIT = 40
 _EMPTY_META = VideoMeta(description="", query="")
-
-
-@dataclass(frozen=True, slots=True)
-class TitlePassResult:
-    """Outcome of one title assignment pass."""
-
-    candidates: int
-    titled: int
-    skipped: int
 
 
 def assign_titles(

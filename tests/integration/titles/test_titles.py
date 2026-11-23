@@ -19,20 +19,20 @@ from content_factory.db import titles as titles_db
 from content_factory.db.titles import ensure_schema, load_titles, recent_titles, save_title
 from content_factory.db.video_meta import load_video_meta
 from content_factory.exceptions import ConfigError
+from content_factory.exceptions.titles import (
+    TitleClientError,
+    TitleError,
+    TransientTitleError,
+)
 from content_factory.flows.titles import flow as titles_flow
+from content_factory.schemas.content.titles import TitlePassResult
 from content_factory.schemas.content.video import VideoMeta
 from content_factory.services.titles import assign_titles
 from content_factory.services.titles import client as titles_client
 from content_factory.services.titles import frames as titles_frames
 from content_factory.services.titles import service as titles_service
-from content_factory.services.titles.client import (
-    TitleClientError,
-    TitleError,
-    TransientTitleError,
-    generate_titles,
-)
+from content_factory.services.titles.client import generate_titles
 from content_factory.services.titles.frames import extract_frames, frame_times
-from content_factory.services.titles.service import TitlePassResult
 from content_factory.services.titles.text import (
     clean_title,
     description_title_key,
@@ -1224,8 +1224,9 @@ def test_assign_titles_creates_schema_on_empty_content(tmp_path: Path) -> None:
 
 def test_titles_flow_returns_disabled_without_key(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(titles_flow, "load_settings", lambda: _simple_settings())
+    monkeypatch.setattr(titles_flow, "get_settings", lambda: _simple_settings(tmp_path))
     monkeypatch.setattr(
         titles_flow,
         "load_titles_settings",
@@ -1249,8 +1250,11 @@ def test_titles_flow_returns_disabled_without_key(
     assert any("titles: TITLES_API_KEY не задан" in message for message in messages)
 
 
-def test_titles_flow_returns_result(monkeypatch: pytest.MonkeyPatch) -> None:
-    settings = _simple_settings()
+def test_titles_flow_returns_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    settings = _simple_settings(tmp_path)
     seen: dict[str, object] = {}
 
     def fake_assign(data_dir: Path, titles_settings: TitlesSettings) -> TitlePassResult:
@@ -1258,7 +1262,7 @@ def test_titles_flow_returns_result(monkeypatch: pytest.MonkeyPatch) -> None:
         seen["settings"] = titles_settings
         return TitlePassResult(candidates=3, titled=2, skipped=1)
 
-    monkeypatch.setattr(titles_flow, "load_settings", lambda: settings)
+    monkeypatch.setattr(titles_flow, "get_settings", lambda: settings)
     monkeypatch.setattr(titles_flow, "load_titles_settings", lambda: _settings())
     monkeypatch.setattr(titles_flow, "assign_titles", fake_assign)
 
@@ -1266,5 +1270,5 @@ def test_titles_flow_returns_result(monkeypatch: pytest.MonkeyPatch) -> None:
     assert seen["data_dir"] == settings.data_dir
 
 
-def _simple_settings() -> Any:
-    return type("Settings", (), {"data_dir": Path("/data")})()
+def _simple_settings(tmp_path: Path) -> Any:
+    return type("Settings", (), {"data_dir": tmp_path})()
