@@ -129,7 +129,7 @@ class SupplierSettings(BaseSettings):
         return self
 
 
-class OpenAIEndpointSettings(BaseSettings):
+class _OpenAIEndpointSettings(BaseSettings):
     """Shared OpenAI-compatible endpoint read from ``OPENAI_*`` variables.
 
     Both the title flow and the generator talk to the same API, so the key and
@@ -168,7 +168,7 @@ class OpenAIEndpointSettings(BaseSettings):
         return _blank_to_none_value(value)
 
 
-class TitlesSettings(OpenAIEndpointSettings):
+class TitlesSettings(_OpenAIEndpointSettings):
     """Settings of the title generation flow read from ``TITLES_*`` variables."""
 
     model_config = SettingsConfigDict(
@@ -182,7 +182,7 @@ class TitlesSettings(OpenAIEndpointSettings):
     reasoning_effort: Literal["none", "low", "high", "max"] = "none"
 
 
-class GeneratorSettings(OpenAIEndpointSettings):
+class GeneratorSettings(_OpenAIEndpointSettings):
     """Settings of the dating batch generator read from ``GENERATOR_*`` variables.
 
     ``vast_api_token`` is read from ``VAST_API_TOKEN``: the CLI of the
