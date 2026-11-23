@@ -11,7 +11,7 @@ from ruamel.yaml.scalarstring import DoubleQuotedScalarString, SingleQuotedScala
 from content_factory.config.defaults import DEFAULT_CONFIG
 from content_factory.exceptions.errors import SettingsValidationError
 from content_factory.schemas.config.runtime import RuntimeConfig
-from content_factory.schemas.settings import (
+from content_factory.schemas.settings.api import (
     DeliverySettings,
     DownloadSettings,
     FilterSettings,

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from content_factory.constants import CONFIG_DIR, CONFIG_FILENAME
-from content_factory.schemas.settings import RuntimeSettings
+from content_factory.schemas.settings.api import RuntimeSettings
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "languages": [

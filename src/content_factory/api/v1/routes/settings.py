@@ -15,7 +15,7 @@ from content_factory.exceptions.errors import (
     SettingsValidationError,
     SettingsWriteError,
 )
-from content_factory.schemas.settings import (
+from content_factory.schemas.settings.api import (
     RuntimeSettings,
     SettingsApplyResponse,
     SettingsPreviewResponse,

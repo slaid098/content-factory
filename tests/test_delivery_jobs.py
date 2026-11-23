@@ -221,7 +221,7 @@ def test_large_archive_skips_upload_attempt(
 ) -> None:
     touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"), b"video")
     add_title(data_dir / "db" / "db.sqlite3", "a" * 64, "Название видео")
-    monkeypatch.setattr("content_factory.services.delivery.upload.MAX_ARCHIVE_BYTES", 1)
+    monkeypatch.setattr("content_factory.services.delivery.jobs.MAX_ARCHIVE_BYTES", 1)
     called = False
 
     def _unexpected(_archive: Path) -> str:
