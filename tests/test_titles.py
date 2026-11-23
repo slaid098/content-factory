@@ -1119,6 +1119,7 @@ def test_assign_titles_continues_after_one_file_error(
 def test_assign_titles_skips_unnormalizable_option(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    log_records: list[dict[str, Any]],
 ) -> None:
     sha256 = "a" * 64
     _patch_generation(monkeypatch, variants={sha256: ("Свет кадра aaaaaa",)})
@@ -1133,6 +1134,10 @@ def test_assign_titles_skips_unnormalizable_option(
 
     assert result == TitlePassResult(candidates=1, titled=0, skipped=1)
     assert load_titles(_db_path(tmp_path), [sha256]) == {}
+    records = [record for record in log_records if record["function"] == "_save_candidate"]
+    assert [record["level"].name for record in records] == ["DEBUG"]
+    assert records[0]["message"] == (f"Вариант названия без букв и цифр пропущен: {sha256[:8]}")
+    assert records[0]["extra"] == {"sha256": sha256, "error_type": "ValueError"}
 
 
 def test_assign_titles_ignores_foreign_files_and_directories(

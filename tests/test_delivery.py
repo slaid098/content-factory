@@ -6,6 +6,7 @@ import os
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -94,7 +95,10 @@ def _zip_bytes(data: bytes, entry: str) -> bytes:
         return archive.read(entry)
 
 
-def test_deliver_builds_zip_with_stored_titles_and_removes_sources(tmp_path: Path) -> None:
+def test_deliver_builds_zip_with_stored_titles_and_removes_sources(
+    tmp_path: Path,
+    log_records: list[dict[str, Any]],
+) -> None:
     first_hash = "a" * 64
     second_hash = "b" * 64
     first = touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{first_hash}.mp4", b"first")
@@ -114,6 +118,8 @@ def test_deliver_builds_zip_with_stored_titles_and_removes_sources(tmp_path: Pat
     assert _zip_title(data, "002.json") == "Второе название"
     assert not first.exists()
     assert not second.exists()
+    assert [record for record in log_records if record["function"] == "_remove_stale"] == []
+    assert all("Просроченный архив отсутствует" not in record["message"] for record in log_records)
 
 
 def test_deliver_returns_none_for_untitled_stock_and_keeps_file(tmp_path: Path) -> None:
@@ -424,6 +430,7 @@ def test_cleanup_logs_language_directory_error(
 def test_cleanup_skips_archive_removed_by_race(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    log_records: list[dict[str, Any]],
 ) -> None:
     directory = tmp_path / ARCHIVE_DIR / "ru"
     directory.mkdir(parents=True)
@@ -439,6 +446,38 @@ def test_cleanup_skips_archive_removed_by_race(
     monkeypatch.setattr(Path, "stat", _missing_stat)
 
     assert cleanup_expired_archives(tmp_path, 24, now=_MOMENT) == 0
+    records = [record for record in log_records if record["function"] == "_cleanup_zip_files"]
+    assert [record["level"].name for record in records] == ["DEBUG"]
+    assert records[0]["message"] == "Архив уже удалён другим процессом gone.zip"
+    assert records[0]["extra"] == {"path": str(archive), "request_id": "gone"}
+
+
+def test_cleanup_skips_sidecar_removed_by_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    log_records: list[dict[str, Any]],
+) -> None:
+    _sidecar(
+        tmp_path,
+        status="ready_local",
+        created_at=_MOMENT - timedelta(hours=25),
+        expires_at=_MOMENT - timedelta(hours=1),
+    )
+    sidecar = tmp_path / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.json"
+    original_unlink = Path.unlink
+
+    def _missing_unlink(self: Path, *args: object, **kwargs: object) -> None:
+        if self == sidecar:
+            raise FileNotFoundError(self)
+        original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", _missing_unlink)
+
+    assert cleanup_expired_archives(tmp_path, 24, now=_MOMENT) == 0
+    records = [record for record in log_records if record["function"] == "_cleanup_sidecars"]
+    assert [record["level"].name for record in records] == ["DEBUG"]
+    assert records[0]["message"] == (f"Sidecar уже удалён другим процессом {REQUEST_ID}.json")
+    assert records[0]["extra"] == {"path": str(sidecar), "request_id": str(REQUEST_ID)}
 
 
 def test_load_video_meta_maps_description_and_query(tmp_path: Path) -> None:
@@ -604,7 +643,10 @@ def test_list_archives_returns_live_entries_newest_first(tmp_path: Path) -> None
     assert newer.is_file()
 
 
-def test_list_archives_skips_expired_tmp_and_non_uuid_files(tmp_path: Path) -> None:
+def test_list_archives_skips_expired_tmp_and_non_uuid_files(
+    tmp_path: Path,
+    log_records: list[dict[str, Any]],
+) -> None:
     fresh = _touch_archive(tmp_path, data=b"fresh")
     expired = _touch_archive(
         tmp_path,
@@ -628,6 +670,10 @@ def test_list_archives_skips_expired_tmp_and_non_uuid_files(tmp_path: Path) -> N
     assert tmp_file.is_file()
     assert invalid.is_file()
     assert notes.is_file()
+    records = [record for record in log_records if record["function"] == "list_archives"]
+    assert [record["level"].name for record in records] == ["DEBUG"]
+    assert records[0]["message"] == "Пропущен архив с не-UUID именем not-a-uuid.zip"
+    assert records[0]["extra"] == {"path": str(invalid), "language": "ru"}
 
 
 def test_list_archives_without_archive_directory_returns_empty(tmp_path: Path) -> None:

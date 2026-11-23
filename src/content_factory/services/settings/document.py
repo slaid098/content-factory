@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
+from loguru import logger
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 from ruamel.yaml.error import YAMLError
@@ -127,6 +128,9 @@ def _create_backup(path: Path, data: bytes, mode: int | None) -> Path:
             if mode is not None:
                 candidate.chmod(mode)
         except FileExistsError:
+            logger.bind(path=str(candidate)).debug(
+                "Имя бэкапа занято, пробуем следующее",
+            )
             continue
         except OSError as ex:
             _remove(candidate)

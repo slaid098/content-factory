@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -222,7 +223,9 @@ def test_non_mapping_document_is_rejected(tmp_path: Path) -> None:
 
 
 def test_seed_keeps_file_created_by_another_process(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    log_records: list[dict[str, Any]],
 ) -> None:
     path = _write(tmp_path / "config.yaml", "run:\n  batch: 7\n")
     monkeypatch.setattr(Path, "exists", lambda self: False)
@@ -230,6 +233,10 @@ def test_seed_keeps_file_created_by_another_process(
     config = load_runtime_config(path)
 
     assert config.run.batch == 7
+    records = [record for record in log_records if record["function"] == "_seed"]
+    assert [record["level"].name for record in records] == ["DEBUG"]
+    assert records[0]["message"] == "Файл конфигурации уже создан другим процессом config.yaml"
+    assert records[0]["extra"] == {"path": str(path)}
 
 
 def test_seed_filesystem_error_is_wrapped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
