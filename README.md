@@ -39,6 +39,30 @@ mypy src main.py
 python -m pytest
 ```
 
+### Аудит
+
+`audit` — WARN-only и ничего не блокирует. Блокирует только `audit-gate`,
+и только новыми находками в файлах, изменённых против базового коммита.
+Версия движка закреплена тегом `v0.5.0`; локальный запуск повторяет CI:
+
+```bash
+ENGINE='git+https://git.slaid098.dev/slaid098/agent-skills@v0.5.0'
+base=$(git merge-base HEAD origin/main)
+
+# baseline на базовом коммите — в CI он кэшируется по SHA
+git worktree add --detach /tmp/cf-audit-base "$base"
+uvx --from "$ENGINE" audit --repo /tmp/cf-audit-base --json-report > /tmp/audit-baseline.json
+git worktree remove --force /tmp/cf-audit-base
+
+# гейт: только новые находки в изменённых файлах
+uvx --from "$ENGINE" audit-gate --repo . \
+  --baseline /tmp/audit-baseline.json --base "$base" --scope changed
+```
+
+Baseline — отчёт schema 3 и в репозиторий не коммитится: CI держит его в
+`$RUNNER_TEMP` и кэше по SHA базового коммита. Движок ставится по HTTPS из
+закрытого репозитория, поэтому и локально, и в CI нужен доступ на чтение.
+
 ## Запуск
 
 ```bash
