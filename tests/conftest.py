@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Any
 
-if TYPE_CHECKING:
-    import pytest
+import pytest
+from loguru import logger
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -24,3 +26,15 @@ def pytest_configure(config: pytest.Config) -> None:
     plugin = config.pluginmanager.getplugin("_cov")
     if plugin is not None:
         plugin.options.cov_fail_under = 0
+
+
+@pytest.fixture
+def log_records() -> Iterator[list[dict[str, Any]]]:
+    """Collect raw loguru records for level, message and bound context checks."""
+    records: list[dict[str, Any]] = []
+    sink_id = logger.add(lambda message: records.append(message.record), level="DEBUG")
+    try:
+        yield records
+    finally:
+        with suppress(ValueError):
+            logger.remove(sink_id)

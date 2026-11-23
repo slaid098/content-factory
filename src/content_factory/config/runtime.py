@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import yaml
+from loguru import logger
 
 from content_factory.config.defaults import CONFIG_TEMPLATE, DEFAULT_CONFIG
 from content_factory.exceptions.errors import ConfigError
@@ -66,6 +67,10 @@ def _seed(path: Path) -> None:
         with path.open("x", encoding="utf-8") as handle:
             handle.write(CONFIG_TEMPLATE)
     except FileExistsError:
+        logger.bind(path=str(path)).debug(
+            "Файл конфигурации уже создан другим процессом {}",
+            path.name,
+        )
         return
     except OSError as ex:
         raise ConfigError(f"не удалось создать файл конфигурации {path}: {ex}") from ex

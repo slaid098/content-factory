@@ -186,6 +186,13 @@ def _cleanup_sidecars(directory: Path, now: datetime) -> int:
         try:
             sidecar.unlink()
         except FileNotFoundError:
+            logger.bind(
+                path=str(sidecar),
+                request_id=str(job.request_id),
+            ).debug(
+                "Sidecar уже удалён другим процессом {}",
+                sidecar.name,
+            )
             continue
         except OSError as ex:
             logger.bind(path=str(sidecar), error=ex, error_type=type(ex).__name__).warning(
@@ -228,6 +235,13 @@ def _cleanup_zip_files(directory: Path, now: datetime, retention_hours: int) -> 
             archive.unlink()
             removed += 1
         except FileNotFoundError:
+            logger.bind(
+                path=str(archive),
+                request_id=archive.stem,
+            ).debug(
+                "Архив уже удалён другим процессом {}",
+                archive.name,
+            )
             continue
         except OSError as ex:
             logger.bind(path=str(archive), error=ex, error_type=type(ex).__name__).warning(
@@ -248,10 +262,7 @@ def _is_fresh(path: Path, now: datetime, retention_hours: int) -> bool:
 
 def _remove_stale(path: Path) -> None:
     """Delete an expired archive, tolerating its absence."""
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        return
+    path.unlink(missing_ok=True)
 
 
 def _select_sources(

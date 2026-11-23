@@ -146,7 +146,11 @@ def _save_candidate(
             continue
         try:
             norm = normalize_title_key(title)
-        except ValueError:
+        except ValueError as ex:
+            logger.bind(sha256=sha256, error_type=type(ex).__name__).debug(
+                "Вариант названия без букв и цифр пропущен: {}",
+                sha256[:8],
+            )
             continue
         if description_key and norm == description_key:
             continue

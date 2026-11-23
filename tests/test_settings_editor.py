@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -314,6 +315,7 @@ def test_apply_backup_failure_keeps_old_file(
 def test_apply_backup_name_collision_uses_suffix(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    log_records: list[dict[str, Any]],
 ) -> None:
     path = _seed(tmp_path)
 
@@ -335,6 +337,10 @@ def test_apply_backup_name_collision_uses_suffix(
 
     assert result.backup == "config.yaml.bak-20260501-120000-1"
     assert collision.read_text(encoding="utf-8") == "old"
+    records = [record for record in log_records if record["function"] == "_create_backup"]
+    assert [record["level"].name for record in records] == ["DEBUG"]
+    assert records[0]["message"] == "Имя бэкапа занято, пробуем следующее"
+    assert records[0]["extra"] == {"path": str(collision)}
 
 
 def test_apply_empty_file_writes_every_editable_key(tmp_path: Path) -> None:

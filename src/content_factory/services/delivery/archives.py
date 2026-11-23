@@ -115,10 +115,14 @@ def list_archives(
             try:
                 request_id = UUID(path.stem)
             except ValueError:
+                logger.bind(path=str(path), language=directory.name).debug(
+                    "Пропущен архив с не-UUID именем {}",
+                    path.name,
+                )
                 continue
             if (directory.name, request_id) in sidecar_keys:
                 continue
-            info = _read_archive(path, directory.name, retention_hours, moment)
+            info = _read_archive(path, request_id, directory.name, retention_hours, moment)
             if info is not None:
                 archives.append(info)
     archives.sort(key=lambda item: item.created_at, reverse=True)
@@ -242,15 +246,12 @@ def _job_archive(
 
 def _read_archive(
     path: Path,
+    request_id: UUID,
     language: str,
     retention_hours: int,
     now: datetime,
 ) -> ArchiveInfo | None:
-    """Build one archive entry, skipping missing, invalid or expired files."""
-    try:
-        request_id = UUID(path.stem)
-    except ValueError:
-        return None
+    """Build one archive entry, skipping missing or expired files."""
     try:
         if not path.is_file():
             return None
