@@ -39,9 +39,9 @@ services:
     command:
       - |
         set -eu
-        mkdir -p /app/app_data/config /app/app_data/db /app/app_data/queries /app/app_data/archive
-        chown -R 10001:10001 /app/app_data/config /app/app_data/db /app/app_data/queries /app/app_data/archive
-        chmod 0750 /app/app_data/config /app/app_data/db /app/app_data/queries /app/app_data/archive
+        mkdir -p /app/app_data/config /app/app_data/db /app/app_data/queries /app/app_data/archive /app/app_data/generated
+        chown -R 10001:10001 /app/app_data/config /app/app_data/db /app/app_data/queries /app/app_data/archive /app/app_data/generated
+        chmod 0750 /app/app_data/config /app/app_data/db /app/app_data/queries /app/app_data/archive /app/app_data/generated
         mkdir -p /app/app_data/content
         chown root:root /app/app_data /app/app_data/content
         chmod 0755 /app/app_data /app/app_data/content
@@ -99,6 +99,11 @@ services:
       SUPPLIER_BITBROWSER_URL: ${SUPPLIER_BITBROWSER_URL:-http://host.docker.internal:54529}
       SUPPLIER_PROFILE_ID: ${SUPPLIER_PROFILE_ID:-}
       SUPPLIER_PROXY: ${SUPPLIER_PROXY:-}
+      VAST_API_TOKEN: ${VAST_API_TOKEN:-}
+      GENERATOR_AI_KEY: ${GENERATOR_AI_KEY:-}
+      GENERATOR_AI_URL: ${GENERATOR_AI_URL:-https://ollama.com/v1}
+      GENERATOR_AI_MODEL: ${GENERATOR_AI_MODEL:-deepseek-v4.1-flash}
+      GENERATOR_MAX_COST_PER_HOUR: ${GENERATOR_MAX_COST_PER_HOUR:-}
     volumes:
       - ./app_data:/app/app_data
     restart: unless-stopped

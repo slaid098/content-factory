@@ -15,6 +15,7 @@ from content_factory.constants import (
     CONFIG_DIR,
     CONTENT_DIR,
     DB_DIR,
+    GENERATED_DIR,
     QUERIES_DIR,
 )
 from content_factory.exceptions.errors import ConfigError
@@ -34,6 +35,13 @@ _RANGE_PAIRS = (
     ("session_break_min", "session_break_max", "SUPPLIER_SESSION_BREAK"),
     ("captcha_cooldown_min", "captcha_cooldown_max", "SUPPLIER_CAPTCHA_COOLDOWN"),
 )
+
+
+def _blank_to_none_value(value: object) -> object:
+    """Treat a blank string as an unset optional value."""
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
 
 
 class Settings(BaseSettings):
@@ -64,9 +72,7 @@ class Settings(BaseSettings):
     )
     @classmethod
     def _blank_to_none(cls, value: object) -> object:
-        if isinstance(value, str) and not value.strip():
-            return None
-        return value
+        return _blank_to_none_value(value)
 
 
 class SupplierSettings(BaseSettings):
@@ -159,13 +165,64 @@ class TitlesSettings(BaseSettings):
     @field_validator("api_key", mode="before")
     @classmethod
     def _blank_key_to_none(cls, value: object) -> object:
-        if isinstance(value, str) and not value.strip():
-            return None
+        return _blank_to_none_value(value)
+
+
+class GeneratorSettings(BaseSettings):
+    """Settings of the dating batch generator read from ``GENERATOR_*`` variables.
+
+    ``vast_api_token`` is read from ``VAST_API_TOKEN``: the CLI of the
+    ``vastai`` package uses that exact name in the deployment. Secrets stay
+    :class:`SecretStr` and never reach logs, ``run.json`` or error messages.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="GENERATOR_",
+        extra="ignore",
+        case_sensitive=False,
+    )
+
+    vast_api_token: SecretStr | None = Field(default=None, validation_alias="VAST_API_TOKEN")
+    ai_url: str = "https://ollama.com/v1"
+    ai_key: SecretStr | None = None
+    ai_model: str = Field(default="deepseek-v4.1-flash", min_length=1)
+    server_ready_timeout: int = Field(default=3600, ge=60)
+    comfy_health_timeout: int = Field(default=300, ge=10)
+    max_cost_per_hour: float | None = Field(default=None, gt=0)
+    stale_instance_hours: int = Field(default=6, ge=1)
+    output_dir: Path = Path("./app_data/generated")
+
+    @field_validator("ai_url")
+    @classmethod
+    def _check_ai_url(cls, value: str) -> str:
+        if any(char.isspace() for char in value):
+            raise ValueError("адрес не должен содержать пробелы")
+        parts = urlsplit(value)
+        if parts.scheme.lower() not in {"http", "https"}:
+            raise ValueError("адрес должен начинаться с http:// или https://")
+        if not parts.hostname:
+            raise ValueError("в адресе не указан хост")
+        try:
+            _ = parts.port
+        except ValueError as ex:
+            raise ValueError("в адресе неверный порт") from ex
+        if value.endswith("/"):
+            raise ValueError("адрес не должен заканчиваться на /")
         return value
+
+    @field_validator("output_dir")
+    @classmethod
+    def _expand_output_dir(cls, value: Path) -> Path:
+        return value.expanduser()
+
+    @field_validator("vast_api_token", "ai_key", "max_cost_per_hour", mode="before")
+    @classmethod
+    def _blank_to_none(cls, value: object) -> object:
+        return _blank_to_none_value(value)
 
 
 def _ensure_directories(data_dir: Path) -> None:
-    for name in (CONFIG_DIR, DB_DIR, CONTENT_DIR, ARCHIVE_DIR, QUERIES_DIR):
+    for name in (CONFIG_DIR, DB_DIR, CONTENT_DIR, ARCHIVE_DIR, QUERIES_DIR, GENERATED_DIR):
         path = data_dir / name
         try:
             path.mkdir(parents=True, exist_ok=True)
@@ -233,6 +290,31 @@ def _titles_validation_message(error: ValidationError) -> str:
     for item in error.errors():
         location = ".".join(str(part) for part in item["loc"])
         label = f"TITLES_{location.upper()}" if location else "настройки названий"
+        parts.append(f"{label}: {item['msg']}")
+    return "; ".join(parts)
+
+
+def load_generator_settings() -> GeneratorSettings:
+    """Read the generator settings from the environment.
+
+    Raises:
+        ConfigError: A value cannot be parsed or violates a limit. The message
+            never repeats raw input, so the Vast.ai token and the text model
+            key do not leak.
+    """
+    try:
+        return GeneratorSettings()
+    except ValidationError as ex:
+        message = _generator_message(ex)
+        raise ConfigError(f"не удалось загрузить настройки генератора: {message}") from ex
+
+
+def _generator_message(error: ValidationError) -> str:
+    """Format generator settings errors without the raw input values."""
+    parts: list[str] = []
+    for item in error.errors():
+        location = ".".join(str(part) for part in item["loc"])
+        label = f"GENERATOR_{location.upper()}" if location else "настройки генератора"
         parts.append(f"{label}: {item['msg']}")
     return "; ".join(parts)
 
