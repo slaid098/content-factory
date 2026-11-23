@@ -103,8 +103,8 @@ Deployment `titles` запускается каждые 10 минут по UTC �
 
 | Переменная | По умолчанию | Назначение |
 |---|---|---|
-| `TITLES_API_URL` | `https://ollama.com/v1` | база OpenAI-совместимого API; только `http`/`https`, без пробелов и завершающего `/` |
-| `TITLES_API_KEY` | — | ключ API; пусто — flow возвращает `disabled` и не падает |
+| `OPENAI_BASE_URL` | `https://ollama.com/v1` | общая база OpenAI-совместимого API названий и генератора; только `http`/`https`, без пробелов и завершающего `/` |
+| `OPENAI_API_KEY` | — | общий ключ API; пусто — flow возвращает `disabled` и не падает |
 | `TITLES_MODEL` | `deepseek-v4.1-flash` | модель |
 | `TITLES_TIMEOUT_SECONDS` | `60` | таймаут HTTP-запроса, 5–300 |
 | `TITLES_REASONING_EFFORT` | `none` | `none`, `low`, `high` или `max` |
@@ -114,7 +114,7 @@ Deployment `titles` запускается каждые 10 минут по UTC �
 
 ## Первый запуск
 
-1. Добавьте `TITLES_API_KEY` в `.env` на сервере (файл не коммитится).
+1. Добавьте `OPENAI_API_KEY` в `.env` на сервере (файл не коммитится).
 2. Задеплойте `main`: `prefect.yaml` содержит оба deployment, а
    `prefect deploy --all` подхватывает их без ручных шагов.
 3. Дождитесь ближайшего тика `titles` или запустите его вручную:

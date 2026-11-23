@@ -6,8 +6,10 @@ import pytest
 from pydantic import ValidationError
 
 from content_factory.config.settings import (
+    GeneratorSettings,
     Settings,
     SupplierSettings,
+    TitlesSettings,
     build_supplier_config,
     get_settings,
     load_settings,
@@ -153,6 +155,41 @@ def test_unknown_log_level_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(ValidationError):
         Settings()
+
+
+def test_llm_endpoint_is_shared_and_models_are_per_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "TITLES_MODEL", "GENERATOR_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "shared-secret")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://llm.test/v1")
+    monkeypatch.setenv("TITLES_MODEL", "titles-model")
+    monkeypatch.setenv("GENERATOR_MODEL", "generator-model")
+
+    titles = TitlesSettings()
+    generator = GeneratorSettings()
+
+    for settings in (titles, generator):
+        assert settings.api_key is not None
+        assert settings.api_key.get_secret_value() == "shared-secret"
+        assert settings.api_url == "http://llm.test/v1"
+    assert titles.model == "titles-model"
+    assert generator.model == "generator-model"
+
+
+def test_titles_model_does_not_change_the_generator(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GENERATOR_MODEL", raising=False)
+    monkeypatch.setenv("TITLES_MODEL", "titles-model")
+
+    assert GeneratorSettings().model == "deepseek-v4.1-flash"
+
+
+def test_generator_model_does_not_change_titles(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TITLES_MODEL", raising=False)
+    monkeypatch.setenv("GENERATOR_MODEL", "generator-model")
+
+    assert TitlesSettings().model == "deepseek-v4.1-flash"
 
 
 def test_load_settings_creates_data_directories(

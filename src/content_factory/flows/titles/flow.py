@@ -16,7 +16,7 @@ def titles() -> str:
     prepare_data_dirs(settings)
     titles_settings = load_titles_settings()
     if titles_settings.api_key is None:
-        logger.bind(flow="titles").error("titles: TITLES_API_KEY не задан")
+        logger.bind(flow="titles").error("titles: OPENAI_API_KEY не задан")
         return "disabled"
     result = assign_titles(settings.data_dir, titles_settings)
     logger.bind(

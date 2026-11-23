@@ -261,12 +261,14 @@ SUPPLIER_PROXY=
 # Bearer-токен выдачи контента; пустое значение выключает endpoint (503).
 CONTENT_FACTORY_DELIVERY_TOKEN=
 CONTENT_FACTORY_DELIVERY_RETENTION_HOURS=24
-# Генератор дейтинг-роликов (flow generate_batch). VAST_API_TOKEN — ключ
-# Vast.ai с правом аренды; GENERATOR_AI_KEY — ключ текстовой модели.
+# Генератор дейтинг-роликов (flow generate_batch). OPENAI_API_KEY и
+# OPENAI_BASE_URL — общие ключ и адрес LLM для названий и генератора;
+# VAST_API_TOKEN — ключ Vast.ai с правом аренды.
+OPENAI_API_KEY=
+OPENAI_BASE_URL=https://ollama.com/v1
+TITLES_MODEL=deepseek-v4.1-flash
 VAST_API_TOKEN=
-GENERATOR_AI_KEY=
-GENERATOR_AI_URL=https://ollama.com/v1
-GENERATOR_AI_MODEL=deepseek-v4.1-flash
+GENERATOR_MODEL=deepseek-v4.1-flash
 GENERATOR_MAX_COST_PER_HOUR=
 EOF
 ```
@@ -283,10 +285,11 @@ EOF
 | `SUPPLIER_PROXY` | нет | — | прокси движка: `http://`, `https://`, `socks5://`, `socks5h://` |
 | `CONTENT_FACTORY_DELIVERY_TOKEN` | нет | — | Bearer-токен `POST /api/v1/content/deliveries`; пусто — выдача выключена |
 | `CONTENT_FACTORY_DELIVERY_RETENTION_HOURS` | нет | `24` | TTL zip-архивов выдачи, часов (≥ 1) |
+| `OPENAI_API_KEY` | для названий и генерации | — | общий ключ OpenAI-совместимого API; пусто — flow `titles` выключен |
+| `OPENAI_BASE_URL` | нет | `https://ollama.com/v1` | общий адрес API без завершающего `/` |
+| `TITLES_MODEL` | нет | `deepseek-v4.1-flash` | модель названий |
 | `VAST_API_TOKEN` | для генерации | — | ключ Vast.ai с правом аренды серверов |
-| `GENERATOR_AI_KEY` | для генерации | — | ключ OpenAI-совместимой текстовой модели |
-| `GENERATOR_AI_URL` | нет | `https://ollama.com/v1` | адрес текстовой модели без завершающего `/` |
-| `GENERATOR_AI_MODEL` | нет | `deepseek-v4.1-flash` | имя модели для текстов роликов |
+| `GENERATOR_MODEL` | нет | `deepseek-v4.1-flash` | имя модели для текстов роликов |
 | `GENERATOR_MAX_COST_PER_HOUR` | нет | — | глобальный потолок цены сервера, $/час; пусто — только `profile.max_cost` |
 | `CONTENT_FACTORY_LOG_LEVEL` | нет | `INFO` | уровень loguru в API и воркере |
 
