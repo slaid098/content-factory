@@ -59,13 +59,16 @@ base=$(git merge-base HEAD origin/main)
 
 # baseline на базовом коммите — в CI он кэшируется по SHA
 git worktree add --detach /tmp/cf-audit-base "$base"
-uvx --from "$ENGINE" audit --repo /tmp/cf-audit-base --json-report > /tmp/audit-baseline.json
+uvx --python 3.12 --from "$ENGINE" audit --repo /tmp/cf-audit-base --json-report > /tmp/audit-baseline.json
 git worktree remove --force /tmp/cf-audit-base
 
 # гейт: только новые находки в изменённых файлах
-uvx --from "$ENGINE" audit-gate --repo . \
+uvx --python 3.12 --from "$ENGINE" audit-gate --repo . \
   --baseline /tmp/audit-baseline.json --base "$base" --scope changed
 ```
+
+Гейт видит только закоммиченное: закоммить изменения перед запуском, иначе
+незакоммиченные правки в diff не попадут.
 
 Baseline — отчёт schema 3 и в репозиторий не коммитится: CI держит его в
 `$RUNNER_TEMP` и кэше по SHA базового коммита. Движок ставится по HTTPS из

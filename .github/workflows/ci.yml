@@ -58,6 +58,10 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - uses: astral-sh/setup-uv@v10.4.0
         with:
           enable-cache: true
@@ -71,7 +75,7 @@ jobs:
           base=$(git merge-base HEAD origin/main)
           {
             echo "sha=$base"
-            echo "cache-key=audit-baseline-v1-${RUNNER_OS}-${AUDIT_ENGINE_VERSION}-${base}"
+            echo "cache-key=audit-baseline-v2-${RUNNER_OS}-py3.12-${AUDIT_ENGINE_VERSION}-${base}"
           } >> "$GITHUB_OUTPUT"
           echo "base: $base"
 
@@ -103,7 +107,7 @@ jobs:
           engine="git+${AUDIT_ENGINE_REPO}@v${AUDIT_ENGINE_VERSION}"
           base_tree="$RUNNER_TEMP/audit-base"
           git worktree add --detach "$base_tree" "$BASE_SHA"
-          if ! uvx --from "$engine" audit --repo "$base_tree" --json-report > "$RUNNER_TEMP/audit-baseline.json"; then
+          if ! uvx --python 3.12 --from "$engine" audit --repo "$base_tree" --json-report > "$RUNNER_TEMP/audit-baseline.json"; then
             echo "::error::Не удалось поставить движок ${AUDIT_ENGINE_VERSION} из ${AUDIT_ENGINE_REPO}; проверьте доступ на чтение."
             exit 1
           fi
@@ -142,7 +146,7 @@ jobs:
           BASE_SHA: ${{ steps.base.outputs.sha }}
         run: |
           engine="git+${AUDIT_ENGINE_REPO}@v${AUDIT_ENGINE_VERSION}"
-          uvx --from "$engine" audit-gate --repo . \
+          uvx --python 3.12 --from "$engine" audit-gate --repo . \
             --baseline "$RUNNER_TEMP/audit-baseline.json" \
             --base "$BASE_SHA" --scope changed
 
