@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import multiprocessing
+import os
 import sqlite3
+import stat
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -8,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from content_factory.db.connection import connect, connect_readonly
+from content_factory.db.lock import acquire, lock_path, locked
 from content_factory.db.runtime_state import (
     ensure_schema,
     load_alert_times,
@@ -16,6 +20,7 @@ from content_factory.db.runtime_state import (
     save_alert_time,
     save_state,
 )
+from content_factory.exceptions import LockError, LockTimeoutError, LockUnavailableError
 from content_factory.schemas.state.state import RuntimeState
 
 
@@ -37,6 +42,75 @@ def test_connect_creates_directory_and_enables_wal(tmp_path: Path) -> None:
         assert mode == "wal"
     finally:
         connection.close()
+
+
+def test_connect_sets_busy_timeout_and_foreign_keys(tmp_path: Path) -> None:
+    connection = connect(tmp_path / "db" / "db.sqlite3")
+    try:
+        busy_timeout = connection.execute("PRAGMA busy_timeout").fetchone()[0]
+        foreign_keys = connection.execute("PRAGMA foreign_keys").fetchone()[0]
+    finally:
+        connection.close()
+
+    assert busy_timeout == 30_000
+    assert foreign_keys == 1
+
+
+def test_connect_passes_timeout_to_driver(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    real_connect = sqlite3.connect
+
+    def spy(*args: object, **kwargs: object) -> sqlite3.Connection:
+        captured.update(kwargs)
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr("content_factory.db.connection.sqlite3.connect", spy)
+    connection = connect(tmp_path / "db" / "db.sqlite3")
+    connection.close()
+
+    assert captured["timeout"] == 30
+
+
+def test_connect_closes_connection_when_setup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeConnection:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake = FakeConnection()
+
+    def fake_connect(*_args: object, **_kwargs: object) -> FakeConnection:
+        return fake
+
+    def fail_configure(_connection: object) -> None:
+        raise RuntimeError("pragma failed")
+
+    monkeypatch.setattr("content_factory.db.connection.sqlite3.connect", fake_connect)
+    monkeypatch.setattr("content_factory.db.connection._configure", fail_configure)
+
+    with pytest.raises(RuntimeError, match="pragma failed"):
+        connect(tmp_path / "db" / "db.sqlite3")
+
+    assert fake.closed
+
+
+def test_connect_readonly_keeps_timeouts_and_row_factory(tmp_path: Path) -> None:
+    db_path = tmp_path / "db" / "db.sqlite3"
+    connect(db_path).close()
+
+    readonly = connect_readonly(db_path)
+    try:
+        assert readonly.row_factory is sqlite3.Row
+        assert readonly.execute("PRAGMA busy_timeout").fetchone()[0] == 30_000
+    finally:
+        readonly.close()
 
 
 def test_load_state_without_rows_returns_empty(connection: sqlite3.Connection) -> None:
@@ -145,8 +219,86 @@ def test_connect_readonly_reads_existing_database(tmp_path: Path) -> None:
 
 
 def test_connect_readonly_missing_database_raises(tmp_path: Path) -> None:
+    db_path = tmp_path / "missing" / "db.sqlite3"
+
     with pytest.raises(sqlite3.OperationalError):
-        connect_readonly(tmp_path / "missing" / "db.sqlite3")
+        connect_readonly(db_path)
+
+    assert not db_path.exists()
+
+
+def test_lock_path_creates_private_lock_next_to_database(tmp_path: Path) -> None:
+    path = lock_path(tmp_path / "db", "delivery")
+
+    with locked(path, timeout=1):
+        assert path.parent == tmp_path / "db"
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_acquire_rejects_negative_timeout(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="timeout"):
+        acquire(lock_path(tmp_path / "db", "delivery"), timeout=-1)
+
+
+def test_file_lock_release_is_idempotent(tmp_path: Path) -> None:
+    lock = acquire(lock_path(tmp_path / "db", "delivery"), timeout=1)
+
+    lock.release()
+    lock.release()
+
+
+def test_acquire_wraps_unusable_lock_path(tmp_path: Path) -> None:
+    blocker = tmp_path / "db"
+    blocker.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(LockError, match="lock-файл"):
+        acquire(blocker / "delivery.lock", timeout=1)
+
+
+def test_acquire_requires_fcntl(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("content_factory.db.lock.fcntl", None)
+
+    with pytest.raises(LockUnavailableError, match="fcntl"):
+        acquire(lock_path(tmp_path / "db", "delivery"), timeout=1)
+
+
+def test_different_locks_can_nest_without_deadlock(tmp_path: Path) -> None:
+    build_slot = lock_path(tmp_path / "db", "delivery-build")
+    archive_slot = lock_path(tmp_path / "db", "delivery")
+
+    with locked(build_slot, timeout=1), locked(archive_slot, timeout=1):
+        assert build_slot.is_file()
+        assert archive_slot.is_file()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="flock is POSIX-only")
+def test_lock_keeps_another_process_out(tmp_path: Path) -> None:
+    path = lock_path(tmp_path / "db", "delivery")
+    context = multiprocessing.get_context("fork")
+    entered = context.Event()
+    release = context.Event()
+
+    def hold() -> None:
+        with locked(path, timeout=5):
+            entered.set()
+            release.wait(10)
+
+    process = context.Process(target=hold, daemon=True)
+    process.start()
+    try:
+        assert entered.wait(10)
+        with pytest.raises(LockTimeoutError), locked(path, timeout=0.2):
+            pass
+    finally:
+        release.set()
+        process.join(10)
+        if process.is_alive():
+            process.kill()
+            process.join()
+    assert process.exitcode == 0
 
 
 def test_load_alert_times_without_rows_returns_empty(

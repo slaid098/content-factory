@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import threading
 import zipfile
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -14,14 +13,14 @@ from loguru import logger
 
 from content_factory.constants import ARCHIVE_DIR, CONTENT_DIR, DB_DIR, DB_FILENAME
 from content_factory.db.delivery import load_language_queries as load_language_queries
+from content_factory.db.lock import DELIVERY_LOCK, lock_path, locked
 from content_factory.db.titles import load_titles
 from content_factory.db.video_meta import load_video_meta as load_video_meta
-from content_factory.exceptions.errors import DeliveryError
+from content_factory.exceptions.errors import DeliveryError, LockError
 from content_factory.schemas.content.video import VideoMeta
 from content_factory.services.delivery.archives import is_archive_expired
 from content_factory.services.delivery.sidecars import read_job_file
 
-_DELIVERY_LOCK = threading.Lock()
 _ZIP_SUFFIX = ".zip"
 _TMP_SUFFIX = ".tmp"
 
@@ -59,40 +58,65 @@ def deliver(
         DeliveryError: The archive directory or zip cannot be written.
     """
     moment = now or datetime.now(UTC)
+    try:
+        with locked(lock_path(data_dir / DB_DIR, DELIVERY_LOCK)):
+            return _deliver_locked(
+                data_dir,
+                language,
+                count,
+                request_id,
+                query,
+                retention_hours=retention_hours,
+                now=moment,
+            )
+    except LockError as ex:
+        raise DeliveryError(f"не удалось заблокировать выдачу {request_id}") from ex
+
+
+def _deliver_locked(
+    data_dir: Path,
+    language: str,
+    count: int,
+    request_id: UUID,
+    query: str | None,
+    *,
+    retention_hours: int,
+    now: datetime,
+) -> Path | None:
+    """Build or reuse one archive while holding the delivery lock."""
     archive_dir = data_dir / ARCHIVE_DIR / language
     archive_path = archive_dir / f"{request_id}{_ZIP_SUFFIX}"
 
-    with _DELIVERY_LOCK:
-        if _is_fresh(archive_path, moment, retention_hours):
-            logger.bind(request_id=str(request_id), path=str(archive_path)).info(
-                "Выдача {} уже собрана", request_id
-            )
-            return archive_path
-
-        try:
-            _remove_stale(archive_path)
-            sources, titles = _select_sources(
-                data_dir / CONTENT_DIR / language,
-                count,
-                db_path=data_dir / DB_DIR / DB_FILENAME,
-                query=query,
-            )
-            if not sources or not titles:
-                return None
-            archive_dir.mkdir(parents=True, exist_ok=True)
-            _build_archive(archive_path, sources, titles)
-        except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as ex:
-            _discard_tmp(archive_path)
-            raise DeliveryError(f"не удалось собрать архив {request_id}") from ex
-
-        _remove_sources(sources)
-        logger.bind(
-            request_id=str(request_id),
-            language=language,
-            files=len(sources),
-            path=str(archive_path),
-        ).info("Собрана выдача {}: {} файлов", request_id, len(sources))
+    if _is_fresh(archive_path, now, retention_hours):
+        logger.bind(request_id=str(request_id), path=str(archive_path)).info(
+            "Выдача {} уже собрана", request_id
+        )
         return archive_path
+
+    try:
+        _remove_stale(archive_path)
+        sources, titles = _select_sources(
+            data_dir / CONTENT_DIR / language,
+            count,
+            db_path=data_dir / DB_DIR / DB_FILENAME,
+            query=query,
+        )
+        if not sources or not titles:
+            return None
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        _build_archive(archive_path, sources, titles)
+    except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as ex:
+        _discard_tmp(archive_path)
+        raise DeliveryError(f"не удалось собрать архив {request_id}") from ex
+
+    _remove_sources(sources)
+    logger.bind(
+        request_id=str(request_id),
+        language=language,
+        files=len(sources),
+        path=str(archive_path),
+    ).info("Собрана выдача {}: {} файлов", request_id, len(sources))
+    return archive_path
 
 
 def count_archive_files(archive_path: Path) -> int:
@@ -120,9 +144,10 @@ def cleanup_expired_archives(
 ) -> int:
     """Delete delivery archives older than the retention window.
 
-    Cleanup is best effort: an unreadable directory or a race with another
-    process is logged and never stops the API. The delivery lock keeps the
-    scheduler from deleting an archive while a request is being assembled.
+    Cleanup is best effort: an unreadable directory, a busy lock or a race
+    with another process is logged and never stops the API. The cross-process
+    delivery lock keeps the scheduler from deleting an archive while a
+    request is being assembled.
 
     Args:
         data_dir: Root of the runtime data directory.
@@ -133,31 +158,47 @@ def cleanup_expired_archives(
         Number of removed zip files.
     """
     moment = now or datetime.now(UTC)
-    removed = 0
-    sidecars_removed = 0
-    with _DELIVERY_LOCK:
-        archive_root = data_dir / ARCHIVE_DIR
-        try:
-            language_dirs = sorted(path for path in archive_root.iterdir() if path.is_dir())
-        except FileNotFoundError:
-            return 0
-        except OSError as ex:
-            logger.bind(
-                path=str(archive_root),
-                error=ex,
-                error_type=type(ex).__name__,
-            ).warning("Не удалось прочитать каталог архивов")
-            return 0
-        for directory in language_dirs:
-            zips, sidecars = _cleanup_directory(directory, moment, retention_hours)
-            removed += zips
-            sidecars_removed += sidecars
+    try:
+        with locked(lock_path(data_dir / DB_DIR, DELIVERY_LOCK)):
+            removed, sidecars_removed = _cleanup_archives(data_dir, moment, retention_hours)
+    except LockError as ex:
+        logger.bind(error=ex, error_type=type(ex).__name__).warning(
+            "Не удалось заблокировать очистку архива выдач"
+        )
+        return 0
     logger.bind(removed=removed, sidecars=sidecars_removed).info(
         "Очистка архива выдач: удалено {} zip и {} sidecar",
         removed,
         sidecars_removed,
     )
     return removed
+
+
+def _cleanup_archives(
+    data_dir: Path,
+    now: datetime,
+    retention_hours: int,
+) -> tuple[int, int]:
+    """Remove expired zips and sidecars of every language directory."""
+    archive_root = data_dir / ARCHIVE_DIR
+    try:
+        language_dirs = sorted(path for path in archive_root.iterdir() if path.is_dir())
+    except FileNotFoundError:
+        return 0, 0
+    except OSError as ex:
+        logger.bind(
+            path=str(archive_root),
+            error=ex,
+            error_type=type(ex).__name__,
+        ).warning("Не удалось прочитать каталог архивов")
+        return 0, 0
+    removed = 0
+    sidecars_removed = 0
+    for directory in language_dirs:
+        zips, sidecars = _cleanup_directory(directory, now, retention_hours)
+        removed += zips
+        sidecars_removed += sidecars
+    return removed, sidecars_removed
 
 
 def _cleanup_directory(

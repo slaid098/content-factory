@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from content_factory.db.connection import connect
 from content_factory.exceptions.errors import SupplierError
 from content_factory.schemas.supplier.results import FilterDecision
 from content_factory.schemas.supplier.video import (
@@ -63,22 +64,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_videos_author_downloaded
 
 @contextmanager
 def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
+    """Open one write transaction through the database connection factory."""
     try:
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+        connection = connect(db_path)
     except OSError as ex:
         raise SupplierError(f"не удалось создать каталог {db_path.parent}: {ex}") from ex
-    conn = sqlite3.connect(db_path, timeout=30)
-    conn.row_factory = sqlite3.Row
     try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        yield conn
-        conn.commit()
+        yield connection
+        connection.commit()
     except Exception:
-        conn.rollback()
+        connection.rollback()
         raise
     finally:
-        conn.close()
+        connection.close()
 
 
 def _add_language_column(conn: sqlite3.Connection) -> None:

@@ -5,13 +5,13 @@ from __future__ import annotations
 import os
 import stat
 import tempfile
-import threading
 import unicodedata
 from contextlib import suppress
 from pathlib import Path
 
 from content_factory.constants import DB_DIR, DB_FILENAME, LANGUAGE_CODE_RE, QUERIES_DIR
-from content_factory.exceptions.errors import DeliveryError, SupplierError
+from content_factory.db.lock import QUERIES_LOCK, lock_path, locked
+from content_factory.exceptions.errors import DeliveryError, LockError, SupplierError
 from content_factory.schemas.content.queries import QueriesResponse, QueryCount
 from content_factory.services import supplier
 from content_factory.services.delivery.metadata import load_language_queries
@@ -19,7 +19,6 @@ from content_factory.services.delivery.topics import collect_topics
 
 _HEADER = "# Добавлено из интерфейса"
 _MAX_QUERY_LENGTH = 200
-_WRITE_LOCK = threading.Lock()
 
 
 def list_language_queries(data_dir: Path, language: str) -> QueriesResponse:
@@ -123,15 +122,18 @@ def add_language_query(data_dir: Path, language: str, query: str) -> tuple[str, 
     normalized = normalize_query(query)
     directory = data_dir / QUERIES_DIR
     path = directory / f"{language}.txt"
-    with _WRITE_LOCK:
-        text, has_bom = _read_existing(path)
-        duplicate = any(
-            existing.casefold() == normalized.casefold()
-            for existing in supplier.parse_language_queries(text)
-        )
-        if duplicate:
-            return normalized, False
-        _write_atomic(path, _append_to_section(text, normalized), has_bom=has_bom)
+    try:
+        with locked(lock_path(data_dir / DB_DIR, QUERIES_LOCK)):
+            text, has_bom = _read_existing(path)
+            duplicate = any(
+                existing.casefold() == normalized.casefold()
+                for existing in supplier.parse_language_queries(text)
+            )
+            if duplicate:
+                return normalized, False
+            _write_atomic(path, _append_to_section(text, normalized), has_bom=has_bom)
+    except LockError as ex:
+        raise DeliveryError(f"не удалось заблокировать файл запросов {path}: {ex}") from ex
     return normalized, True
 
 

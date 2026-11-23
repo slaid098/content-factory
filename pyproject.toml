@@ -130,3 +130,27 @@ reason = "совпадение тривиальных конструкторов
 check_id = "docker_layout"
 path = "docker-compose.yml"
 reason = "канонический compose-файл называется compose.yaml; проверка ждёт legacy-имя"
+
+# orm_in_core запрещает db-импорты в ядре капсулы, ожидая ORM-модели.
+# Перечисленные модули — инфраструктурные адаптеры: repository.py открывает
+# SQLite через единую фабрику db.connection, остальные берут межпроцессную
+# файловую блокировку db.lock. ORM-моделей и обхода слоя здесь нет.
+[[tool.audit.ignore]]
+check_id = "orm_in_core"
+path = "src/content_factory/services/supplier/repository.py"
+reason = "SQLite-адаптер капсулы: db.connection.connect — единая фабрика, не ORM"
+
+[[tool.audit.ignore]]
+check_id = "orm_in_core"
+path = "src/content_factory/services/delivery/jobs.py"
+reason = "single-build slot через db.lock (fcntl); ORM-моделей в капсуле нет"
+
+[[tool.audit.ignore]]
+check_id = "orm_in_core"
+path = "src/content_factory/services/delivery/queries.py"
+reason = "атомарная запись файла запросов под db.lock (fcntl), не ORM"
+
+[[tool.audit.ignore]]
+check_id = "orm_in_core"
+path = "src/content_factory/services/supplier/downloader.py"
+reason = "финализация скачивания под db.lock (fcntl), не ORM"
