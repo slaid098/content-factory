@@ -36,8 +36,45 @@ pip install -e ".[dev]"
 ruff check .
 ruff format --check .
 mypy src main.py
-python -m pytest
+python -m pytest tests/unit -q --no-cov
 ```
+
+### Аудит
+
+`audit` — WARN-only и ничего не блокирует. Блокирует только `audit-gate`,
+и только новыми находками в файлах, изменённых против базового коммита.
+Версия движка закреплена тегом `v0.5.0`; локальный запуск повторяет CI:
+
+```bash
+ENGINE='git+https://git.slaid098.dev/slaid098/agent-skills@v0.5.0'
+
+# движок закрытый: без авторизации uvx по HTTPS получит 401. Один раз
+# настройте git с токеном read:repository из ENGINE_GIT_TOKEN…
+git config --global url."https://oauth2:${ENGINE_GIT_TOKEN}@git.slaid098.dev/".insteadOf "https://git.slaid098.dev/"
+# …или подставьте токен прямо в ENGINE:
+# ENGINE='git+https://oauth2:${ENGINE_GIT_TOKEN}@git.slaid098.dev/slaid098/agent-skills@v0.5.0'
+
+git fetch origin main
+base=$(git merge-base HEAD origin/main)
+
+# baseline на базовом коммите — в CI он кэшируется по SHA
+git worktree add --detach /tmp/cf-audit-base "$base"
+uvx --python 3.12 --from "$ENGINE" audit --repo /tmp/cf-audit-base --json-report > /tmp/audit-baseline.json
+git worktree remove --force /tmp/cf-audit-base
+
+# гейт: только новые находки в изменённых файлах
+uvx --python 3.12 --from "$ENGINE" audit-gate --repo . \
+  --baseline /tmp/audit-baseline.json --base "$base" --scope changed
+```
+
+Гейт видит только закоммиченное: закоммить изменения перед запуском, иначе
+незакоммиченные правки в diff не попадут.
+
+Baseline — отчёт schema 3 и в репозиторий не коммитится: CI держит его в
+`$RUNNER_TEMP` и кэше по SHA базового коммита. Движок ставится по HTTPS из
+закрытого репозитория; в CI для этого используется секрет `ENGINE_GIT_TOKEN`
+с доступом на чтение к репозиторию движка, а для PR из форков job
+пропускается — GitHub не отдаёт форкам секреты.
 
 ## Запуск
 

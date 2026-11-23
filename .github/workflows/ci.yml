@@ -38,6 +38,118 @@ jobs:
       - name: Tests
         run: python -m pytest
 
+  # Единственный блокирующий аудит-шаг: `audit` остаётся WARN-only, а гейт
+  # падает только на новых находках в файлах, изменённых против базового
+  # коммита. Baseline собирается тем же тегом движка на merge-base с
+  # origin/main, живёт в $RUNNER_TEMP и кэшируется по SHA базового коммита;
+  # в репозиторий он не попадает. Для PR из форков job пропускается: GitHub
+  # не отдаёт форкам секреты, а движок закрытый.
+  audit-gate:
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      AUDIT_ENGINE_REPO: https://git.slaid098.dev/slaid098/agent-skills
+      AUDIT_ENGINE_VERSION: "0.5.0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v10.4.0
+        with:
+          enable-cache: true
+
+      # База гейта — merge-base с main, а не HEAD: для PR это базовый коммит
+      # ветки, для push в main diff пустой и гейт зелёный.
+      - name: Resolve base commit
+        id: base
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          base=$(git merge-base HEAD origin/main)
+          {
+            echo "sha=$base"
+            echo "cache-key=audit-baseline-v2-${RUNNER_OS}-py3.12-${AUDIT_ENGINE_VERSION}-${base}"
+          } >> "$GITHUB_OUTPUT"
+          echo "base: $base"
+
+      - name: Restore baseline
+        id: baseline
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/audit-baseline.json
+          key: ${{ steps.base.outputs.cache-key }}
+
+      # Токен нужен только закрытому движку; git config пишет его в
+      # ~/.gitconfig эфемерного раннера, в лог значение не попадает.
+      - name: Configure engine auth
+        env:
+          ENGINE_GIT_TOKEN: ${{ secrets.ENGINE_GIT_TOKEN }}
+        run: |
+          token=$(printf '%s' "${ENGINE_GIT_TOKEN}" | tr -d '[:space:]')
+          if [ -z "${token}" ]; then
+            echo "::error::Секрет ENGINE_GIT_TOKEN не задан."
+            exit 1
+          fi
+          git config --global url."https://oauth2:${token}@git.slaid098.dev/".insteadOf "https://git.slaid098.dev/"
+
+      - name: Build baseline
+        if: steps.baseline.outputs.cache-hit != 'true'
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+        run: |
+          engine="git+${AUDIT_ENGINE_REPO}@v${AUDIT_ENGINE_VERSION}"
+          base_tree="$RUNNER_TEMP/audit-base"
+          git worktree add --detach "$base_tree" "$BASE_SHA"
+          if ! uvx --python 3.12 --from "$engine" audit --repo "$base_tree" --json-report > "$RUNNER_TEMP/audit-baseline.json"; then
+            echo "::error::Не удалось поставить движок ${AUDIT_ENGINE_VERSION} из ${AUDIT_ENGINE_REPO}; проверьте доступ на чтение."
+            exit 1
+          fi
+          git worktree remove --force "$base_tree"
+
+      # Baseline — schema 3; чужой отчёт не должен тихо пропустить находки.
+      - name: Validate baseline
+        run: |
+          python3 - "$RUNNER_TEMP/audit-baseline.json" "$AUDIT_ENGINE_VERSION" <<'PY'
+          import json
+          import sys
+
+          path, expected_engine = sys.argv[1], sys.argv[2]
+          with open(path, encoding="utf-8") as fh:
+              report = json.load(fh)
+          schema = report.get("schema_version") if isinstance(report, dict) else None
+          if schema != 3:
+              raise SystemExit(f"baseline: schema_version {schema!r}, ожидался 3")
+          engine = report.get("engine_version")
+          if engine != expected_engine:
+              raise SystemExit(
+                  f"baseline: engine_version {engine!r}, ожидался {expected_engine!r}"
+              )
+          print(f"baseline: schema 3, engine {engine}, находок {len(report['findings'])}")
+          PY
+
+      - name: Save baseline
+        if: steps.baseline.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/audit-baseline.json
+          key: ${{ steps.base.outputs.cache-key }}
+
+      - name: Gate new findings
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+        run: |
+          engine="git+${AUDIT_ENGINE_REPO}@v${AUDIT_ENGINE_VERSION}"
+          uvx --python 3.12 --from "$engine" audit-gate --repo . \
+            --baseline "$RUNNER_TEMP/audit-baseline.json" \
+            --base "$BASE_SHA" --scope changed
+
   # Сборка только для main: latest обязан указывать на образ из зелёного main.
   build-push:
     needs: ci
