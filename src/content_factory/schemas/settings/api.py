@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from content_factory.constants import LANGUAGE_CODE_RE
 from content_factory.exceptions.errors import ConfigError
 from content_factory.utils.duration import parse_duration
 
@@ -27,7 +28,7 @@ class LanguageSettings(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
-    code: str = Field(pattern=r"^[a-z]{2}$")
+    code: str = Field(pattern=LANGUAGE_CODE_RE.pattern)
     enabled: bool
     stock_target: int = Field(ge=0, le=100_000)
 

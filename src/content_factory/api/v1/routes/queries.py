@@ -10,7 +10,7 @@ from loguru import logger
 from content_factory.api.v1.routes.content import require_delivery_token
 from content_factory.config.runtime import load_runtime_config
 from content_factory.config.settings import Settings
-from content_factory.constants import CONFIG_DIR, CONFIG_FILENAME
+from content_factory.constants import CONFIG_DIR, CONFIG_FILENAME, LANGUAGE_CODE_RE
 from content_factory.exceptions.errors import DeliveryError
 from content_factory.schemas.content.queries import (
     QueriesResponse,
@@ -21,7 +21,6 @@ from content_factory.services.delivery import add_language_query, list_language_
 
 queries_router = APIRouter()
 
-_LANGUAGE_PATTERN = r"^[a-z]{2}$"
 _RESPONSES: dict[int | str, dict[str, Any]] = {
     status.HTTP_401_UNAUTHORIZED: {"description": "Missing or invalid token"},
     status.HTTP_422_UNPROCESSABLE_ENTITY: {"description": "Invalid language or query"},
@@ -48,7 +47,7 @@ def _require_configured_language(settings: Settings, language: str) -> None:
     responses=_RESPONSES,
 )
 def get_queries(
-    language: Annotated[str, Query(pattern=_LANGUAGE_PATTERN)],
+    language: Annotated[str, Query(pattern=LANGUAGE_CODE_RE.pattern)],
     settings: Annotated[Settings, Depends(require_delivery_token)],
 ) -> QueriesResponse:
     """Return every search query of one language with its stock counts."""

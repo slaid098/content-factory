@@ -12,7 +12,7 @@ from loguru import logger
 
 from content_factory.config.runtime import load_runtime_config
 from content_factory.config.settings import Settings
-from content_factory.constants import CONFIG_DIR, CONFIG_FILENAME
+from content_factory.constants import CONFIG_DIR, CONFIG_FILENAME, LANGUAGE_CODE_RE
 from content_factory.exceptions.errors import DeliveryBusyError, DeliveryError
 from content_factory.schemas.content.archives import ArchiveInfo
 from content_factory.schemas.content.delivery import DeliveryJobInfo, DeliveryRequest
@@ -27,8 +27,6 @@ from content_factory.services.delivery import (
 )
 
 content_router = APIRouter()
-
-_LANGUAGE_PATTERN = r"^[a-z]{2}$"
 
 
 def require_delivery_token(
@@ -182,7 +180,7 @@ def create_delivery_link(
     },
 )
 def get_delivery(
-    language: Annotated[str, Path(pattern=_LANGUAGE_PATTERN)],
+    language: Annotated[str, Path(pattern=LANGUAGE_CODE_RE.pattern)],
     request_id: Annotated[UUID, Path()],
     settings: Annotated[Settings, Depends(require_delivery_token)],
 ) -> DeliveryJobInfo:
@@ -210,7 +208,7 @@ def get_delivery(
     },
 )
 def get_topics(
-    language: Annotated[str, Query(pattern=_LANGUAGE_PATTERN)],
+    language: Annotated[str, Query(pattern=LANGUAGE_CODE_RE.pattern)],
     settings: Annotated[Settings, Depends(require_delivery_token)],
 ) -> TopicsResponse:
     """Return the stock breakdown by search topic for one language."""
@@ -247,7 +245,7 @@ def get_archives(
     },
 )
 def download_archive(
-    language: Annotated[str, Path(pattern=_LANGUAGE_PATTERN)],
+    language: Annotated[str, Path(pattern=LANGUAGE_CODE_RE.pattern)],
     request_id: Annotated[UUID, Path()],
     settings: Annotated[Settings, Depends(require_delivery_token)],
 ) -> Response:

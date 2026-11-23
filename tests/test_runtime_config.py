@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 
+from content_factory.config import runtime as runtime_config
 from content_factory.config.defaults import (
     CONFIG_TEMPLATE,
     DEFAULT_CONFIG,
-    default_config,
 )
-from content_factory.config.runtime import load_runtime_config, validate_runtime_config
+from content_factory.config.runtime import (
+    default_config,
+    load_runtime_config,
+    validate_runtime_config,
+)
+from content_factory.constants import LANGUAGE_CODE_RE
 from content_factory.exceptions import ConfigError
 
 
@@ -75,6 +81,38 @@ def test_seeds_file_and_returns_defaults(tmp_path: Path) -> None:
 
 def test_template_matches_defaults() -> None:
     assert yaml.safe_load(CONFIG_TEMPLATE) == DEFAULT_CONFIG
+
+
+def test_typed_defaults_are_built_from_default_config() -> None:
+    default = default_config()
+
+    assert default == validate_runtime_config(DEFAULT_CONFIG)
+    assert default.delivery.max_count == DEFAULT_CONFIG["delivery"]["max_count"]
+
+
+def test_default_config_has_only_known_languages() -> None:
+    assert set(DEFAULT_CONFIG["languages"]) == {"ru", "en"}
+
+
+def test_default_config_follows_default_config_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    custom = deepcopy(DEFAULT_CONFIG)
+    custom["run"]["batch"] = 7
+    monkeypatch.setattr(runtime_config, "DEFAULT_CONFIG", custom)
+
+    assert runtime_config.default_config().run.batch == 7
+
+
+@pytest.mark.parametrize("code", ["ru", "en", "eng"])
+def test_language_code_accepts_two_or_three_lowercase_letters(code: str) -> None:
+    assert LANGUAGE_CODE_RE.fullmatch(code) is not None
+
+
+@pytest.mark.parametrize(
+    "code",
+    ["r", "ru-RU", "RU", "russian", "", "ru ", " ru", "ru\n", "1u", "ру", "../ru"],
+)
+def test_language_code_rejects_codes_outside_the_format(code: str) -> None:
+    assert LANGUAGE_CODE_RE.fullmatch(code) is None
 
 
 def test_existing_file_is_not_rewritten(tmp_path: Path) -> None:
@@ -178,6 +216,8 @@ languages:
         ("unknown: 1\n", "unknown"),
         ("run: [1, 2]\n", "run: ожидался словарь"),
         ("languages:\n  de:\n    enabled: true\n    stock_target: 5\n", "язык: de"),
+        ("languages:\n  eng:\n    enabled: true\n    stock_target: 5\n", "язык: eng"),
+        ("languages:\n  RU:\n    enabled: true\n    stock_target: 5\n", "язык: RU"),
         ("languages:\n  ru:\n    mode: fast\n", "languages.ru.mode"),
         ("run:\n  batch: 0\n", "run.batch"),
         ("run:\n  batch: -1\n", "run.batch"),

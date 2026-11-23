@@ -20,7 +20,7 @@ Authorization: Bearer <CONTENT_FACTORY_DELIVERY_TOKEN>
 Язык должен быть описан в `languages` runtime-конфига
 `app_data/config/config.yaml`. Флаг `enabled` не важен: список и добавление
 работают и для выключенного языка. Неизвестный язык или код не по regex
-`^[a-z]{2}$` — `422`.
+`^[a-z]{2,3}$` — `422`.
 
 ## Список запросов
 

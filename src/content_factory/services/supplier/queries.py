@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import random
-import re
 from pathlib import Path
 
+from content_factory.constants import LANGUAGE_CODE_RE
 from content_factory.exceptions.errors import SupplierError
 from content_factory.schemas.supplier.search import QuerySpec
-
-_LANGUAGE_RE = re.compile(r"^[a-z]{2,3}$")
 
 
 def parse_language_queries(text: str) -> list[str]:
@@ -47,7 +45,7 @@ def read_language_queries(directory: Path, language: str) -> list[str]:
     Raises:
         SupplierError: Код языка недопустим или файл существует, но не читается.
     """
-    if _LANGUAGE_RE.fullmatch(language) is None:
+    if LANGUAGE_CODE_RE.fullmatch(language) is None:
         raise SupplierError(f"недопустимый код языка: {language!r}")
     path = directory / f"{language}.txt"
     if not path.is_file():

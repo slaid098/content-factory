@@ -43,7 +43,7 @@ GET /api/v1/content/settings
 
 | Поле | Значение |
 |---|---|
-| `languages[].code` | Код языка из `languages` в файле |
+| `languages[].code` | Код языка из `languages` в файле (`ru`, `en`; формат — 2–3 строчные латинские буквы) |
 | `languages[].enabled` | Производить для этого языка |
 | `languages[].stock_target` | Целевой остаток готовых видео |
 | `run.batch` | Максимальный объём производства за один тик |

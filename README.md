@@ -69,7 +69,7 @@ curl -f -X POST http://127.0.0.1:8000/api/v1/content/deliveries \
   -o delivery.zip
 ```
 
-Тело запроса: `language` (`^[a-z]{2}$`), `count` (1–300, фактический
+Тело запроса: `language` (`^[a-z]{2,3}$`), `count` (1–300, фактический
 максимум — `delivery.max_count` в runtime-конфиге, по умолчанию 100),
 `request_id` (UUID), необязательный `query` (тема, до 200 символов). Ответ
 `200` — zip с `NNN.mp4` и `NNN.json` (sidecar `{"title": "..."}`, название из

@@ -9,6 +9,7 @@ from content_factory.config.settings import SupplierSettings
 from content_factory.schemas.config.runtime import (
     AlertsConfig,
     CaptchaConfig,
+    DeliveryConfig,
     DownloadConfig,
     FilterConfig,
     LanguageConfig,
@@ -112,6 +113,7 @@ def make_runtime(**overrides: object) -> RuntimeConfig:
             "ru": LanguageConfig(enabled=True, stock_target=100),
             "en": LanguageConfig(enabled=False, stock_target=50),
         },
+        delivery=DeliveryConfig(max_count=100),
     )
     return replace(base, **overrides)
 

@@ -94,6 +94,23 @@ def test_load_language_queries_rejects_invalid_language(tmp_path: Path) -> None:
         load_language_queries(tmp_path, "../x")
 
 
+@pytest.mark.parametrize("language", ["r", "RU", "ru-RU", "russian"])
+def test_load_language_queries_rejects_codes_outside_the_format(
+    tmp_path: Path,
+    language: str,
+) -> None:
+    with pytest.raises(SupplierError, match="недопустимый код языка"):
+        load_language_queries(tmp_path, language)
+
+
+def test_load_language_queries_accepts_three_letter_code(tmp_path: Path) -> None:
+    (tmp_path / "eng.txt").write_text("hello\n", encoding="utf-8")
+
+    queries = load_language_queries(tmp_path, "eng")
+
+    assert [(item.query, item.language) for item in queries] == [("hello", "eng")]
+
+
 def test_load_language_queries_unreadable_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
