@@ -9,6 +9,7 @@ from content_factory.config.settings import (
     Settings,
     SupplierSettings,
     build_supplier_config,
+    get_settings,
     load_settings,
     load_supplier_settings,
 )
@@ -166,6 +167,33 @@ def test_load_settings_creates_data_directories(
     assert settings.data_dir == data_dir
     for name in (CONFIG_DIR, DB_DIR, CONTENT_DIR, ARCHIVE_DIR, QUERIES_DIR):
         assert (data_dir / name).is_dir()
+
+
+def test_get_settings_reads_environment_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("CONTENT_FACTORY_DATA_DIR", str(tmp_path / "first"))
+
+    first = get_settings()
+    monkeypatch.setenv("CONTENT_FACTORY_DATA_DIR", str(tmp_path / "second"))
+
+    assert get_settings() is first
+    get_settings.cache_clear()
+    assert get_settings().data_dir == tmp_path / "second"
+
+
+def test_get_settings_leaves_data_directory_untouched(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _clear_env(monkeypatch)
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("CONTENT_FACTORY_DATA_DIR", str(data_dir))
+
+    settings = get_settings()
+
+    assert settings.data_dir == data_dir
+    assert not data_dir.exists()
 
 
 def test_load_settings_wraps_filesystem_errors(

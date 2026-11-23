@@ -9,6 +9,7 @@ import pytest
 
 from content_factory.config.runtime import default_config
 from content_factory.config.settings import Settings, SupplierSettings
+from content_factory.constants import ARCHIVE_DIR, CONFIG_DIR, CONTENT_DIR, DB_DIR, QUERIES_DIR
 from content_factory.db.connection import connect
 from content_factory.db.runtime_state import load_state, save_state
 from content_factory.exceptions.errors import ConfigError, SupplierError
@@ -524,3 +525,17 @@ languages:
     )
 
     assert stock_flow.stock_topup.fn() == "enough_stock"
+
+
+def test_flow_entrypoint_creates_data_directories(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "app_data"
+    _patch(monkeypatch, ProduceResult({}, 0, StopReason.ENOUGH_STOCK))
+    monkeypatch.setattr(stock_flow, "get_settings", lambda: Settings(data_dir=data_dir))
+
+    stock_flow.stock_topup.fn()
+
+    for name in (CONFIG_DIR, DB_DIR, CONTENT_DIR, ARCHIVE_DIR, QUERIES_DIR):
+        assert (data_dir / name).is_dir()

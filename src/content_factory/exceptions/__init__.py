@@ -14,6 +14,11 @@ from content_factory.exceptions.errors import (
     SupplierError,
     UploadError,
 )
+from content_factory.exceptions.titles import (
+    TitleClientError,
+    TitleError,
+    TransientTitleError,
+)
 
 __all__ = [
     "ArchiveTooLargeError",
@@ -27,5 +32,8 @@ __all__ = [
     "SettingsValidationError",
     "SettingsWriteError",
     "SupplierError",
+    "TitleClientError",
+    "TitleError",
+    "TransientTitleError",
     "UploadError",
 ]

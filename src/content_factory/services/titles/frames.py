@@ -7,7 +7,7 @@ from pathlib import Path
 
 import imageio_ffmpeg
 
-from content_factory.services.titles.client import TitleError
+from content_factory.exceptions.titles import TitleError
 
 _FRAME_TIMEOUT_SECONDS = 30
 _SCALE_FILTER = "scale=768:768:force_original_aspect_ratio=decrease"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import cache
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
@@ -172,11 +173,26 @@ def _ensure_directories(data_dir: Path) -> None:
             raise ConfigError(f"не удалось создать каталог {path}: {ex}") from ex
 
 
+@cache
+def get_settings() -> Settings:
+    """Return the process settings, reading the environment only once."""
+    return Settings()
+
+
 def load_settings() -> Settings:
-    """Read settings from the environment and prepare the data directory."""
-    settings = Settings()
-    _ensure_directories(settings.data_dir)
+    """Read the process settings from the environment once.
+
+    Ensure the data directory tree exists; later calls reuse the cached
+    settings without reading the environment again.
+    """
+    settings = get_settings()
+    prepare_data_dirs(settings)
     return settings
+
+
+def prepare_data_dirs(settings: Settings) -> None:
+    """Create the runtime directory tree for callers that already hold settings."""
+    _ensure_directories(settings.data_dir)
 
 
 def load_supplier_settings() -> SupplierSettings:

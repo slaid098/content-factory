@@ -12,24 +12,17 @@ import httpx
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from content_factory.config.settings import TitlesSettings
+from content_factory.exceptions.titles import (
+    TitleClientError,
+    TitleError,
+    TransientTitleError,
+)
 from content_factory.services.titles.languages import language_name
 
 _ATTEMPTS = 3
 _MAX_DATA_LENGTH = 500
 _TITLES_IN_RESPONSE = 3
 _PRINTABLE_KEY_RANGE = range(33, 127)
-
-
-class TitleError(Exception):
-    """Raised when a title cannot be generated for one video."""
-
-
-class TitleClientError(TitleError):
-    """Raised when the title API rejects a request or returns bad data."""
-
-
-class TransientTitleError(TitleError):
-    """Raised when the title API is temporarily unavailable."""
 
 
 def generate_titles(

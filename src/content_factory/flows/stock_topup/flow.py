@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
-import sqlite3
 from contextlib import suppress
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 from loguru import logger
 from prefect import flow
 
 from content_factory.config.runtime import load_runtime_config
-from content_factory.config.settings import Settings, load_settings, load_supplier_settings
+from content_factory.config.settings import (
+    Settings,
+    get_settings,
+    load_supplier_settings,
+    prepare_data_dirs,
+)
 from content_factory.constants import (
     CONFIG_DIR,
     CONFIG_FILENAME,
@@ -35,6 +40,9 @@ from content_factory.services.planner.service import plan_production
 from content_factory.services.stock.service import count_stock
 from content_factory.services.supplier.service import produce
 
+if TYPE_CHECKING:
+    import sqlite3
+
 _ZERO_RUNS_ALERT = 3
 _BITBROWSER_MARKERS = ("bitbrowser", "mcp call failed")
 _STORAGE_MARKERS = ("каталог", "записать", "файл запросов", "подготовить схему")
@@ -43,7 +51,8 @@ _STORAGE_MARKERS = ("каталог", "записать", "файл запрос
 @flow(name="stock_topup")
 def stock_topup() -> str:
     """Выполнить один тик добора стока и вернуть код исхода."""
-    settings = load_settings()
+    settings = get_settings()
+    prepare_data_dirs(settings)
     runtime = load_runtime_config(settings.data_dir / CONFIG_DIR / CONFIG_FILENAME)
     connection = connect(settings.data_dir / DB_DIR / DB_FILENAME)
     try:

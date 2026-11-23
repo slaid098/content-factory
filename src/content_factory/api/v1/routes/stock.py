@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter
 
 from content_factory.config.runtime import load_runtime_config
-from content_factory.config.settings import Settings
+from content_factory.config.settings import get_settings
 from content_factory.constants import CONFIG_DIR, CONFIG_FILENAME
 from content_factory.schemas.stock.api import LanguageStockResponse, StockResponse
 from content_factory.services.stock.service import collect_stock
@@ -18,7 +18,7 @@ stock_router = APIRouter()
 @stock_router.get("/stock", response_model=StockResponse)
 def get_stock() -> StockResponse:
     """Return stock per enabled language and the production loop state."""
-    settings = Settings()
+    settings = get_settings()
     runtime = load_runtime_config(
         settings.data_dir / CONFIG_DIR / CONFIG_FILENAME,
         seed=False,
