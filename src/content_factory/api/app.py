@@ -15,7 +15,7 @@ from content_factory.api.v1.routes.queries import queries_router
 from content_factory.api.v1.routes.settings import settings_router
 from content_factory.api.v1.routes.stock import stock_router
 from content_factory.config.settings import Settings
-from content_factory.services.delivery.scheduler import (
+from content_factory.services.delivery import (
     create_cleanup_scheduler,
     run_startup_cleanup,
 )

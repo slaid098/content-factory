@@ -18,11 +18,8 @@ from content_factory.constants import DB_DIR, DB_FILENAME, QUERIES_DIR
 from content_factory.db.connection import connect_readonly
 from content_factory.exceptions.errors import DeliveryError, SupplierError
 from content_factory.schemas.content.queries import QueriesResponse, QueryCount
+from content_factory.services import supplier
 from content_factory.services.delivery.topics import collect_topics
-from content_factory.services.supplier.queries import (
-    parse_language_queries,
-    read_language_queries,
-)
 
 _HEADER = "# Добавлено из интерфейса"
 _LANGUAGE_RE = re.compile(r"^[a-z]{2}$")
@@ -50,7 +47,7 @@ def list_language_queries(data_dir: Path, language: str) -> QueriesResponse:
     """
     _validate_language(language)
     try:
-        file_queries = read_language_queries(data_dir / QUERIES_DIR, language)
+        file_queries = supplier.read_language_queries(data_dir / QUERIES_DIR, language)
     except SupplierError as ex:
         raise DeliveryError(f"не удалось прочитать запросы {language}: {ex}") from ex
 
@@ -135,7 +132,7 @@ def add_language_query(data_dir: Path, language: str, query: str) -> tuple[str, 
         text, has_bom = _read_existing(path)
         duplicate = any(
             existing.casefold() == normalized.casefold()
-            for existing in parse_language_queries(text)
+            for existing in supplier.parse_language_queries(text)
         )
         if duplicate:
             return normalized, False

@@ -11,7 +11,7 @@ from ruamel.yaml.comments import CommentedMap
 from content_factory.config.runtime import load_runtime_config, validate_runtime_config
 from content_factory.exceptions.errors import ConfigError, SettingsValidationError
 from content_factory.schemas.config.runtime import RuntimeConfig
-from content_factory.schemas.settings import (
+from content_factory.schemas.settings.api import (
     RuntimeSettings,
     SettingsApplyResponse,
     SettingsPreviewResponse,

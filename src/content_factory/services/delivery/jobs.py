@@ -22,15 +22,19 @@ from content_factory.schemas.content.delivery import (
     DeliveryRequest,
     DeliveryStatus,
 )
-from content_factory.services.delivery import service as delivery_service
-from content_factory.services.delivery import upload as upload_service
 from content_factory.services.delivery.service import count_archive_files
+from content_factory.services.delivery.service import deliver as _deliver
 from content_factory.services.delivery.sidecars import (
     delete_job,
     is_job_expired,
     iter_jobs,
     load_job,
     save_job,
+)
+
+from content_factory.services.delivery.upload import (  # isort: skip  # один импорт модуля
+    MAX_ARCHIVE_BYTES,
+    upload_archive as _upload_archive,
 )
 
 _JOBS_LOCK = threading.Lock()
@@ -49,7 +53,7 @@ def deliver(
     now: datetime | None = None,
 ) -> Path | None:
     """Build one archive through the delivery service capsule."""
-    return delivery_service.deliver(
+    return _deliver(
         data_dir,
         language,
         count,
@@ -62,7 +66,7 @@ def deliver(
 
 def upload_archive(archive: Path) -> str:
     """Upload one archive through the Filebin upload capsule."""
-    return upload_service.upload_archive(archive)
+    return _upload_archive(archive)
 
 
 def start_delivery_job(
@@ -221,7 +225,7 @@ def _run_delivery_job(
     """Build, publish and always release the single-build slot."""
     try:
         job = _build_and_publish(data_dir, request, created_at, retention_hours)
-    except Exception as ex:  # noqa: BLE001 - a worker must never stay "building"
+    except Exception as ex:  # a worker must never stay "building"
         logger.bind(
             request_id=str(request.request_id),
             error_type=type(ex).__name__,
@@ -284,7 +288,7 @@ def _build_and_publish(
             status="failed",
             error="не удалось прочитать собранный архив",
         )
-    if size > upload_service.MAX_ARCHIVE_BYTES:
+    if size > MAX_ARCHIVE_BYTES:
         return _ready_local(
             request,
             created_at,
@@ -332,7 +336,7 @@ def _publish_or_fallback(
         url = upload_archive(archive)
     except (ArchiveTooLargeError, UploadError) as ex:
         return _ready_local(request, created_at, retention_hours, size, files, str(ex))
-    except Exception as ex:  # noqa: BLE001 - keep the zip for a manual retry
+    except Exception as ex:  # keep the zip for a manual retry
         logger.bind(
             request_id=str(request.request_id),
             error_type=type(ex).__name__,

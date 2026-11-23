@@ -17,7 +17,7 @@ from content_factory.schemas.content.queries import (
     QueryCreateRequest,
     QueryCreateResponse,
 )
-from content_factory.services.delivery.queries import add_language_query, list_language_queries
+from content_factory.services.delivery import add_language_query, list_language_queries
 
 queries_router = APIRouter()
 
