@@ -10,6 +10,7 @@ name: content-factory
 x-image: &image
   build:
     context: .
+    dockerfile: docker/prod/Dockerfile
   image: ghcr.io/slaid098/content-factory:${IMAGE_TAG:-latest}
 
 # Фиксированный шлюз нужен, чтобы сервисы на хосте (Prefect, BitBrowser, MCP)

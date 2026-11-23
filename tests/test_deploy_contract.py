@@ -11,6 +11,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 _WORKFLOW = Path(".github/workflows/ci.yml")
 _DEPLOY_SCRIPT = Path("scripts/deploy.sh")
 _DEPLOY_README = Path("deploy/README.md")
+_PROD_DOCKERFILE = Path("docker/prod/Dockerfile")
 _SECRETS = (
     "DEPLOY_HOST",
     "DEPLOY_PORT",
@@ -36,6 +37,11 @@ def _workflow() -> dict[str, Any]:
     return {**workflow, "on": triggers}
 
 
+def _build_push_step() -> dict[str, Any]:
+    steps = _workflow()["jobs"]["build-push"]["steps"]
+    return next(step for step in steps if step.get("uses") == "docker/build-push-action@v6")
+
+
 def test_compose_contract() -> None:
     services = _load("compose.yaml")["services"]
 
@@ -43,7 +49,7 @@ def test_compose_contract() -> None:
     worker = services["worker"]
 
     assert api["image"] == "ghcr.io/slaid098/content-factory:${IMAGE_TAG:-latest}"
-    assert api["build"] == {"context": "."}
+    assert api["build"] == {"context": ".", "dockerfile": _PROD_DOCKERFILE.as_posix()}
     assert api["command"] == ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
     assert api["ports"] == ["127.0.0.1:8000:8000"]
     assert api["healthcheck"]["test"] == [
@@ -65,6 +71,19 @@ def test_compose_contract() -> None:
     assert worker["restart"] == "unless-stopped"
     assert "./app_data:/app/app_data" in api["volumes"]
     assert "./app_data:/app/app_data" in worker["volumes"]
+
+
+def test_docker_layout_contract() -> None:
+    services = _load("compose.yaml")["services"]
+    build = _build_push_step()["with"]
+
+    assert not (_ROOT / "Dockerfile").exists()
+    assert (_ROOT / _PROD_DOCKERFILE).is_file()
+    assert build["context"] == "."
+    assert build["file"] == _PROD_DOCKERFILE.as_posix()
+    assert {service["build"]["dockerfile"] for service in services.values()} == {
+        _PROD_DOCKERFILE.as_posix()
+    }
 
 
 def test_worker_command_caps_concurrent_flow_runs() -> None:
@@ -137,7 +156,7 @@ def test_workflow_jobs_and_permissions() -> None:
 def test_build_push_publishes_latest_and_short_sha() -> None:
     steps = _workflow()["jobs"]["build-push"]["steps"]
     short_sha = next(step for step in steps if step.get("id") == "image")
-    build = next(step for step in steps if step.get("uses") == "docker/build-push-action@v6")
+    build = _build_push_step()
 
     assert "sha-${GITHUB_SHA::7}" in short_sha["run"]
     tags = build["with"]["tags"]

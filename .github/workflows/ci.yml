@@ -69,6 +69,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: docker/prod/Dockerfile
           push: true
           tags: |
             ghcr.io/slaid098/content-factory:latest

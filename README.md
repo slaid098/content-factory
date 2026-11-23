@@ -119,8 +119,8 @@ docker compose up -d
 curl -f http://127.0.0.1:8000/api/v1/stock
 ```
 
-Для локальной разработки образ собирается на месте:
-`docker compose up -d --build`.
+Для локальной разработки образ собирается на месте из
+`docker/prod/Dockerfile`: `docker compose up -d --build`.
 
 Перед первым production-запуском создайте пользователя и каталоги языков:
 приложение не может писать в root-овый `content/`. Пошаговая инструкция
