@@ -4,12 +4,12 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from tests.unit.supplier.supplier_helpers import make_config
 
 from content_factory.schemas.supplier.settings import SupplierConfig
 from content_factory.schemas.supplier.video import VideoMetadata
 from content_factory.services.supplier import rules
 from content_factory.services.supplier.rules import evaluate
-from supplier_helpers import make_config
 
 NOW = 1_800_000_000
 MIN_AGE_SECONDS = 5 * 86400

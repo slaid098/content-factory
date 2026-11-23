@@ -11,6 +11,7 @@ import httpx
 import pytest
 from loguru import logger
 from pydantic import SecretStr
+from tests.unit.common.delivery_helpers import add_downloaded_video, add_title, touch_mp4
 
 from content_factory.config.settings import TitlesSettings, load_titles_settings
 from content_factory.constants import CONTENT_DIR, DB_DIR, DB_FILENAME
@@ -38,7 +39,6 @@ from content_factory.services.titles.text import (
     normalize_title_key,
     validate_title,
 )
-from delivery_helpers import add_downloaded_video, add_title, touch_mp4
 
 _NOW = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
 _SECRET = "test-secret"

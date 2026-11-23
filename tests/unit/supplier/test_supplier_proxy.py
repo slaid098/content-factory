@@ -7,10 +7,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.unit.supplier.supplier_helpers import make_config
 
 from content_factory.exceptions.errors import ConfigError
 from content_factory.services.supplier.proxy import fetch_bitbrowser_proxy, resolve_proxy
-from supplier_helpers import make_config
 
 
 class FakeResponse:

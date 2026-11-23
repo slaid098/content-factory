@@ -13,6 +13,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from loguru import logger
+from tests.unit.common.delivery_helpers import REQUEST_ID, REQUEST_ID_TEXT, add_title, touch_mp4
 
 from content_factory.api.app import create_app
 from content_factory.constants import ARCHIVE_DIR, CONTENT_DIR, DB_DIR
@@ -26,7 +27,6 @@ from content_factory.exceptions import (
 from content_factory.schemas.content.delivery import DeliveryJobInfo, DeliveryRequest
 from content_factory.services.delivery.jobs import start_delivery_job
 from content_factory.services.delivery.sidecars import save_job
-from delivery_helpers import REQUEST_ID, REQUEST_ID_TEXT, add_title, touch_mp4
 
 _TOKEN = "delivery-secret"
 _SECOND_ID = UUID("22222222-2222-4222-8222-222222222222")

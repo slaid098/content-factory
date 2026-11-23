@@ -14,12 +14,16 @@ from loguru import logger
 def pytest_configure(config: pytest.Config) -> None:
     """Требует 90% покрытия только от полного прогона.
 
-    Порог из addopts относится ко всему src. Точечный запуск одного файла
-    (например, tests/test_deploy_contract.py) физически не покрывает пакет,
+    Порог из addopts относится ко всему src. Точечный запуск файла или
+    tier-папки (tests/unit, tests/integration) физически не покрывает пакет,
     поэтому для выборки проверку отключаем.
     """
-    selected = [Path(path) for path in config.args]
-    if not selected or any(path.is_dir() for path in selected):
+    selected = [Path(path).resolve() for path in config.args]
+    tests_root = Path(__file__).resolve().parent
+    full_run = not selected or any(
+        path == tests_root or path in tests_root.parents for path in selected
+    )
+    if full_run:
         return
     # pytest-cov создаёт плагин на early_config и хранит порог в своей копии
     # namespace, поэтому config.option уже не влияет на итоговую проверку.

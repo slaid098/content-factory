@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 import pytest
+from tests.unit.supplier.supplier_helpers import make_config
 
 from content_factory.exceptions.errors import SupplierError
 from content_factory.schemas.supplier.search import QuerySpec
@@ -21,7 +22,6 @@ from content_factory.services.supplier.finder import (
     parse_search_dom,
     parse_video_url,
 )
-from supplier_helpers import make_config
 
 VIDEO_URL = "https://www.tiktok.com/@alice/video/111"
 SECOND_VIDEO_URL = "https://www.tiktok.com/@bob/video/222"

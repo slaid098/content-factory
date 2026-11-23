@@ -6,12 +6,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.unit.common.settings_helpers import config_path, settings_payload, write_config
 
 from content_factory.config.runtime import load_runtime_config
 from content_factory.exceptions import ConfigError, SettingsValidationError, SettingsWriteError
 from content_factory.services.settings import apply_settings, preview_settings, read_settings
 from content_factory.services.settings import document as document_module
-from settings_helpers import config_path, settings_payload, write_config
 
 _BACKUP_RE = re.compile(r"^config\.yaml\.bak-\d{8}-\d{6}(?:-\d+)?$")
 

@@ -7,7 +7,7 @@ from typing import Any
 
 import yaml
 
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[3]
 _WORKFLOW = Path(".github/workflows/ci.yml")
 _DEPLOY_SCRIPT = Path("scripts/deploy.sh")
 _DEPLOY_README = Path("deploy/README.md")

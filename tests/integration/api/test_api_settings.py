@@ -5,15 +5,15 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-
-from content_factory.api.app import create_app
-from content_factory.exceptions import SettingsWriteError
-from settings_helpers import (
+from tests.unit.common.settings_helpers import (
     DEFAULT_SETTINGS,
     config_path,
     settings_body,
     write_config,
 )
+
+from content_factory.api.app import create_app
+from content_factory.exceptions import SettingsWriteError
 
 _TOKEN = "settings-secret"
 _HEADERS = {"Authorization": f"Bearer {_TOKEN}"}

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from loguru import logger
+from tests.unit.supplier.supplier_helpers import make_config, make_metadata, make_video
 
 from content_factory.exceptions.errors import ConfigError, SupplierError
 from content_factory.schemas.supplier.results import DownloadResult, FilterDecision
@@ -28,7 +29,6 @@ from content_factory.services.supplier.downloader import (
     download_videos,
 )
 from content_factory.services.supplier.repository import Repository
-from supplier_helpers import make_config, make_metadata, make_video
 
 
 class FakeSink:

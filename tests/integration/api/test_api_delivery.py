@@ -11,6 +11,13 @@ from uuid import UUID
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from tests.unit.common.delivery_helpers import (
+    REQUEST_ID,
+    REQUEST_ID_TEXT,
+    add_downloaded_video,
+    add_title,
+    touch_mp4,
+)
 
 from content_factory.api.app import create_app
 from content_factory.constants import ARCHIVE_DIR, CONFIG_DIR, CONTENT_DIR
@@ -22,13 +29,6 @@ from content_factory.services.delivery.scheduler import (
 )
 from content_factory.services.delivery.service import cleanup_expired_archives
 from content_factory.services.delivery.sidecars import save_job
-from delivery_helpers import (
-    REQUEST_ID,
-    REQUEST_ID_TEXT,
-    add_downloaded_video,
-    add_title,
-    touch_mp4,
-)
 
 _TOKEN = "delivery-secret"
 _MOMENT = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)

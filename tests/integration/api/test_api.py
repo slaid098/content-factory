@@ -6,13 +6,13 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from tests.unit.common.delivery_helpers import add_title
 
 from content_factory.api.app import create_app
 from content_factory.db.connection import connect
 from content_factory.db.runtime_state import save_state
 from content_factory.schemas.state.state import RuntimeState
 from content_factory.services.stock import service as stock_service
-from delivery_helpers import add_title
 
 _MOMENT = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
 
