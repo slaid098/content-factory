@@ -95,7 +95,7 @@ jobs:
           fi
           api="https://git.slaid098.dev/api/v1/repos/slaid098/agent-skills"
           code=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: token ${token}" "${api}" || true)
-          echo "engine token API status: ${code}"
+          echo "engine token API status: ${code} (length ${#token})"
           git config --global url."https://oauth2:${token}@git.slaid098.dev/".insteadOf "https://git.slaid098.dev/"
 
       - name: Build baseline
