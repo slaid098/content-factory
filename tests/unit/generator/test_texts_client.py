@@ -22,7 +22,7 @@ from content_factory.services.generator.texts import (
 
 
 def _settings(**kwargs: Any) -> GeneratorSettings:
-    values: dict[str, Any] = {"ai_url": "http://api.test/v1", "ai_key": "sk-123"}
+    values: dict[str, Any] = {"OPENAI_BASE_URL": "http://api.test/v1", "OPENAI_API_KEY": "sk-123"}
     values.update(kwargs)
     return GeneratorSettings(**values)
 
@@ -52,6 +52,7 @@ def test_client_posts_system_prompt_and_returns_content() -> None:
     assert answer.startswith("<result>")
     assert seen["path"] == "/v1/chat/completions"
     assert seen["auth"] == "Bearer sk-123"
+    assert b'"model":"deepseek-v4.1-flash"' in seen["body"]
     assert b'"messages"' in seen["body"]
     assert b'"system"' in seen["body"]
 
@@ -64,7 +65,7 @@ def test_client_without_key_sends_no_authorization() -> None:
         return _chat_response()
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        TextClient(_settings(ai_key=None), client=client).write("prompt")
+        TextClient(_settings(OPENAI_API_KEY=None), client=client).write("prompt")
 
     assert seen["auth"] is None
 
@@ -128,7 +129,7 @@ def test_client_maps_transport_errors_and_invalid_urls() -> None:
 
 
 def test_client_rejects_a_malformed_key_before_the_request() -> None:
-    client = TextClient(_settings(ai_key="sk-\nbroken"))
+    client = TextClient(_settings(OPENAI_API_KEY="sk-\nbroken"))
 
     with pytest.raises(TextError, match="недопустимые символы"):
         client.write("prompt")

@@ -52,7 +52,7 @@ _SECRET = "test-secret"
 
 
 def _settings(**overrides: object) -> TitlesSettings:
-    values: dict[str, object] = {"api_key": SecretStr(_SECRET)}
+    values: dict[str, object] = {"OPENAI_API_KEY": SecretStr(_SECRET)}
     values.update(overrides)
     return TitlesSettings(**values)  # type: ignore[arg-type]
 
@@ -477,7 +477,7 @@ def test_generate_titles_omits_authorization_without_key(
             "",
             "",
             [],
-            _settings(api_key=None),
+            _settings(OPENAI_API_KEY=None),
             client=http_client,
         )
 
@@ -503,7 +503,7 @@ def test_generate_titles_rejects_malformed_api_key() -> None:
             "",
             "",
             [],
-            _settings(api_key=SecretStr(secret)),
+            _settings(OPENAI_API_KEY=SecretStr(secret)),
             client=http_client,
         )
 
@@ -762,8 +762,8 @@ def test_generate_titles_requires_frames() -> None:
 
 def test_titles_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
-        "TITLES_API_URL",
-        "TITLES_API_KEY",
+        "OPENAI_BASE_URL",
+        "OPENAI_API_KEY",
         "TITLES_MODEL",
         "TITLES_TIMEOUT_SECONDS",
         "TITLES_REASONING_EFFORT",
@@ -780,13 +780,33 @@ def test_titles_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_titles_settings_blank_key_becomes_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TITLES_API_KEY", "   ")
+    monkeypatch.setenv("OPENAI_API_KEY", "   ")
 
     assert TitlesSettings().api_key is None
 
 
+def test_titles_settings_read_the_shared_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", _SECRET)
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://llm.test/v1")
+    monkeypatch.setenv("TITLES_MODEL", "titles-model")
+
+    settings = load_titles_settings()
+
+    assert settings.api_key is not None
+    assert settings.api_key.get_secret_value() == _SECRET
+    assert settings.api_url == "http://llm.test/v1"
+    assert settings.model == "titles-model"
+
+
+def test_titles_settings_reject_a_blank_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TITLES_MODEL", "")
+
+    with pytest.raises(ConfigError, match="настройки названий: TITLES_MODEL:"):
+        load_titles_settings()
+
+
 def test_titles_settings_hides_secret_in_repr(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TITLES_API_KEY", _SECRET)
+    monkeypatch.setenv("OPENAI_API_KEY", _SECRET)
 
     settings = TitlesSettings()
 
@@ -808,10 +828,14 @@ def test_titles_settings_rejects_bad_url(
     monkeypatch: pytest.MonkeyPatch,
     url: str,
 ) -> None:
-    monkeypatch.setenv("TITLES_API_URL", url)
+    monkeypatch.setenv("OPENAI_BASE_URL", url)
 
-    with pytest.raises(ConfigError, match="настройки названий"):
+    with pytest.raises(ConfigError, match="настройки названий") as raised:
         load_titles_settings()
+
+    message = str(raised.value)
+    assert "настройки названий: OPENAI_BASE_URL:" in message
+    assert url not in message
 
 
 @pytest.mark.parametrize("value", ["4", "301"])
@@ -835,7 +859,7 @@ def test_titles_settings_rejects_unknown_reasoning_effort(
 
 
 def test_titles_settings_error_does_not_repeat_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TITLES_API_KEY", _SECRET)
+    monkeypatch.setenv("OPENAI_API_KEY", _SECRET)
     monkeypatch.setenv("TITLES_TIMEOUT_SECONDS", "1")
 
     with pytest.raises(ConfigError) as error:
@@ -1237,7 +1261,7 @@ def test_titles_flow_returns_disabled_without_key(
     monkeypatch.setattr(
         titles_flow,
         "load_titles_settings",
-        lambda: TitlesSettings(api_key=None),
+        lambda: TitlesSettings(OPENAI_API_KEY=None),
     )
     called = False
 
@@ -1254,7 +1278,7 @@ def test_titles_flow_returns_disabled_without_key(
     finally:
         logger.remove(sink)
     assert called is False
-    assert any("titles: TITLES_API_KEY не задан" in message for message in messages)
+    assert any("titles: OPENAI_API_KEY не задан" in message for message in messages)
 
 
 def test_titles_flow_creates_data_directories(
@@ -1266,7 +1290,7 @@ def test_titles_flow_creates_data_directories(
     monkeypatch.setattr(
         titles_flow,
         "load_titles_settings",
-        lambda: TitlesSettings(api_key=None),
+        lambda: TitlesSettings(OPENAI_API_KEY=None),
     )
 
     assert titles_flow.titles.fn() == "disabled"

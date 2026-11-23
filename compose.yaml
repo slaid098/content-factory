@@ -99,10 +99,11 @@ services:
       SUPPLIER_BITBROWSER_URL: ${SUPPLIER_BITBROWSER_URL:-http://host.docker.internal:54529}
       SUPPLIER_PROFILE_ID: ${SUPPLIER_PROFILE_ID:-}
       SUPPLIER_PROXY: ${SUPPLIER_PROXY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://ollama.com/v1}
+      TITLES_MODEL: ${TITLES_MODEL:-deepseek-v4.1-flash}
       VAST_API_TOKEN: ${VAST_API_TOKEN:-}
-      GENERATOR_AI_KEY: ${GENERATOR_AI_KEY:-}
-      GENERATOR_AI_URL: ${GENERATOR_AI_URL:-https://ollama.com/v1}
-      GENERATOR_AI_MODEL: ${GENERATOR_AI_MODEL:-deepseek-v4.1-flash}
+      GENERATOR_MODEL: ${GENERATOR_MODEL:-deepseek-v4.1-flash}
       GENERATOR_MAX_COST_PER_HOUR: ${GENERATOR_MAX_COST_PER_HOUR:-}
     volumes:
       - ./app_data:/app/app_data

@@ -7,10 +7,10 @@ from collections.abc import Iterator
 import pytest
 
 _ENV_NAMES = (
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
     "VAST_API_TOKEN",
-    "GENERATOR_AI_KEY",
-    "GENERATOR_AI_URL",
-    "GENERATOR_AI_MODEL",
+    "GENERATOR_MODEL",
     "GENERATOR_MAX_COST_PER_HOUR",
     "GENERATOR_OUTPUT_DIR",
     "GENERATOR_SERVER_READY_TIMEOUT",

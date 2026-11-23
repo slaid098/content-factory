@@ -12,10 +12,10 @@ from content_factory.exceptions.generator import GeneratorBusyError
 from content_factory.flows.generate_batch.flow import generate_batch
 
 _ENV_NAMES = (
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
     "VAST_API_TOKEN",
-    "GENERATOR_AI_KEY",
-    "GENERATOR_AI_URL",
-    "GENERATOR_AI_MODEL",
+    "GENERATOR_MODEL",
     "GENERATOR_MAX_COST_PER_HOUR",
     "GENERATOR_OUTPUT_DIR",
 )

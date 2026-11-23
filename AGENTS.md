@@ -9,6 +9,8 @@
 - Тесты — `tests/`; полный suite с coverage запускает только CI.
 - Конфиг — env-only (`CONTENT_FACTORY_*`, `TITLES_*`), runtime-настройки —
   `app_data/config/config.yaml` через API.
+- Ключ и адрес LLM одни на проект (`OPENAI_API_KEY`, `OPENAI_BASE_URL`),
+  модель своя на задачу (`TITLES_MODEL`, `GENERATOR_MODEL`).
 - Отбор видео — продуктовый инвариант скилла `content-selection`; фильтры
   поставщика и `SUPPLIER_*` без задачи не менять.
 

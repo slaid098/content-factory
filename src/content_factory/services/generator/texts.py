@@ -85,8 +85,8 @@ class TextClient:
         authorization = self._auth_header()
         if authorization is not None:
             headers["Authorization"] = authorization
-        url = f"{self._settings.ai_url.rstrip('/')}/chat/completions"
-        payload = _payload(system_prompt, self._settings.ai_model)
+        url = f"{self._settings.api_url.rstrip('/')}/chat/completions"
+        payload = _payload(system_prompt, self._settings.model)
         try:
             if self._client is None:
                 with httpx.Client(timeout=self._timeout) as http:
@@ -105,9 +105,9 @@ class TextClient:
 
     def _auth_header(self) -> str | None:
         """Build the Authorization header without exposing a malformed key."""
-        if self._settings.ai_key is None:
+        if self._settings.api_key is None:
             return None
-        return _bearer(self._settings.ai_key.get_secret_value())
+        return _bearer(self._settings.api_key.get_secret_value())
 
 
 def _bearer(key: str) -> str:

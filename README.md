@@ -140,7 +140,7 @@ Flow `titles` раз в 10 минут запрашивает для стоков
 варианта по кадрам через DeepSeek и сохраняет первый уникальный. Названия
 лежат в таблице `titles` операционной базы, язык берётся из каталога
 `content/<lang>`, уже названные файлы не перезаписываются. Без
-`TITLES_API_KEY` flow выходит со статусом `disabled` и не падает. Контракт,
+`OPENAI_API_KEY` flow выходит со статусом `disabled` и не падает. Контракт,
 расписание и первый прогон: [docs/titles.md](docs/titles.md).
 
 ## Деплой
@@ -175,8 +175,8 @@ curl -f http://127.0.0.1:8000/api/v1/stock
 | `CONTENT_FACTORY_LOG_LEVEL` | `INFO` | уровень loguru |
 | `CONTENT_FACTORY_DELIVERY_TOKEN` | — | Bearer-токен выдачи; пусто — выдача выключена |
 | `CONTENT_FACTORY_DELIVERY_RETENTION_HOURS` | `24` | TTL zip-архивов, часов (≥ 1) |
-| `TITLES_API_URL` | `https://ollama.com/v1` | база API названий; `http`/`https`, без пробелов и завершающего `/` |
-| `TITLES_API_KEY` | — | ключ API названий; пусто — flow `titles` выключен |
+| `OPENAI_BASE_URL` | `https://ollama.com/v1` | общая база OpenAI-совместимого API названий и генератора; `http`/`https`, без пробелов и завершающего `/` |
+| `OPENAI_API_KEY` | — | общий ключ API; пусто — flow `titles` выключен |
 | `TITLES_MODEL` | `deepseek-v4.1-flash` | модель названий |
 | `TITLES_TIMEOUT_SECONDS` | `60` | таймаут запроса названий, 5–300 |
 | `TITLES_REASONING_EFFORT` | `none` | `none`, `low`, `high` или `max` |

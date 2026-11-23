@@ -129,20 +129,20 @@ class SupplierSettings(BaseSettings):
         return self
 
 
-class TitlesSettings(BaseSettings):
-    """Settings of the title generation flow read from ``TITLES_*`` variables."""
+class OpenAIEndpointSettings(BaseSettings):
+    """Shared OpenAI-compatible endpoint read from ``OPENAI_*`` variables.
 
-    model_config = SettingsConfigDict(
-        env_prefix="TITLES_",
-        extra="ignore",
-        case_sensitive=False,
+    Both the title flow and the generator talk to the same API, so the key and
+    the address are project-wide. A task only picks its own model.
+    """
+
+    model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
+
+    api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")
+    api_url: str = Field(
+        default="https://ollama.com/v1",
+        validation_alias="OPENAI_BASE_URL",
     )
-
-    api_url: str = "https://ollama.com/v1"
-    api_key: SecretStr | None = None
-    model: str = Field(default="deepseek-v4.1-flash", min_length=1)
-    timeout_seconds: float = Field(default=60, ge=5, le=300)
-    reasoning_effort: Literal["none", "low", "high", "max"] = "none"
 
     @field_validator("api_url")
     @classmethod
@@ -168,7 +168,21 @@ class TitlesSettings(BaseSettings):
         return _blank_to_none_value(value)
 
 
-class GeneratorSettings(BaseSettings):
+class TitlesSettings(OpenAIEndpointSettings):
+    """Settings of the title generation flow read from ``TITLES_*`` variables."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="TITLES_",
+        extra="ignore",
+        case_sensitive=False,
+    )
+
+    model: str = Field(default="deepseek-v4.1-flash", min_length=1)
+    timeout_seconds: float = Field(default=60, ge=5, le=300)
+    reasoning_effort: Literal["none", "low", "high", "max"] = "none"
+
+
+class GeneratorSettings(OpenAIEndpointSettings):
     """Settings of the dating batch generator read from ``GENERATOR_*`` variables.
 
     ``vast_api_token`` is read from ``VAST_API_TOKEN``: the CLI of the
@@ -183,39 +197,19 @@ class GeneratorSettings(BaseSettings):
     )
 
     vast_api_token: SecretStr | None = Field(default=None, validation_alias="VAST_API_TOKEN")
-    ai_url: str = "https://ollama.com/v1"
-    ai_key: SecretStr | None = None
-    ai_model: str = Field(default="deepseek-v4.1-flash", min_length=1)
+    model: str = Field(default="deepseek-v4.1-flash", min_length=1)
     server_ready_timeout: int = Field(default=3600, ge=60)
     comfy_health_timeout: int = Field(default=300, ge=10)
     max_cost_per_hour: float | None = Field(default=None, gt=0)
     stale_instance_hours: int = Field(default=6, ge=1)
     output_dir: Path = Path("./app_data/generated")
 
-    @field_validator("ai_url")
-    @classmethod
-    def _check_ai_url(cls, value: str) -> str:
-        if any(char.isspace() for char in value):
-            raise ValueError("адрес не должен содержать пробелы")
-        parts = urlsplit(value)
-        if parts.scheme.lower() not in {"http", "https"}:
-            raise ValueError("адрес должен начинаться с http:// или https://")
-        if not parts.hostname:
-            raise ValueError("в адресе не указан хост")
-        try:
-            _ = parts.port
-        except ValueError as ex:
-            raise ValueError("в адресе неверный порт") from ex
-        if value.endswith("/"):
-            raise ValueError("адрес не должен заканчиваться на /")
-        return value
-
     @field_validator("output_dir")
     @classmethod
     def _expand_output_dir(cls, value: Path) -> Path:
         return value.expanduser()
 
-    @field_validator("vast_api_token", "ai_key", "max_cost_per_hour", mode="before")
+    @field_validator("vast_api_token", "max_cost_per_hour", mode="before")
     @classmethod
     def _blank_to_none(cls, value: object) -> object:
         return _blank_to_none_value(value)
@@ -286,12 +280,11 @@ def load_titles_settings() -> TitlesSettings:
 
 def _titles_validation_message(error: ValidationError) -> str:
     """Format title settings errors without the raw input values."""
-    parts: list[str] = []
-    for item in error.errors():
-        location = ".".join(str(part) for part in item["loc"])
-        label = f"TITLES_{location.upper()}" if location else "настройки названий"
-        parts.append(f"{label}: {item['msg']}")
-    return "; ".join(parts)
+    return _settings_validation_message(
+        error,
+        settings_cls=TitlesSettings,
+        default_label="настройки названий",
+    )
 
 
 def load_generator_settings() -> GeneratorSettings:
@@ -299,8 +292,8 @@ def load_generator_settings() -> GeneratorSettings:
 
     Raises:
         ConfigError: A value cannot be parsed or violates a limit. The message
-            never repeats raw input, so the Vast.ai token and the text model
-            key do not leak.
+            never repeats raw input, so the Vast.ai token and the OpenAI key
+            do not leak.
     """
     try:
         return GeneratorSettings()
@@ -311,12 +304,40 @@ def load_generator_settings() -> GeneratorSettings:
 
 def _generator_message(error: ValidationError) -> str:
     """Format generator settings errors without the raw input values."""
+    return _settings_validation_message(
+        error,
+        settings_cls=GeneratorSettings,
+        default_label="настройки генератора",
+    )
+
+
+def _settings_validation_message(
+    error: ValidationError,
+    *,
+    settings_cls: type[BaseSettings],
+    default_label: str,
+) -> str:
+    """Name the environment variable of every invalid field, never its value."""
+    names = _env_names(settings_cls)
     parts: list[str] = []
     for item in error.errors():
         location = ".".join(str(part) for part in item["loc"])
-        label = f"GENERATOR_{location.upper()}" if location else "настройки генератора"
+        label = names.get(location, location if location else default_label)
         parts.append(f"{label}: {item['msg']}")
     return "; ".join(parts)
+
+
+def _env_names(settings_cls: type[BaseSettings]) -> dict[str, str]:
+    """Map every field and its alias to the environment variable it reads."""
+    prefix = settings_cls.model_config["env_prefix"]
+    names: dict[str, str] = {}
+    for name, field in settings_cls.model_fields.items():
+        alias = field.validation_alias
+        env_name = alias if isinstance(alias, str) else f"{prefix}{name.upper()}"
+        names[name] = env_name
+        if isinstance(alias, str):
+            names[alias] = env_name
+    return names
 
 
 def _validation_message(error: ValidationError) -> str:
