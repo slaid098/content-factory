@@ -13,10 +13,12 @@ from uuid import UUID
 from loguru import logger
 
 from content_factory.constants import ARCHIVE_DIR, CONTENT_DIR, DB_DIR, DB_FILENAME
+from content_factory.db.delivery import load_language_queries as load_language_queries
 from content_factory.db.titles import load_titles
+from content_factory.db.video_meta import load_video_meta as load_video_meta
 from content_factory.exceptions.errors import DeliveryError
+from content_factory.schemas.content.video import VideoMeta
 from content_factory.services.delivery.archives import is_archive_expired
-from content_factory.services.delivery.metadata import VideoMeta, load_video_meta
 from content_factory.services.delivery.sidecars import read_job_file
 
 _DELIVERY_LOCK = threading.Lock()

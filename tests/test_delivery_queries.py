@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from content_factory.constants import CONTENT_DIR, QUERIES_DIR
+from content_factory.db.delivery import load_language_queries
 from content_factory.exceptions import DeliveryError
 from content_factory.services.delivery.queries import (
     add_language_query,
@@ -27,6 +28,41 @@ def _write_queries(data_dir: Path, text: str) -> Path:
 def _add_stock(data_dir: Path, sha256: str, query: str, *, description: str = "Описание") -> None:
     touch_mp4(data_dir / CONTENT_DIR / "ru" / f"{sha256}.mp4")
     add_downloaded_video(data_dir / "db" / "db.sqlite3", sha256, description, query=query)
+
+
+def test_load_language_queries_returns_distinct_non_empty_queries(tmp_path: Path) -> None:
+    db_path = tmp_path / "db" / "db.sqlite3"
+    tricky = "кофе'; DROP TABLE videos; --"
+    for sha256, query in (
+        ("a" * 64, "курятник"),
+        ("b" * 64, "курятник"),
+        ("c" * 64, "заправка"),
+        ("d" * 64, ""),
+        ("e" * 64, tricky),
+    ):
+        add_downloaded_video(db_path, sha256, "Описание", query=query)
+    add_downloaded_video(db_path, "f" * 64, "Описание", query="coop", language="en")
+
+    ru = load_language_queries(db_path, "ru")
+
+    assert ru is not None
+    assert len(ru) == 3  # DISTINCT, пустая строка исключена
+    assert set(ru) == {"заправка", "курятник", tricky}  # кавычка и ';' буквально
+    assert ru == sorted(ru)  # ORDER BY query
+    assert "coop" not in ru  # WHERE language = ? отсекает en
+    assert load_language_queries(db_path, "en") == ["coop"]
+
+
+def test_load_language_queries_returns_none_without_database(tmp_path: Path) -> None:
+    assert load_language_queries(tmp_path / "db" / "db.sqlite3", "ru") is None
+
+
+def test_load_language_queries_returns_none_on_broken_database(tmp_path: Path) -> None:
+    db_path = tmp_path / "db" / "db.sqlite3"
+    db_path.parent.mkdir(parents=True)
+    db_path.write_bytes(b"not a database")
+
+    assert load_language_queries(db_path, "ru") is None
 
 
 def test_list_returns_file_order_counts_and_database_queries(tmp_path: Path) -> None:

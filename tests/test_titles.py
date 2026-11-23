@@ -16,9 +16,10 @@ from content_factory.config.settings import TitlesSettings, load_titles_settings
 from content_factory.constants import CONTENT_DIR, DB_DIR, DB_FILENAME
 from content_factory.db import titles as titles_db
 from content_factory.db.titles import ensure_schema, load_titles, recent_titles, save_title
-from content_factory.db.video_meta import VideoMeta, load_video_meta
+from content_factory.db.video_meta import load_video_meta
 from content_factory.exceptions import ConfigError
 from content_factory.flows.titles import flow as titles_flow
+from content_factory.schemas.content.video import VideoMeta
 from content_factory.services.titles import assign_titles
 from content_factory.services.titles import client as titles_client
 from content_factory.services.titles import frames as titles_frames
