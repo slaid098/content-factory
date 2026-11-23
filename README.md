@@ -36,7 +36,7 @@ pip install -e ".[dev]"
 ruff check .
 ruff format --check .
 mypy src main.py
-python -m pytest
+python -m pytest tests/unit -q --no-cov
 ```
 
 ### Аудит
@@ -47,6 +47,14 @@ python -m pytest
 
 ```bash
 ENGINE='git+https://git.slaid098.dev/slaid098/agent-skills@v0.5.0'
+
+# движок закрытый: без авторизации uvx по HTTPS получит 401. Один раз
+# настройте git с токеном read:repository из ENGINE_GIT_TOKEN…
+git config --global url."https://oauth2:${ENGINE_GIT_TOKEN}@git.slaid098.dev/".insteadOf "https://git.slaid098.dev/"
+# …или подставьте токен прямо в ENGINE:
+# ENGINE='git+https://oauth2:${ENGINE_GIT_TOKEN}@git.slaid098.dev/slaid098/agent-skills@v0.5.0'
+
+git fetch origin main
 base=$(git merge-base HEAD origin/main)
 
 # baseline на базовом коммите — в CI он кэшируется по SHA
