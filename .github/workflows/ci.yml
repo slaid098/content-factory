@@ -42,8 +42,12 @@ jobs:
   # падает только на новых находках в файлах, изменённых против базового
   # коммита. Baseline собирается тем же тегом движка на merge-base с
   # origin/main, живёт в $RUNNER_TEMP и кэшируется по SHA базового коммита;
-  # в репозиторий он не попадает.
+  # в репозиторий он не попадает. Для PR из форков job пропускается: GitHub
+  # не отдаёт форкам секреты, а движок закрытый.
   audit-gate:
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -77,6 +81,18 @@ jobs:
         with:
           path: ${{ runner.temp }}/audit-baseline.json
           key: ${{ steps.base.outputs.cache-key }}
+
+      # Токен нужен только закрытому движку; git config пишет его в
+      # ~/.gitconfig эфемерного раннера, в лог значение не попадает.
+      - name: Configure engine auth
+        env:
+          ENGINE_GIT_TOKEN: ${{ secrets.ENGINE_GIT_TOKEN }}
+        run: |
+          if [ -z "${ENGINE_GIT_TOKEN}" ]; then
+            echo "::error::Секрет ENGINE_GIT_TOKEN не задан."
+            exit 1
+          fi
+          git config --global url."https://oauth2:${ENGINE_GIT_TOKEN}@git.slaid098.dev/".insteadOf "https://git.slaid098.dev/"
 
       - name: Build baseline
         if: steps.baseline.outputs.cache-hit != 'true'
