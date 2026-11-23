@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import threading
 import time
 from collections.abc import Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -15,7 +14,8 @@ from urllib.parse import urlsplit
 from loguru import logger
 from yt_dlp import YoutubeDL
 
-from content_factory.exceptions.errors import SupplierError
+from content_factory.db.lock import SUPPLIER_LOCK, lock_path, locked
+from content_factory.exceptions.errors import LockError, SupplierError
 from content_factory.schemas.supplier.ports import DownloadSink
 from content_factory.schemas.supplier.results import DownloadResult
 from content_factory.schemas.supplier.settings import SupplierConfig
@@ -27,13 +27,11 @@ _FORMAT = "best[format_id!*=download]/best"
 _AUDIO_EXTS = frozenset({"aac", "m4a", "mp3", "ogg", "opus", "wav"})
 _HASH_CHUNK = 1024 * 1024
 _MAX_VIDEOS_PER_AUTHOR = 1
-# Один процесс производит один план, поэтому блокировка сериализует финальную
-# проверку SHA-256 и переименование: два одинаковых файла не перетрут друг друга.
-# Между процессами общий случай защищает UNIQUE(downloads.sha256): проигравший
-# видит закоммиченную строку победителя и не удаляет его файл (см.
-# ``_remove_final_if_uncommitted``). Узкое окно остаётся при сбое записи самого
-# проигравшего, поэтому один план по-прежнему должен выполнять один процесс.
-_FINALIZE_LOCK = threading.Lock()
+# Финальная проверка SHA-256, переименование и запись строки в БД идут под
+# файловой блокировкой рядом с базой: два процесса не перетрут файл друг
+# друга. Проигравший гонку без блокировки видит закоммиченную строку
+# победителя по UNIQUE(downloads.sha256) и не удаляет его файл (см.
+# ``_remove_final_if_uncommitted``).
 
 
 class _YtDlpLogger:
@@ -235,41 +233,65 @@ def _download_worker(
         return "failed", None
 
     final_path = cfg.content_dir / f"{sha256}.mp4"
-    with _FINALIZE_LOCK:
-        moved = False
-        try:
-            if sink.has_sha256(sha256):
-                staged.unlink(missing_ok=True)
-                _record_rejection(sink, video, "duplicate_sha256")
-                logger.bind(video_id=video.video_id, sha256=sha256).warning(
-                    "Видео {} отклонено: duplicate_sha256", video.video_id
+    return _finalize_download(video, cfg, proxy, sink, staged, sha256, size, final_path)
+
+
+def _finalize_download(
+    video: Video,
+    cfg: SupplierConfig,
+    proxy: str,
+    sink: DownloadSink,
+    staged: Path,
+    sha256: str,
+    size: int,
+    final_path: Path,
+) -> tuple[str, DownloadedVideo | None]:
+    """Move the staged file and persist the download under a cross-process lock."""
+    lock_file = lock_path(cfg.db_path.parent, SUPPLIER_LOCK)
+    try:
+        with locked(lock_file):
+            moved = False
+            try:
+                if sink.has_sha256(sha256):
+                    staged.unlink(missing_ok=True)
+                    _record_rejection(sink, video, "duplicate_sha256")
+                    logger.bind(video_id=video.video_id, sha256=sha256).warning(
+                        "Видео {} отклонено: duplicate_sha256", video.video_id
+                    )
+                    return "rejected", None
+
+                staged.replace(final_path)
+                moved = True
+                item = DownloadedVideo(
+                    video=video,
+                    path=str(final_path),
+                    sha256=sha256,
+                    size=size,
                 )
-                return "rejected", None
+                sink.save_download(item)
+            except (SupplierError, OSError) as ex:
+                staged.unlink(missing_ok=True)
+                if moved:
+                    _remove_final_if_uncommitted(sink, final_path, sha256)
+                reason = _clean_error(ex, proxy)
+                _record_failure(sink, video, reason)
+                logger.bind(error=ex, error_type=type(ex).__name__).error(
+                    "Не удалось сохранить скачивание {}: {}", video.video_id, reason
+                )
+                return "failed", None
 
-            staged.replace(final_path)
-            moved = True
-            item = DownloadedVideo(
-                video=video,
-                path=str(final_path),
-                sha256=sha256,
-                size=size,
+            logger.bind(video_id=video.video_id, path=str(item.path)).info(
+                "Скачано: {} -> {}", video.video_id, item.path
             )
-            sink.save_download(item)
-        except (SupplierError, OSError) as ex:
-            staged.unlink(missing_ok=True)
-            if moved:
-                _remove_final_if_uncommitted(sink, final_path, sha256)
-            reason = _clean_error(ex, proxy)
-            _record_failure(sink, video, reason)
-            logger.bind(error=ex, error_type=type(ex).__name__).error(
-                "Не удалось сохранить скачивание {}: {}", video.video_id, reason
-            )
-            return "failed", None
-
-    logger.bind(video_id=video.video_id, path=str(item.path)).info(
-        "Скачано: {} -> {}", video.video_id, item.path
-    )
-    return "downloaded", item
+            return "downloaded", item
+    except LockError as ex:
+        staged.unlink(missing_ok=True)
+        reason = _clean_error(ex, proxy)
+        _record_failure(sink, video, reason)
+        logger.bind(error=ex, error_type=type(ex).__name__).error(
+            "Не удалось заблокировать финализацию {}: {}", video.video_id, reason
+        )
+        return "failed", None
 
 
 def _throttled_worker(

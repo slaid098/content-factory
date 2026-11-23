@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
-import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 from ruamel.yaml.comments import CommentedMap
 
 from content_factory.config.runtime import load_runtime_config, validate_runtime_config
-from content_factory.exceptions.errors import ConfigError, SettingsValidationError
+from content_factory.constants import DB_DIR
+from content_factory.db.lock import SETTINGS_LOCK, lock_path, locked
+from content_factory.exceptions.errors import (
+    ConfigError,
+    LockError,
+    SettingsValidationError,
+    SettingsWriteError,
+)
 from content_factory.schemas.config.runtime import RuntimeConfig
 from content_factory.schemas.settings.api import (
     RuntimeSettings,
@@ -30,8 +36,6 @@ from content_factory.services.settings.slice import (
     settings_from_runtime,
 )
 
-_LOCK = threading.Lock()
-
 
 @dataclass(frozen=True, slots=True)
 class _State:
@@ -45,57 +49,66 @@ class _State:
 
 def read_settings(data_dir: Path) -> RuntimeSettings:
     """Return the editable slice, seeding the template when the file is absent."""
-    with _LOCK:
-        state = _load_state(settings_path(data_dir))
-        return settings_from_runtime(state.runtime, state.document)
+    try:
+        with locked(lock_path(data_dir / DB_DIR, SETTINGS_LOCK)):
+            state = _load_state(settings_path(data_dir))
+            return settings_from_runtime(state.runtime, state.document)
+    except LockError as ex:
+        raise ConfigError(f"не удалось заблокировать файл настроек: {ex}") from ex
 
 
 def preview_settings(data_dir: Path, payload: RuntimeSettings) -> SettingsPreviewResponse:
     """Validate *payload* and return the diff without writing the file."""
     path = settings_path(data_dir)
-    with _LOCK:
-        state = _load_validated_state(path)
-        current = settings_from_runtime(state.runtime, state.document)
-        if not _changed(payload, current, state.document):
-            return SettingsPreviewResponse(changed=False, diff="", settings=current)
-        text = _render(state, payload)
-        if text == state.text:
-            return SettingsPreviewResponse(changed=False, diff="", settings=current)
-        return SettingsPreviewResponse(
-            changed=True,
-            diff=unified_diff(state.text, text),
-            settings=payload,
-        )
+    try:
+        with locked(lock_path(data_dir / DB_DIR, SETTINGS_LOCK)):
+            state = _load_validated_state(path)
+            current = settings_from_runtime(state.runtime, state.document)
+            if not _changed(payload, current, state.document):
+                return SettingsPreviewResponse(changed=False, diff="", settings=current)
+            text = _render(state, payload)
+            if text == state.text:
+                return SettingsPreviewResponse(changed=False, diff="", settings=current)
+            return SettingsPreviewResponse(
+                changed=True,
+                diff=unified_diff(state.text, text),
+                settings=payload,
+            )
+    except LockError as ex:
+        raise SettingsWriteError(f"не удалось заблокировать файл настроек: {ex}") from ex
 
 
 def apply_settings(data_dir: Path, payload: RuntimeSettings) -> SettingsApplyResponse:
     """Validate *payload*, back up the file and replace it atomically."""
     path = settings_path(data_dir)
-    with _LOCK:
-        state = _load_validated_state(path)
-        current = settings_from_runtime(state.runtime, state.document)
-        if not _changed(payload, current, state.document):
+    try:
+        with locked(lock_path(data_dir / DB_DIR, SETTINGS_LOCK)):
+            state = _load_validated_state(path)
+            current = settings_from_runtime(state.runtime, state.document)
+            if not _changed(payload, current, state.document):
+                return SettingsApplyResponse(
+                    changed=False,
+                    diff="",
+                    backup=None,
+                    settings=current,
+                )
+            text = _render(state, payload)
+            if text == state.text:
+                return SettingsApplyResponse(
+                    changed=False,
+                    diff="",
+                    backup=None,
+                    settings=current,
+                )
+            backup = write_with_backup(path, text, state.raw)
             return SettingsApplyResponse(
-                changed=False,
-                diff="",
-                backup=None,
-                settings=current,
+                changed=True,
+                diff=unified_diff(state.text, text),
+                backup=backup,
+                settings=payload,
             )
-        text = _render(state, payload)
-        if text == state.text:
-            return SettingsApplyResponse(
-                changed=False,
-                diff="",
-                backup=None,
-                settings=current,
-            )
-        backup = write_with_backup(path, text, state.raw)
-        return SettingsApplyResponse(
-            changed=True,
-            diff=unified_diff(state.text, text),
-            backup=backup,
-            settings=payload,
-        )
+    except LockError as ex:
+        raise SettingsWriteError(f"не удалось заблокировать файл настроек: {ex}") from ex
 
 
 def _load_state(path: Path) -> _State:

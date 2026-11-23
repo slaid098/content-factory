@@ -378,7 +378,7 @@ def test_database_errors_are_wrapped(
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(
-        "content_factory.services.supplier.repository.sqlite3.connect",
+        "content_factory.db.connection.sqlite3.connect",
         fail,
     )
 
@@ -406,7 +406,7 @@ def test_database_read_errors_are_wrapped(
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(
-        "content_factory.services.supplier.repository.sqlite3.connect",
+        "content_factory.db.connection.sqlite3.connect",
         fail,
     )
 

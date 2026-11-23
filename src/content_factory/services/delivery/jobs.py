@@ -6,15 +6,24 @@ import threading
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from loguru import logger
 
-from content_factory.constants import ARCHIVE_DIR
+from content_factory.constants import ARCHIVE_DIR, DB_DIR
+from content_factory.db.lock import (
+    DELIVERY_BUILD_LOCK,
+    DELIVERY_START_LOCK,
+    lock_path,
+    locked,
+    try_acquire,
+)
 from content_factory.exceptions.errors import (
     ArchiveTooLargeError,
     DeliveryBusyError,
     DeliveryError,
+    LockError,
     UploadError,
 )
 from content_factory.schemas.content.delivery import (
@@ -37,8 +46,9 @@ from content_factory.services.delivery.upload import (  # isort: skip  # оди�
     upload_archive as _upload_archive,
 )
 
-_JOBS_LOCK = threading.Lock()
-_active_request_id: UUID | None = None
+if TYPE_CHECKING:
+    from content_factory.db.lock import FileLock
+
 _INTERRUPTED_ERROR = "сборка прервана перезапуском API"
 
 
@@ -78,9 +88,11 @@ def start_delivery_job(
 ) -> DeliveryJobInfo:
     """Start one background build and upload, or return an existing job.
 
-    Only one build may run in the API process. A repeated ``request_id``
-    returns its current status without touching the stock; any other id gets
-    ``DeliveryBusyError`` while a build is running.
+    Only one build may run across every process sharing ``app_data``: the
+    build slot is an exclusive file lock held by the worker until the sidecar
+    is saved. A repeated ``request_id`` returns its current status without
+    touching the stock; any other id gets ``DeliveryBusyError`` while a build
+    is running.
 
     Args:
         data_dir: Root of the runtime data directory.
@@ -96,8 +108,27 @@ def start_delivery_job(
         DeliveryError: The sidecar cannot be written or the worker cannot start.
     """
     moment = now or datetime.now(UTC)
-    with _JOBS_LOCK:
-        job = _resume_or_conflict(data_dir, request, moment, retention_hours)
+    start_lock = lock_path(data_dir / DB_DIR, DELIVERY_START_LOCK)
+    try:
+        with locked(start_lock):
+            return _start_under_lock(data_dir, request, moment, retention_hours)
+    except LockError as ex:
+        raise DeliveryError("не удалось заблокировать запуск сборки выдачи") from ex
+
+
+def _start_under_lock(
+    data_dir: Path,
+    request: DeliveryRequest,
+    moment: datetime,
+    retention_hours: int,
+) -> DeliveryJobInfo:
+    """Decide the start under the short-lived start lock, then hand off the slot."""
+    slot = _acquire_slot(data_dir)
+    if slot is None:
+        return _busy_or_existing(data_dir, request, moment)
+    handed_off = False
+    try:
+        job = _resume_or_conflict(data_dir, request, moment)
         if job is not None:
             return job
         job = _job_state(
@@ -107,20 +138,22 @@ def start_delivery_job(
             status="building",
         )
         _save_or_raise(data_dir, job)
-        _set_active(request.request_id)
-    thread = threading.Thread(
-        target=_run_delivery_job,
-        args=(data_dir, request, moment, retention_hours),
-        name=f"delivery-{request.request_id}",
-        daemon=True,
-    )
-    try:
-        thread.start()
-    except RuntimeError as ex:
-        _record_failure(data_dir, request, moment, retention_hours)
-        _clear_active(request.request_id)
-        raise DeliveryError("не удалось запустить сборку выдачи") from ex
-    return job
+        thread = threading.Thread(
+            target=_run_delivery_job,
+            args=(slot, data_dir, request, moment, retention_hours),
+            name=f"delivery-{request.request_id}",
+            daemon=True,
+        )
+        try:
+            thread.start()
+        except RuntimeError as ex:
+            _record_failure(data_dir, request, moment, retention_hours)
+            raise DeliveryError("не удалось запустить сборку выдачи") from ex
+        handed_off = True
+        return job
+    finally:
+        if not handed_off:
+            slot.release()
 
 
 def get_delivery_job(
@@ -178,26 +211,46 @@ def mark_interrupted_jobs(data_dir: Path) -> int:
     return interrupted
 
 
+def _acquire_slot(data_dir: Path) -> FileLock | None:
+    """Take the single-build slot, or return ``None`` while it is held."""
+    try:
+        return try_acquire(lock_path(data_dir / DB_DIR, DELIVERY_BUILD_LOCK))
+    except LockError as ex:
+        raise DeliveryError("не удалось заблокировать сборку выдачи") from ex
+
+
+def _busy_or_existing(
+    data_dir: Path,
+    request: DeliveryRequest,
+    moment: datetime,
+) -> DeliveryJobInfo:
+    """Return a live job of the same request, otherwise reject the second build."""
+    existing = load_job(data_dir, request.language, request.request_id)
+    if (
+        existing is not None
+        and not is_job_expired(existing, now=moment)
+        and existing.status != "failed"
+    ):
+        return existing
+    raise DeliveryBusyError("другая сборка уже выполняется")
+
+
 def _resume_or_conflict(
     data_dir: Path,
     request: DeliveryRequest,
     moment: datetime,
-    retention_hours: int,
 ) -> DeliveryJobInfo | None:
-    """Return a reusable job, recover a stale one, or raise on a busy API."""
+    """Return a reusable job, or recover a stale one while holding the slot."""
     existing = load_job(data_dir, request.language, request.request_id)
-    if existing is not None:
-        if is_job_expired(existing, now=moment):
-            _discard_job(data_dir, existing)
-            existing = None
-        elif existing.status == "building" and _active_request_id == request.request_id:
-            return existing
-        elif existing.status == "building":
-            existing = _fail_stale(data_dir, existing)
-        if existing is not None and existing.status != "failed":
-            return existing
-    if _active_request_id is not None:
-        raise DeliveryBusyError("другая сборка уже выполняется")
+    if existing is None:
+        return None
+    if is_job_expired(existing, now=moment):
+        _discard_job(data_dir, existing)
+        return None
+    if existing.status == "building":
+        existing = _fail_stale(data_dir, existing)
+    if existing.status != "failed":
+        return existing
     return None
 
 
@@ -217,6 +270,7 @@ def _fail_stale(data_dir: Path, job: DeliveryJobInfo) -> DeliveryJobInfo:
 
 
 def _run_delivery_job(
+    slot: FileLock,
     data_dir: Path,
     request: DeliveryRequest,
     created_at: datetime,
@@ -246,7 +300,7 @@ def _run_delivery_job(
             error_type=type(ex).__name__,
         ).error("Не удалось сохранить состояние выдачи {}", request.request_id)
     finally:
-        _clear_active(request.request_id)
+        slot.release()
 
 
 def _build_and_publish(
@@ -481,17 +535,3 @@ def _discard_job(data_dir: Path, job: DeliveryJobInfo) -> None:
             "Не удалось удалить просроченный архив {}",
             job.request_id,
         )
-
-
-def _set_active(request_id: UUID) -> None:
-    """Remember the only build allowed to run."""
-    global _active_request_id
-    _active_request_id = request_id
-
-
-def _clear_active(request_id: UUID) -> None:
-    """Release the build slot when the worker finishes."""
-    global _active_request_id
-    with _JOBS_LOCK:
-        if _active_request_id == request_id:
-            _active_request_id = None

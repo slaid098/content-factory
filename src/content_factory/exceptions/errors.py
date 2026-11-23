@@ -7,6 +7,18 @@ class ContentFactoryError(Exception):
     """Base exception for every content-factory failure."""
 
 
+class LockError(ContentFactoryError):
+    """Raised when a cross-process runtime lock cannot be used."""
+
+
+class LockTimeoutError(LockError):
+    """Raised when a cross-process lock is not released within its timeout."""
+
+
+class LockUnavailableError(LockError):
+    """Raised when the platform cannot provide advisory file locks."""
+
+
 class ConfigError(ContentFactoryError):
     """Raised when configuration cannot be read, created or validated."""
 

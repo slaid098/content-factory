@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
+import os
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -13,9 +15,16 @@ from fastapi.testclient import TestClient
 from loguru import logger
 
 from content_factory.api.app import create_app
-from content_factory.constants import ARCHIVE_DIR, CONTENT_DIR
-from content_factory.exceptions import ArchiveTooLargeError, DeliveryError, UploadError
-from content_factory.schemas.content.delivery import DeliveryJobInfo
+from content_factory.constants import ARCHIVE_DIR, CONTENT_DIR, DB_DIR
+from content_factory.db.lock import DELIVERY_BUILD_LOCK, lock_path, locked
+from content_factory.exceptions import (
+    ArchiveTooLargeError,
+    DeliveryBusyError,
+    DeliveryError,
+    UploadError,
+)
+from content_factory.schemas.content.delivery import DeliveryJobInfo, DeliveryRequest
+from content_factory.services.delivery.jobs import start_delivery_job
 from content_factory.services.delivery.sidecars import save_job
 from delivery_helpers import REQUEST_ID, REQUEST_ID_TEXT, add_title, touch_mp4
 
@@ -371,6 +380,38 @@ def test_second_request_while_building_returns_409_and_same_id_is_idempotent(
     finally:
         release.set()
     _wait(client, REQUEST_ID_TEXT, "empty")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="flock is POSIX-only")
+def test_build_slot_is_exclusive_across_processes(data_dir: Path) -> None:
+    context = multiprocessing.get_context("fork")
+    entered = context.Event()
+    release = context.Event()
+
+    def hold() -> None:
+        with locked(lock_path(data_dir / DB_DIR, DELIVERY_BUILD_LOCK), timeout=5):
+            entered.set()
+            release.wait(10)
+
+    process = context.Process(target=hold, daemon=True)
+    process.start()
+    try:
+        assert entered.wait(10)
+        with pytest.raises(DeliveryBusyError):
+            start_delivery_job(
+                data_dir,
+                DeliveryRequest(language="ru", count=1, request_id=REQUEST_ID),
+                retention_hours=24,
+            )
+    finally:
+        release.set()
+        process.join(10)
+        if process.is_alive():
+            process.kill()
+            process.join()
+
+    assert process.exitcode == 0
+    assert not (data_dir / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.json").exists()
 
 
 def test_repeated_post_for_ready_job_keeps_stock_and_status(
