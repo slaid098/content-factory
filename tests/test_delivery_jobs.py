@@ -321,6 +321,28 @@ def test_build_error_returns_failed_job(
     assert final["error"] == "не удалось собрать архив"
 
 
+@pytest.mark.parametrize("archive_name", ["missing.zip", "broken.zip"])
+def test_unreadable_archive_returns_failed_job(
+    data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    archive_name: str,
+) -> None:
+    archive = data_dir / ARCHIVE_DIR / "ru" / archive_name
+    if archive_name == "broken.zip":
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        archive.write_bytes(b"not a zip")
+    monkeypatch.setattr(
+        "content_factory.services.delivery.jobs.deliver",
+        lambda *args, **kwargs: archive,
+    )
+    client = _client()
+
+    assert _post(client).status_code == 202
+    final = _wait(client, REQUEST_ID_TEXT, "failed")
+
+    assert final["error"] == "не удалось прочитать собранный архив"
+
+
 def test_second_request_while_building_returns_409_and_same_id_is_idempotent(
     data_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
