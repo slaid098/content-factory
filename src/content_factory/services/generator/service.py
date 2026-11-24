@@ -119,19 +119,7 @@ def generate_batch(
     loaded = [load_profile(name, root) for name in names]
     started = now or datetime.now(UTC)
     run_id = _choose_run_id(config.output_dir, loaded, started)
-    prepared = [
-        (
-            profile,
-            plan_batch(
-                profile,
-                count,
-                run_id,
-                rng=randomizer,
-                start_after=rotation.read_cursor(_cursor_path(config.output_dir, profile)),
-            ),
-        )
-        for profile in loaded
-    ]
+    prepared = _prepare(config, loaded, count, run_id, randomizer)
     if not dry_run:
         media.ensure_free_space(config.output_dir)
     run_dirs: list[Path] = []
@@ -166,6 +154,29 @@ def generate_batch(
         failed=failed,
         dry_run=dry_run,
     )
+
+
+def _prepare(
+    config: GeneratorSettings,
+    loaded: list[_Profile],
+    count: int,
+    run_id: str,
+    randomizer: random.Random,
+) -> list[tuple[_Profile, tuple[_PlannedItem, ...]]]:
+    """Read the rotation cursor of every profile and build its batch plan."""
+    return [
+        (
+            profile,
+            plan_batch(
+                profile,
+                count,
+                run_id,
+                rng=randomizer,
+                start_after=rotation.read_cursor(_cursor_path(config.output_dir, profile)),
+            ),
+        )
+        for profile in loaded
+    ]
 
 
 def _produce_safely(
