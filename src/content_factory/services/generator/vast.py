@@ -6,6 +6,7 @@ import queue
 import threading
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -24,6 +25,7 @@ _CUDA_MIN = 12.6
 _DESTROY_ATTEMPTS = 3
 _DESTROY_PAUSE = 5.0
 _POLL_SECONDS = 5.0
+_POOL_TICK_SECONDS = 0.05
 HEALTH_TIMEOUT = 10.0
 _VERIFIED_PASSES: tuple[bool | None, ...] = (True, False, None)
 
@@ -34,6 +36,16 @@ class _TeardownError(RentError):
 
 class _RentCancelled(RentError):
     """Another pool member won; the server is left for the main thread to destroy."""
+
+
+@dataclass
+class _PoolState:
+    """Threads, deadline and outcomes shared by one floating rent pool."""
+
+    deadline: float
+    stop: threading.Event = field(default_factory=threading.Event)
+    outcomes: queue.Queue[ServerInfo | RentError] = field(default_factory=queue.Queue)
+    workers: list[threading.Thread] = field(default_factory=list)
 
 
 class VastSession:
@@ -102,17 +114,17 @@ class VastSession:
         used_ips: set[str] = set()
         last: Exception | None = None
         for verified in _VERIFIED_PASSES:
-            candidates = self._candidates(provider, verified, used_offers, used_ips)
-            for batch in _batches(candidates, self._settings.rent_pool_size):
-                try:
-                    return self._rent_batch(provider, batch)
-                except _TeardownError:
-                    raise
-                except RentError as ex:
-                    last = ex
-                    logger.bind(error=str(ex), error_type=type(ex).__name__).warning(
-                        "Пул офферов не подошёл — следующие"
-                    )
+            try:
+                if self._settings.rent_pool_size > 1:
+                    return self._rent_pool(provider, verified, used_offers, used_ips)
+                return self._rent_batches(provider, verified, used_offers, used_ips)
+            except _TeardownError:
+                raise
+            except RentError as ex:
+                last = ex
+                logger.bind(error=str(ex), error_type=type(ex).__name__).warning(
+                    "Пул офферов не подошёл — следующие"
+                )
         raise RentError(f"годного сервера Vast.ai нет: {last}")
 
     def _candidates(
@@ -121,10 +133,18 @@ class VastSession:
         verified: bool | None,
         used_offers: set[str],
         used_ips: set[str],
+        *,
+        limit: int | None = None,
     ) -> list[Mapping[str, Any]]:
-        """Return the offers of one pass, cheapest first and never repeated."""
+        """Return the offers of one pass, cheapest first and never repeated.
+
+        Only the returned offers are marked used, so offers beyond *limit*
+        stay available to the next search of a floating pool.
+        """
         candidates: list[Mapping[str, Any]] = []
         for offer in _offers(provider, self._profile, self._settings, verified):
+            if limit is not None and len(candidates) >= limit:
+                break
             offer_id = str(offer.get("id", ""))
             ip = str(offer.get("public_ipaddr") or "")
             if not offer_id or offer_id in used_offers or (ip and ip in used_ips):
@@ -135,66 +155,187 @@ class VastSession:
             candidates.append(offer)
         return candidates
 
-    def _rent_batch(self, provider: VastProvider, offers: list[Mapping[str, Any]]) -> ServerInfo:
-        """Rent one pool; an offer without company keeps the sequential path."""
-        if len(offers) == 1:
-            return self._rent_offer(provider, offers[0])
-        return self._race(provider, offers)
+    def _rent_batches(
+        self,
+        provider: VastProvider,
+        verified: bool | None,
+        used_offers: set[str],
+        used_ips: set[str],
+    ) -> ServerInfo:
+        """Rent the offers of one pass one by one without extra searches."""
+        candidates = self._candidates(provider, verified, used_offers, used_ips)
+        last: RentError | None = None
+        for batch in _batches(candidates, self._settings.rent_pool_size):
+            try:
+                return self._rent_offer(provider, batch[0])
+            except _TeardownError:
+                raise
+            except RentError as ex:
+                last = ex
+                logger.bind(error=str(ex), error_type=type(ex).__name__).warning(
+                    "Оффер не подошёл — следующий"
+                )
+        raise last or RentError("рынок Vast.ai не дал офферов под фильтры профиля")
 
-    def _race(self, provider: VastProvider, offers: list[Mapping[str, Any]]) -> ServerInfo:
-        """Rent the whole pool and return the first server that answers.
+    def _rent_pool(
+        self,
+        provider: VastProvider,
+        verified: bool | None,
+        used_offers: set[str],
+        used_ips: set[str],
+    ) -> ServerInfo:
+        """Keep a floating pool of one verified pass full until a server is ready.
 
-        Every member shares one ``server_ready_timeout`` deadline. Losers are
-        destroyed only after their threads stop, so the winner stays the sole
-        tracked contract when the rental returns.
+        New offers are searched at most once per ``offer_refresh_seconds`` and
+        fill free slots only. Every member shares one ``server_ready_timeout``
+        deadline; the first ready server wins and every other member is
+        destroyed before the pool returns.
 
         Raises:
             _TeardownError: A loser is still listed after ``destroy_verified``.
-                It stays tracked for the final ``destroy()`` and the rental
-                stops, so no new paid server appears next to an orphan.
+            RentError: No member became ready and no fresh offer appeared.
         """
-        deadline = self._clock() + self._settings.server_ready_timeout
-        stop = threading.Event()
-        outcomes: queue.Queue[ServerInfo | RentError] = queue.Queue()
-        workers = [
-            threading.Thread(
+        state = _PoolState(deadline=self._clock() + self._settings.server_ready_timeout)
+        try:
+            result = self._pool_loop(provider, verified, used_offers, used_ips, state)
+        finally:
+            state.stop.set()
+            for worker in state.workers:
+                worker.join()
+        if isinstance(result, ServerInfo):
+            self._destroy_losers(provider, result)
+            self._set_current(result.connection.contract_id)
+            return result
+        if isinstance(result, _TeardownError):
+            raise result
+        self._destroy_losers(provider)
+        raise result
+
+    def _pool_loop(
+        self,
+        provider: VastProvider,
+        verified: bool | None,
+        used_offers: set[str],
+        used_ips: set[str],
+        state: _PoolState,
+    ) -> ServerInfo | RentError:
+        """Fill a floating pool from one verified pass until it wins or runs dry."""
+        size = self._settings.rent_pool_size
+        offers = self._candidates(provider, verified, used_offers, used_ips, limit=size)
+        if not offers:
+            return RentError("рынок Vast.ai не дал офферов под фильтры профиля")
+        started = self._start_attempts(provider, offers, state)
+        last_search = self._clock()
+        last: RentError | None = None
+        _log_pool(started, started)
+        while True:
+            result, last = self._pool_outcomes(state, last)
+            if result is not None:
+                return result
+            now = self._clock()
+            active = self._active(state)
+            expired = now >= state.deadline
+            if expired and active == 0:
+                return self._final_result(
+                    state, last, "дедлайн пула аренды истёк, готового сервера нет"
+                )
+            if (
+                not expired
+                and active < size
+                and now >= last_search + self._settings.offer_refresh_seconds
+            ):
+                fresh = self._candidates(
+                    provider, verified, used_offers, used_ips, limit=size - active
+                )
+                last_search = self._clock()
+                result, last = self._pool_outcomes(state, last)
+                if result is not None:
+                    return result
+                if state.stop.is_set() or self._clock() >= state.deadline:
+                    continue
+                added = self._start_attempts(provider, fresh, state)
+                active = self._active(state)
+                _log_pool(added, active)
+                if not fresh and active == 0:
+                    return self._final_result(state, last, "рынок Vast.ai не дал новых офферов")
+                continue
+            result, last = self._pool_sleep(state, last, active, now, last_search)
+            if result is not None:
+                return result
+
+    def _pool_sleep(
+        self,
+        state: _PoolState,
+        last: RentError | None,
+        active: int,
+        now: float,
+        last_search: float,
+    ) -> tuple[ServerInfo | _TeardownError | None, RentError | None]:
+        """Return a late outcome, otherwise sleep until the next pool check."""
+        if active == 0 or state.stop.is_set():
+            result, last = self._pool_outcomes(state, last)
+            if result is not None:
+                return result, last
+        pause = _pool_pause(
+            active,
+            now,
+            last_search,
+            self._settings.offer_refresh_seconds,
+            state.deadline,
+        )
+        if state.stop.is_set():
+            pause = min(pause, _POOL_TICK_SECONDS)
+        self._sleep(pause)
+        return None, last
+
+    def _active(self, state: _PoolState) -> int:
+        """Return how many pool attempts are still running."""
+        return sum(worker.is_alive() for worker in state.workers)
+
+    def _pool_outcomes(
+        self,
+        state: _PoolState,
+        last: RentError | None,
+    ) -> tuple[ServerInfo | _TeardownError | None, RentError | None]:
+        """Drain ready outcomes; stop only for a winner or a teardown error."""
+        while True:
+            outcome = _poll_outcome(state.outcomes)
+            if outcome is None:
+                return None, last
+            if isinstance(outcome, ServerInfo | _TeardownError):
+                return outcome, last
+            last = _note_pool_failure(outcome)
+
+    def _final_result(
+        self, state: _PoolState, last: RentError | None, empty_error: str
+    ) -> ServerInfo | RentError:
+        """Read outcomes once more after every worker has finished."""
+        result, last = self._pool_outcomes(state, last)
+        if result is not None:
+            return result
+        return last or RentError(empty_error)
+
+    def _start_attempts(
+        self,
+        provider: VastProvider,
+        offers: list[Mapping[str, Any]],
+        state: _PoolState,
+    ) -> int:
+        """Start one worker per offer; stop early if the pool already ended."""
+        started = 0
+        for offer in offers:
+            if state.stop.is_set():
+                break
+            worker = threading.Thread(
                 target=self._attempt,
-                args=(provider, offer, deadline, stop, outcomes),
+                args=(provider, offer, state.deadline, state.stop, state.outcomes),
                 name=f"vast-rent-{offer.get('id')}",
                 daemon=True,
             )
-            for offer in offers
-        ]
-        for worker in workers:
             worker.start()
-        try:
-            winner, failure = self._collect(outcomes, len(workers))
-        finally:
-            stop.set()
-            for worker in workers:
-                worker.join()
-        if winner is None:
-            raise failure or RentError("пул аренды не дал готового сервера")
-        self._destroy_losers(provider, winner)
-        self._set_current(winner.connection.contract_id)
-        return winner
-
-    def _collect(
-        self, outcomes: queue.Queue[ServerInfo | RentError], size: int
-    ) -> tuple[ServerInfo | None, RentError | None]:
-        """Wait for the first ready server or for every candidate to fail."""
-        last: RentError | None = None
-        for _ in range(size):
-            outcome = outcomes.get()
-            if isinstance(outcome, ServerInfo):
-                return outcome, None
-            last = outcome
-            if isinstance(outcome, _TeardownError):
-                return None, outcome
-            logger.bind(error=str(outcome), error_type=type(outcome).__name__).warning(
-                "Кандидат пула не подошёл — ждём остальных"
-            )
-        return None, last
+            state.workers.append(worker)
+            started += 1
+        return started
 
     def _attempt(
         self,
@@ -205,6 +346,8 @@ class VastSession:
         outcomes: queue.Queue[ServerInfo | RentError],
     ) -> None:
         """Rent one pool candidate and report its ready server or failure."""
+        if stop.is_set() or self._clock() >= deadline:
+            return
         contract_id: str | None = None
         try:
             contract_id = self._create(provider, offer)
@@ -222,6 +365,7 @@ class VastSession:
                 )
             )
         else:
+            stop.set()
             logger.bind(contract_id=contract_id, gpu=connection.gpu, ip=connection.ip).info(
                 "Сервер ComfyUI готов"
             )
@@ -244,16 +388,18 @@ class VastSession:
             return teardown
         return error
 
-    def _destroy_losers(self, provider: VastProvider, winner: ServerInfo) -> None:
-        """Destroy every tracked pool member except the winner.
+    def _destroy_losers(self, provider: VastProvider, winner: ServerInfo | None = None) -> None:
+        """Destroy every tracked pool member except the ready *winner*.
 
         Raises:
             _TeardownError: A loser is still listed after ``destroy_verified``.
                 It stays tracked for the final ``destroy()``.
         """
-        keep = winner.connection.contract_id
+        remaining = self._tracked()
+        if winner is not None:
+            remaining.discard(winner.connection.contract_id)
         errors: list[str] = []
-        for contract_id in sorted(self._tracked() - {keep}):
+        for contract_id in sorted(remaining):
             try:
                 destroy_verified(provider, contract_id)
             except RentError as ex:
@@ -522,6 +668,42 @@ def _batches(offers: list[Mapping[str, Any]], size: int) -> list[list[Mapping[st
     """Split offers into pools of at most *size* candidates, cheapest first."""
     step = max(1, size)
     return [offers[start : start + step] for start in range(0, len(offers), step)]
+
+
+def _poll_outcome(
+    outcomes: queue.Queue[ServerInfo | RentError],
+) -> ServerInfo | RentError | None:
+    """Return the next pool outcome without blocking."""
+    try:
+        return outcomes.get_nowait()
+    except queue.Empty:
+        return None
+
+
+def _pool_pause(
+    active: int,
+    now: float,
+    last_search: float,
+    refresh: int,
+    deadline: float,
+) -> float:
+    """Return how long the coordinator naps before its next pool check."""
+    if active:
+        return _POOL_TICK_SECONDS
+    return max(0.0, min(last_search + refresh - now, deadline - now))
+
+
+def _log_pool(added: int, active: int) -> None:
+    """Log new offers of a pool search and the attempts now running."""
+    logger.bind(added=added, active=active).info("Пул аренды: новые офферы и активные попытки")
+
+
+def _note_pool_failure(outcome: RentError) -> RentError:
+    """Log one failed pool candidate and return its error for the pass."""
+    logger.bind(error=str(outcome), error_type=type(outcome).__name__).warning(
+        "Кандидат пула не подошёл — ждём остальных"
+    )
+    return outcome
 
 
 def _raise_if_cancelled(stop: threading.Event | None) -> None:
