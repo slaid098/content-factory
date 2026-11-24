@@ -744,7 +744,9 @@ def test_pool_stops_renting_when_a_ready_worker_is_not_yet_reported(
         clock=clock,
     )
     release = threading.Event()
+    winner_blocked = threading.Event()
     attempt = session._attempt
+    started = clock()
 
     def delayed_attempt(*args: Any, **kwargs: Any) -> None:
         outcomes = args[-1]
@@ -752,6 +754,7 @@ def test_pool_stops_renting_when_a_ready_worker_is_not_yet_reported(
 
         def blocking_put(item: Any) -> None:
             if isinstance(item, ServerInfo):
+                winner_blocked.set()
                 release.wait(5)
             put(item)
 
@@ -765,7 +768,8 @@ def test_pool_stops_renting_when_a_ready_worker_is_not_yet_reported(
     pool_sleep = session._pool_sleep
 
     def releasing_sleep(pool_state: Any, *args: Any, **kwargs: Any) -> Any:
-        if pool_state.stop.is_set():
+        assert winner_blocked.wait(5)
+        if pool_state.stop.is_set() and clock() - started >= 10:
             release.set()
         return pool_sleep(pool_state, *args, **kwargs)
 
@@ -782,8 +786,10 @@ def test_pool_stops_renting_when_a_ready_worker_is_not_yet_reported(
 def test_pool_keeps_a_candidate_that_failed_to_tear_down(tmp_path: Path, monkeypatch) -> None:
     provider = _RefillProvider(searches=[["1"]], ready="")
     state, clock, sleep = _refill_clock(monkeypatch)
+    destroyed: list[str] = []
 
-    def failing_destroy(*args: Any, **kwargs: Any) -> bool:
+    def failing_destroy(provider: Any, contract_id: str, **kwargs: Any) -> bool:
+        destroyed.append(contract_id)
         raise RentError("destroy is down")
 
     monkeypatch.setattr(vast, "destroy_verified", failing_destroy)
@@ -805,9 +811,10 @@ def test_pool_keeps_a_candidate_that_failed_to_tear_down(tmp_path: Path, monkeyp
 
     session._wait_ready = failing_wait  # type: ignore[method-assign]
 
-    with pytest.raises(vast._TeardownError, match="не уничтожен"):
+    with pytest.raises(vast._TeardownError, match="не уничтожен после сбоя аренды"):
         session._rent(provider)
 
+    assert destroyed == ["c1"]
     assert [config["offer_id"] for config in provider.created] == ["1"]
     assert len(provider.queries) == 1
     assert session._contracts == {"c1"}
