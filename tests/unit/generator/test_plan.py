@@ -53,6 +53,43 @@ def test_more_items_than_cards_go_in_circle_without_adjacent_repeats(tmp_path: P
     assert all(left != right for left, right in zip(ids, ids[1:], strict=False))
 
 
+def test_batch_starts_with_the_card_after_the_cursor(tmp_path: Path) -> None:
+    profile = fixture_profile(tmp_path / "profiles", looks=20)
+
+    items = plan_batch(profile, 3, _RUN_ID, rng=random.Random(7), start_after="c01")
+
+    assert [item.look.id for item in items] == ["c02", "c03", "c04"]
+
+
+def test_cursor_on_the_last_card_wraps_to_the_first(tmp_path: Path) -> None:
+    profile = fixture_profile(tmp_path / "profiles", looks=20)
+
+    items = plan_batch(profile, 2, _RUN_ID, rng=random.Random(7), start_after="c20")
+
+    assert [item.look.id for item in items] == ["c01", "c02"]
+
+
+@pytest.mark.parametrize("start_after", [None, "gone"])
+def test_absent_or_unknown_cursor_starts_from_the_first_card(
+    tmp_path: Path, start_after: str | None
+) -> None:
+    profile = fixture_profile(tmp_path / "profiles", looks=20)
+
+    items = plan_batch(profile, 2, _RUN_ID, rng=random.Random(7), start_after=start_after)
+
+    assert [item.look.id for item in items] == ["c01", "c02"]
+
+
+def test_card_order_does_not_depend_on_the_random_source(tmp_path: Path) -> None:
+    profile = fixture_profile(tmp_path / "profiles", looks=20)
+
+    first = plan_batch(profile, 4, _RUN_ID, rng=random.Random(1), start_after="c04")
+    second = plan_batch(profile, 4, _RUN_ID, rng=random.Random(99), start_after="c04")
+
+    assert [item.look.id for item in first] == ["c05", "c06", "c07", "c08"]
+    assert [item.look.id for item in second] == [item.look.id for item in first]
+
+
 def test_count_must_be_positive(tmp_path: Path) -> None:
     profile = fixture_profile(tmp_path / "profiles", looks=20)
 

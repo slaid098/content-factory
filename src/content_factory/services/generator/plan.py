@@ -5,6 +5,8 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 
+from loguru import logger
+
 from content_factory.exceptions.generator import GeneratorError, ProfileError
 from content_factory.services.generator.profiles import _Look, _Profile
 
@@ -30,11 +32,14 @@ def plan_batch(
     run_id: str,
     *,
     rng: random.Random | None = None,
+    start_after: str | None = None,
 ) -> tuple[_PlannedItem, ...]:
     """Build the plan of one profile: cards, seeds and frame lengths.
 
-    Cards do not repeat inside the batch while there are enough of them and
-    go in a circle after that. Seeds are unique inside the batch. Every
+    Cards go in the order of ``looks.yaml`` from the card that follows
+    *start_after*, wrapping to the first one after the end of the list. When
+    *start_after* is ``None`` or names a card that is not in the profile, the
+    batch starts from the first card. Seeds are unique inside the batch. Every
     length differs from ``profile.frames`` by at most ``frames_jitter`` and
     keeps the ``_JITTER_STRIDE`` step relative to the base.
 
@@ -43,6 +48,7 @@ def plan_batch(
         count: Number of videos to plan, at least one.
         run_id: Identifier of the run used in file names.
         rng: Random source; tests pass a seeded instance.
+        start_after: Id of the last successfully generated card, if any.
 
     Returns:
         Planned items in production order.
@@ -58,7 +64,8 @@ def plan_batch(
             f"в профиле {profile.name} одна карточка: нельзя собрать {count} роликов без повтора"
         )
     randomizer = rng or random.Random()  # noqa: S311 — seeds guard variety, not secrets
-    looks = _pick_looks(profile.looks, count, randomizer)
+    _warn_missing_cursor(profile, start_after)
+    looks = _pick_looks(profile.looks, count, start_after)
     seeds = _unique_seeds(count, randomizer)
     slug = profile.name.replace("/", "_")
     return tuple(
@@ -101,13 +108,23 @@ def _jitter_frames(base: int, jitter: int, rng: random.Random) -> int:
     return base + _JITTER_STRIDE * rng.randint(-steps, steps)
 
 
-def _pick_looks(looks: tuple[_Look, ...], count: int, rng: random.Random) -> list[_Look]:
-    """Pick cards without repeats inside one batch."""
-    if count <= len(looks):
-        return rng.sample(list(looks), count)
-    order = list(looks)
-    rng.shuffle(order)
-    return [order[index % len(order)] for index in range(count)]
+def _pick_looks(looks: tuple[_Look, ...], count: int, start_after: str | None) -> list[_Look]:
+    """Pick cards in file order after *start_after*, wrapping around the end."""
+    start = 0
+    for index, look in enumerate(looks):
+        if look.id == start_after:
+            start = index + 1
+            break
+    return [looks[(start + offset) % len(looks)] for offset in range(count)]
+
+
+def _warn_missing_cursor(profile: _Profile, start_after: str | None) -> None:
+    """Report a cursor that names a card absent from ``looks.yaml``."""
+    if start_after is None or any(look.id == start_after for look in profile.looks):
+        return
+    logger.bind(profile=profile.name, look_id=start_after).warning(
+        "Карточки из курсора нет в looks.yaml — план начнётся с первой"
+    )
 
 
 def _unique_seeds(count: int, rng: random.Random) -> list[int]:

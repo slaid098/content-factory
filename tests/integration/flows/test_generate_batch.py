@@ -45,6 +45,7 @@ def test_dry_run_writes_report_without_network(tmp_path: Path) -> None:
     reports = list((tmp_path / "generated").rglob("run.json"))
     assert len(reports) == 1
     assert '"status": "dry_run"' in reports[0].read_text(encoding="utf-8")
+    assert not list((tmp_path / "generated").rglob("rotation.json"))
 
 
 def test_second_run_is_rejected_while_lock_is_held(tmp_path: Path) -> None:
