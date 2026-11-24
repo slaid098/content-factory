@@ -147,6 +147,20 @@ def test_latest_run_skips_unreadable_report(
     assert records[-1]["level"].name == "WARNING"
 
 
+def test_latest_run_skips_non_utf8_report(
+    tmp_path: Path,
+    log_records: list[dict[str, Any]],
+) -> None:
+    output = tmp_path / "generated"
+    report = write_run_report(output)
+    report.write_bytes(b'{"run_id": "\xff"}')
+
+    assert latest_run(output, _profile(tmp_path)) is None
+    records = [record for record in log_records if record["function"] == "_read"]
+    assert records[-1]["level"].name == "WARNING"
+    assert records[-1]["extra"]["path"] == str(report)
+
+
 def test_latest_run_truncates_first_failed_item_error(tmp_path: Path) -> None:
     long_error = "я" * 400
     write_run_report(

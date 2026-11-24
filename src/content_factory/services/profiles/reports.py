@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from loguru import logger
-from pydantic import ValidationError
 
 from content_factory.schemas.generator.run import RunReport, RunStatus
 from content_factory.schemas.profiles.api import ProfileLastRun
@@ -58,7 +57,7 @@ def _read(path: Path) -> RunReport | None:
     """Parse one report, skipping a broken file with a warning."""
     try:
         return RunReport.model_validate_json(path.read_text(encoding="utf-8"))
-    except (OSError, ValidationError) as ex:
+    except (OSError, ValueError) as ex:
         logger.bind(path=str(path), error=ex, error_type=type(ex).__name__).warning(
             "Пропущен битый run.json {}",
             path,

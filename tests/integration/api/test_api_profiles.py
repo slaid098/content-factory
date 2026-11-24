@@ -191,6 +191,23 @@ def test_list_returns_500_on_broken_runtime_config(data_dir: Path) -> None:
     assert response.json() == {"detail": "profiles unavailable"}
 
 
+def test_list_skips_non_utf8_run_report(
+    data_dir: Path,
+    log_records: list[dict[str, Any]],
+) -> None:
+    add_profile(data_dir, "dating", "profile_1")
+    report = write_run_report(data_dir / "generated", generated=1)
+    report.write_bytes(b'{"run_id": "\xff"}')
+
+    response = _get(_client(), _PREFIX)
+
+    assert response.status_code == 200
+    assert response.json()["profiles"][0]["last_run"] is None
+    records = [record for record in log_records if record["function"] == "_read"]
+    assert records[-1]["level"].name == "WARNING"
+    assert records[-1]["extra"]["path"] == str(report)
+
+
 def test_get_returns_one_profile(data_dir: Path) -> None:
     add_profile(data_dir, "dating", "profile_1")
     add_profile_video(data_dir, "dating", "profile_1")
@@ -208,7 +225,32 @@ def test_get_missing_profile_returns_404(data_dir: Path) -> None:
     response = _get(_client(), f"{_PREFIX}/dating/missing")
 
     assert response.status_code == 404
-    assert "профиль не найден" in response.json()["detail"]
+    assert response.json() == {"detail": "profile not found"}
+
+
+def test_get_broken_profile_hides_path_and_yaml(data_dir: Path) -> None:
+    directory = add_profile(data_dir, "dating", "profile_1")
+    (directory / "profile.yaml").write_text("width: [\nsecret: \xff\n", encoding="utf-8")
+
+    response = _get(_client(), f"{_PREFIX}/dating/profile_1")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "profile not found"}
+    assert str(data_dir) not in response.text
+    assert "profile.yaml" not in response.text
+    assert "secret" not in response.text
+
+
+def test_get_shared_profile_returns_404(data_dir: Path) -> None:
+    fonts = data_dir / "profiles" / "_shared" / "fonts"
+    fonts.mkdir(parents=True)
+    (fonts / "font.ttf").write_bytes(b"font")
+
+    response = _get(_client(), f"{_PREFIX}/_shared/fonts")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "profile not found"}
+    assert str(data_dir) not in response.text
 
 
 def test_get_rejects_unsafe_profile_id(data_dir: Path) -> None:

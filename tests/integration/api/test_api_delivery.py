@@ -804,13 +804,13 @@ def test_delivery_by_profile_without_stock_returns_204(data_dir: Path) -> None:
             "/api/v1/content/deliveries",
             "dating/missing",
             404,
-            "профиль не найден: dating/missing",
+            "profile not found",
         ),
         (
             "/api/v1/content/deliveries/link",
             "dating/missing",
             404,
-            "профиль не найден: dating/missing",
+            "profile not found",
         ),
         (
             "/api/v1/content/deliveries",

@@ -93,7 +93,7 @@ def get_profile(
             global_config=global_config,
         )
     except ProfileError as ex:
-        raise profile_error(ex) from ex
+        raise profile_error(ex, profile_id) from ex
 
 
 @profiles_router.patch(
@@ -126,7 +126,7 @@ def update_profile(
             global_config=global_config,
         )
     except ProfileError as ex:
-        raise profile_error(ex) from ex
+        raise profile_error(ex, profile_id) from ex
     except ProfileValidationError as ex:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -166,7 +166,7 @@ def get_profile_preview(
     try:
         preview = preview_for_profile(settings.data_dir, profile_id)
     except ProfileError as ex:
-        raise profile_error(ex) from ex
+        raise profile_error(ex, profile_id) from ex
     except ProfilePreviewError as ex:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

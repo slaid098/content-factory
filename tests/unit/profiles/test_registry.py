@@ -116,8 +116,22 @@ def test_non_utf8_yaml_skips_only_that_profile(
         record["level"].name == "WARNING" and "dating/profile_2" in record["message"]
         for record in log_records
     )
-    with pytest.raises(ProfileError, match="UTF-8"):
+    with pytest.raises(ProfileError, match="профиль не найден"):
         get_profile(tmp_path, "dating/profile_2")
+
+
+def test_get_profile_rejects_shared_directory(tmp_path: Path) -> None:
+    _make_profile(tmp_path, "_shared", "fonts")
+
+    with pytest.raises(ProfileError, match="профиль не найден"):
+        get_profile(tmp_path, "_shared/fonts")
+
+
+def test_get_profile_requires_profile_yaml(tmp_path: Path) -> None:
+    (tmp_path / "profiles" / "dating" / "draft").mkdir(parents=True)
+
+    with pytest.raises(ProfileError, match="профиль не найден"):
+        get_profile(tmp_path, "dating/draft")
 
 
 def test_invalid_profile_field_skips_only_that_profile(tmp_path: Path) -> None:
@@ -173,22 +187,24 @@ def test_get_profile_rejects_unsafe_ids(tmp_path: Path, profile_id: str) -> None
 def test_get_profile_rejects_invalid_language(tmp_path: Path) -> None:
     _make_profile(tmp_path, "dating", "profile_2", language="RU")
 
-    with pytest.raises(ProfileError, match="язык"):
+    with pytest.raises(ProfileError, match="профиль не найден"):
         get_profile(tmp_path, "dating/profile_2")
 
 
 def test_get_profile_rejects_invalid_niche(tmp_path: Path) -> None:
     _make_profile(tmp_path, "dating", "profile_2", niche="Dating")
 
-    with pytest.raises(ProfileError, match="ниша"):
+    with pytest.raises(ProfileError, match="профиль не найден"):
         get_profile(tmp_path, "dating/profile_2")
 
 
 def test_get_profile_rejects_non_positive_size(tmp_path: Path) -> None:
     _make_profile(tmp_path, "dating", "profile_2", height=-1)
 
-    with pytest.raises(ProfileError, match="height"):
+    with pytest.raises(ProfileError, match="профиль не найден") as raised:
         get_profile(tmp_path, "dating/profile_2")
+
+    assert str(tmp_path) not in str(raised.value)
 
 
 def test_registry_does_not_need_prompts_fonts_or_looks(tmp_path: Path) -> None:

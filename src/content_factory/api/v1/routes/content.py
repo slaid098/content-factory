@@ -78,11 +78,20 @@ def require_safe_profile_id(profile_id: str) -> None:
         )
 
 
-def profile_error(ex: ProfileError) -> HTTPException:
-    """Map a missing or malformed profile to 404."""
+def profile_error(ex: ProfileError, profile_id: str | None = None) -> HTTPException:
+    """Map a missing or malformed profile to 404 without exposing details.
+
+    The exception may carry absolute paths or YAML fragments, so it is only
+    written to the server log. The client always gets a fixed message.
+    """
+    logger.bind(
+        profile_id=profile_id,
+        error=ex,
+        error_type=type(ex).__name__,
+    ).warning("Профиль недоступен")
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail=str(ex),
+        detail="profile not found",
     )
 
 
@@ -132,7 +141,7 @@ def create_delivery(
             retention_hours=settings.delivery_retention_hours,
         )
     except ProfileError as ex:
-        raise profile_error(ex) from ex
+        raise profile_error(ex, request.profile) from ex
     except DeliveryError as ex:
         logger.bind(
             request_id=str(request.request_id),
@@ -179,7 +188,7 @@ def create_delivery_link(
             retention_hours=settings.delivery_retention_hours,
         )
     except ProfileError as ex:
-        raise profile_error(ex) from ex
+        raise profile_error(ex, request.profile) from ex
     except DeliveryBusyError as ex:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

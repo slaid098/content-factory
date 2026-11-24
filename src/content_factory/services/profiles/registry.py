@@ -81,9 +81,16 @@ def get_profile(data_dir: Path, profile_id: str) -> ProfileInfo:
     """
     category, name = _split_id(profile_id)
     directory = data_dir / PROFILES_DIR / category / name
-    if not directory.is_dir():
+    if (
+        category == _SHARED_DIR
+        or not directory.is_dir()
+        or not (directory / _PROFILE_FILENAME).is_file()
+    ):
         raise ProfileError(f"профиль не найден: {profile_id}")
-    return _read_info(directory, category, name)
+    try:
+        return _read_info(directory, category, name)
+    except ProfileError as ex:
+        raise ProfileError(f"профиль не найден: {profile_id}") from ex
 
 
 def is_safe_profile_id(profile_id: str) -> bool:
