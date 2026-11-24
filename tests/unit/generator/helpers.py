@@ -48,6 +48,8 @@ def make_profile(
     workflow: bool = False,
     block2_y: bool = True,
     frames_jitter: int = 11,
+    hug_text: bool = False,
+    max_text_width: float | None = None,
 ) -> Path:
     """Create a small profile under *root* and return its directory."""
     directory = root / name
@@ -103,6 +105,10 @@ def make_profile(
         data["block2_bg"] = "#A9552F"
         data["block2_text"] = "#FFF8EF"
         data["block2_alpha"] = 240
+    if hug_text:
+        data["hug_text"] = True
+    if max_text_width is not None:
+        data["max_text_width"] = max_text_width
     (directory / "profile.yaml").write_text(
         yaml.safe_dump(data, allow_unicode=True), encoding="utf-8"
     )

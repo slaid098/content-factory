@@ -297,3 +297,17 @@ def test_optional_profile_values_are_normalized(tmp_path: Path) -> None:
 
     with pytest.raises(ProfileError, match="непрозрачность"):
         _alpha("x")
+
+
+def test_overlay_hug_options_are_read(tmp_path: Path) -> None:
+    profile = fixture_profile(tmp_path / "profiles", hug_text=True, max_text_width=0.7)
+
+    assert profile.style.hug_text is True
+    assert profile.style.max_text_width == 0.7
+
+
+def test_bad_text_width_fails_before_rent(tmp_path: Path) -> None:
+    make_profile(tmp_path / "profiles", max_text_width=1.5)
+
+    with pytest.raises(ProfileError, match="max_text_width"):
+        load_profile("dating/profile_2", tmp_path / "profiles")

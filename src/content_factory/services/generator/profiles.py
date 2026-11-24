@@ -58,6 +58,8 @@ class _OverlayStyle:
     block1_y: float = 0.62
     block2_y: float | None = None
     gap: float = 0.05
+    hug_text: bool = False
+    max_text_width: float = 0.86
     text_color: str = "#000000"
     text_bg_color: str = "#FFFFFF"
     text_bg_alpha: int = 255
@@ -335,11 +337,16 @@ def _resolve_font(directory: Path, name: str, root: Path) -> Path:
 
 def _overlay_style(data: Mapping[str, Any]) -> _OverlayStyle:
     """Build overlay geometry and colours from the profile values."""
+    max_text_width = _float_or(data.get("max_text_width"), 0.86)
+    if not 0.2 <= max_text_width <= 0.9:
+        raise ProfileError(f"max_text_width должен быть в диапазоне 0.2..0.9: {max_text_width}")
     return _OverlayStyle(
         font_size=_float_or(data.get("size"), 0.06),
         block1_y=_float_or(data.get("block1_y"), 0.62),
         block2_y=_optional_number(data.get("block2_y")),
         gap=_float_or(data.get("gap"), 0.05),
+        hug_text=bool(data.get("hug_text", False)),
+        max_text_width=max_text_width,
         text_color=str(data.get("text_color") or "#000000"),
         text_bg_color=str(data.get("text_bg_color") or "#FFFFFF"),
         text_bg_alpha=_alpha(data.get("text_bg_alpha")),
