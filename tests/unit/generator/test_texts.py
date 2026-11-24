@@ -88,3 +88,61 @@ def test_overlay_is_saved_as_json(tmp_path: Path) -> None:
 
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data == {"blocks": [{"lines": ["Строка"]}]}
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "<result><block>Привет OK</block></result>",
+        "<result><block>Привет Instagram</block></result>",
+        "<result><block>Привет 世界</block></result>",
+        "<result><block>Привет \ufffd</block></result>",
+        "<result><block>Привет κόσμε</block></result>",
+        "Привет OK",
+        "世界世界",
+    ],
+)
+def test_answers_with_foreign_letters_are_rejected(raw: str) -> None:
+    assert parse_overlays(raw) == ()
+
+
+def test_punctuation_numbers_and_emoji_are_allowed() -> None:
+    raw = "<result><block>Мне 25 — «привет»… 😊</block></result>"
+
+    overlays = parse_overlays(raw)
+
+    assert overlays[0].blocks[0].lines == ("Мне 25 — «привет»… 😊",)
+
+
+def test_foreign_result_rejects_the_whole_answer() -> None:
+    raw = "<result><block>Привет OK</block></result><result><block>Привет мир</block></result>"
+
+    assert parse_overlays(raw) == ()
+
+
+def test_foreign_answer_is_retried_like_an_empty_one(tmp_path: Path) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+    writer = _Writer(
+        [
+            "<result><block>Привет OK</block></result>",
+            "<result><block>Привет 世界</block></result>",
+            "<result><block>Привет мир</block></result>",
+        ]
+    )
+    pauses: list[float] = []
+
+    overlay = generate_overlay(profile, writer, attempts=3, pause=0.5, sleep=pauses.append)
+
+    assert writer.calls == 3
+    assert pauses == [0.5, 0.5]
+    assert overlay.blocks[0].lines == ("Привет мир",)
+
+
+def test_only_foreign_answers_exhaust_the_attempts(tmp_path: Path) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+    writer = _Writer(["<result><block>Привет OK</block></result>"] * 3)
+
+    with pytest.raises(TextError, match="не получен"):
+        generate_overlay(profile, writer, attempts=3, pause=0, sleep=lambda _: None)
+
+    assert writer.calls == 3

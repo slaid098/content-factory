@@ -50,6 +50,7 @@ def make_profile(
     frames_jitter: int = 11,
     hug_text: bool | str = False,
     max_text_width: float | str | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> Path:
     """Create a small profile under *root* and return its directory."""
     directory = root / name
@@ -109,6 +110,8 @@ def make_profile(
         data["hug_text"] = hug_text
     if max_text_width is not None:
         data["max_text_width"] = max_text_width
+    if extra:
+        data.update(extra)
     (directory / "profile.yaml").write_text(
         yaml.safe_dump(data, allow_unicode=True), encoding="utf-8"
     )
