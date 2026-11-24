@@ -23,7 +23,7 @@ from content_factory.services.generator.vast import (
     destroy_verified,
     reap_stale,
 )
-from content_factory.services.generator.vast_cli import _VastTransient
+from content_factory.services.generator.vast_cli import _VastFatal, _VastTransient
 
 
 def _settings(tmp_path: Path, **kwargs: Any) -> GeneratorSettings:
@@ -307,6 +307,58 @@ def test_wait_health_accepts_a_live_server(tmp_path: Path, monkeypatch) -> None:
     session = VastSession(fixture_profile(tmp_path / "profiles"), _settings(tmp_path))
 
     assert session._wait_health(_connection()).port == 8188
+
+
+def test_wait_ready_propagates_a_fatal_provider_error(tmp_path: Path) -> None:
+    provider = _Provider()
+    calls: list[str] = []
+
+    def fatal(contract_id: str) -> dict[str, Any]:
+        calls.append(contract_id)
+        raise _VastFatal("Vast.ai: Unauthorized — проверьте VAST_API_TOKEN")
+
+    provider.show_instance = fatal  # type: ignore[method-assign]
+    state, clock, sleep = _clock_pair()
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(tmp_path),
+        sleep=sleep,
+        clock=clock,
+    )
+
+    with pytest.raises(_VastFatal):
+        session._wait_ready(provider, "c1")
+
+    assert calls == ["c1"]
+    assert state[0] == 0.0
+
+
+def test_wait_ready_keeps_polling_after_a_transient_show_error(tmp_path: Path, monkeypatch) -> None:
+    provider = _Provider(instances={"c1": _instance()})
+    show = provider.show_instance
+    calls: list[str] = []
+
+    def flaky(contract_id: str) -> dict[str, Any]:
+        calls.append(contract_id)
+        if len(calls) == 1:
+            raise _VastTransient("Vast.ai CLI не ответил")
+        return show(contract_id)
+
+    provider.show_instance = flaky  # type: ignore[method-assign]
+    state, clock, sleep = _clock_pair()
+    monkeypatch.setattr(vast, "_healthy", lambda connection: True)
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(tmp_path),
+        sleep=sleep,
+        clock=clock,
+    )
+
+    connection = session._wait_ready(provider, "c1")
+
+    assert connection.port == 40000
+    assert len(calls) == 2
+    assert state[0] < 60
 
 
 def test_destroy_is_verified_once(tmp_path: Path, monkeypatch) -> None:
@@ -732,6 +784,47 @@ def test_pool_gives_a_later_offer_its_own_full_ready_timeout(tmp_path: Path, mon
     assert session._contracts == set()
 
 
+def test_pool_replaces_an_offer_that_disappeared_from_the_account(
+    tmp_path: Path, monkeypatch, log_records: list[dict[str, Any]]
+) -> None:
+    provider = _RefillProvider(searches=[["1"], [], [], [], [], [], [], ["2"]], ready="2")
+    show = provider.show_instance
+
+    def gone(contract_id: str) -> dict[str, Any]:
+        if contract_id == "c1":
+            raise RentError("Instance c1 not found")
+        return show(contract_id)
+
+    provider.show_instance = gone  # type: ignore[method-assign]
+    state, clock, sleep = _refill_clock(monkeypatch)
+    monkeypatch.setattr(vast, "_POLL_SECONDS", 5.0)
+    monkeypatch.setattr(vast, "_healthy", lambda connection: True)
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(
+            tmp_path,
+            rent_pool_size=2,
+            offer_refresh_seconds=10,
+            server_ready_timeout=300,
+        ),
+        provider=provider,
+        sleep=sleep,
+        clock=clock,
+    )
+
+    info = session._rent(provider)
+
+    assert info.connection.contract_id == "c2"
+    assert provider.destroyed == ["c1"]
+    assert state[0] >= vast._GONE_GRACE_SECONDS
+    failed = [record for record in log_records if "исчез из аккаунта" in record["message"]]
+    assert failed
+    assert "c1" in failed[0]["message"]
+    ready = [record for record in log_records if "Сервер ComfyUI готов" in record["message"]]
+    assert ready
+    assert "c2" in ready[0]["message"]
+
+
 def test_sequential_path_gives_every_offer_its_own_full_ready_timeout(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -890,6 +983,23 @@ def test_pool_does_not_rent_after_stop(tmp_path: Path) -> None:
     assert provider.created == []
     assert provider.queries == []
     assert pool_state.outcomes.empty()
+
+
+def test_pool_ends_when_stopped_without_workers_or_a_winner(tmp_path: Path) -> None:
+    provider = _RefillProvider(searches=[["1"]])
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(tmp_path, rent_pool_size=2),
+        provider=provider,
+    )
+    pool_state = vast._PoolState()
+    pool_state.stop.set()
+
+    result = session._pool_loop(provider, True, set(), set(), pool_state)
+
+    assert isinstance(result, RentError)
+    assert "пул остановлен" in str(result)
+    assert provider.created == []
 
 
 @pytest.mark.parametrize(
@@ -1066,6 +1176,16 @@ def test_stale_reap_skips_unavailable_list(tmp_path: Path) -> None:
     provider.fail_list = True
 
     assert reap_stale(provider, 6, now=1_000_000.0) == []
+
+
+def test_stale_reap_skips_an_instance_without_a_start_date() -> None:
+    now = 1_000_000.0
+    provider = _Provider(
+        instances={"1": {"id": "1", "label": "content-factory-generator", "start_date": 0}}
+    )
+
+    assert reap_stale(provider, 3, now=now) == []
+    assert set(provider.instances) == {"1"}
 
 
 def test_stale_reap_keeps_going_when_one_destroy_fails(tmp_path: Path, monkeypatch) -> None:
