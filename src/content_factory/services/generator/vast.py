@@ -117,7 +117,7 @@ class VastSession:
         """Race offers of every verified pass until one server is ready."""
         used_offers: set[str] = set()
         used_ips: set[str] = set()
-        last: Exception | None = None
+        reasons: list[str] = []
         for verified in _VERIFIED_PASSES:
             try:
                 if self._settings.rent_pool_size > 1:
@@ -128,11 +128,12 @@ class VastSession:
             except _VastFatal:
                 raise
             except RentError as ex:
-                last = ex
+                reasons.append(str(ex))
                 logger.bind(error=str(ex), error_type=type(ex).__name__).warning(
                     f"Пул офферов не подошёл — следующие: {ex}"
                 )
-        raise RentError(f"годного сервера Vast.ai нет: {last}")
+        detail = "; ".join(reasons) or "причины не записаны"
+        raise RentError(f"годного сервера Vast.ai нет: {detail}")
 
     def _candidates(
         self,
@@ -206,11 +207,18 @@ class VastSession:
         """
         state = _PoolState()
         try:
-            result = self._pool_loop(provider, verified, used_offers, used_ips, state)
-        finally:
-            state.stop.set()
-            for worker in state.workers:
-                worker.join()
+            try:
+                result = self._pool_loop(provider, verified, used_offers, used_ips, state)
+            finally:
+                state.stop.set()
+                for worker in state.workers:
+                    worker.join()
+        except Exception as error:
+            try:
+                self._destroy_losers(provider)
+            except _TeardownError as teardown:
+                raise teardown from error
+            raise
         if isinstance(result, ServerInfo):
             self._destroy_losers(provider, result)
             self._set_current(result.connection.contract_id)
@@ -429,10 +437,16 @@ class VastSession:
     def _rent_offer(self, provider: VastProvider, offer: Mapping[str, Any]) -> ServerInfo:
         """Create one instance and wait for its ComfyUI."""
         contract_id = self._create(provider, offer)
+        started = self._clock()
+        port_timeout = self._settings.server_ready_timeout
+        health_timeout = self._settings.comfy_health_timeout
         self._set_current(contract_id)
         try:
-            connection = self._wait_ready(provider, contract_id)
-        except RentError:
+            connection = self._wait_ready(provider, contract_id, deadline=started + port_timeout)
+        except RentError as ex:
+            _log_attempt_failure(
+                contract_id, port_timeout, health_timeout, self._clock() - started, ex
+            )
             self._destroy_after_failure(provider, contract_id)
             raise
         _log_ready(connection)
@@ -542,7 +556,7 @@ class VastSession:
                 instance = None
             except RentError as ex:
                 instance = None
-                if _already_gone(str(ex)):
+                if _already_gone(str(ex)) and str(contract_id) in str(ex):
                     now = self._clock()
                     gone_error = ex
                     if seen:

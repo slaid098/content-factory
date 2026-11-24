@@ -458,6 +458,37 @@ def test_wait_ready_does_not_treat_a_generic_error_as_a_disappearance(
     assert not [record for record in log_records if "исчез из аккаунта" in record["message"]]
 
 
+def test_wait_ready_does_not_start_the_gone_grace_for_a_foreign_not_found(
+    tmp_path: Path, monkeypatch, log_records: list[dict[str, Any]]
+) -> None:
+    state, clock, sleep = _clock_pair()
+    monkeypatch.setattr(vast, "_healthy", lambda connection: True)
+    provider = _Provider(instances={"c1": _instance()})
+    pending = _instance()
+    pending["ports"] = {}
+
+    def missing_command(contract_id: str) -> dict[str, Any]:
+        if clock() < 5:
+            return pending
+        if clock() < 90:
+            raise RentError("command not found: vastai")
+        return _instance()
+
+    provider.show_instance = missing_command  # type: ignore[method-assign]
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(tmp_path, server_ready_timeout=300),
+        sleep=sleep,
+        clock=clock,
+    )
+
+    connection = session._wait_ready(provider, "c1")
+
+    assert connection.port == 40000
+    assert state[0] >= 90
+    assert not [record for record in log_records if "исчез из аккаунта" in record["message"]]
+
+
 def test_destroy_is_verified_once(tmp_path: Path, monkeypatch) -> None:
     profile = fixture_profile(tmp_path / "profiles")
     provider = _Provider(offers=[{"id": "1"}], instances={"c1": _instance()})
@@ -1025,7 +1056,7 @@ def test_sequential_path_gives_every_offer_its_own_full_ready_timeout(
         clock=clock,
     )
     wait = session._wait_ready
-    starts: list[tuple[str, float]] = []
+    budgets: list[tuple[str, float]] = []
 
     def recording_wait(
         provider: Any,
@@ -1034,7 +1065,8 @@ def test_sequential_path_gives_every_offer_its_own_full_ready_timeout(
         deadline: float | None = None,
         stop: threading.Event | None = None,
     ) -> ServerConnection:
-        starts.append((contract_id, clock()))
+        assert deadline is not None
+        budgets.append((contract_id, deadline - clock()))
         return wait(provider, contract_id, deadline=deadline, stop=stop)
 
     session._wait_ready = recording_wait  # type: ignore[method-assign]
@@ -1042,11 +1074,56 @@ def test_sequential_path_gives_every_offer_its_own_full_ready_timeout(
     with pytest.raises(RentError, match="годного сервера"):
         session._rent(provider)
 
-    assert [contract_id for contract_id, _ in starts] == ["c1", "c2"]
-    assert starts[1][1] >= 60
+    assert [contract_id for contract_id, _ in budgets] == ["c1", "c2"]
+    assert budgets[0][1] >= 59.0
+    assert budgets[1][1] >= 59.0
     assert state[0] >= 120
     assert sorted(provider.destroyed) == ["c1", "c2"]
     assert session._contracts == set()
+
+
+def test_sequential_failure_logs_the_contract_and_reason(
+    tmp_path: Path, monkeypatch, log_records: list[dict[str, Any]]
+) -> None:
+    provider = _RefillProvider(searches=[["1"]])
+    state, clock, sleep = _clock_pair()
+    monkeypatch.setattr(vast, "_POLL_SECONDS", 5.0)
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(tmp_path, rent_pool_size=1, server_ready_timeout=60),
+        provider=provider,
+        sleep=sleep,
+        clock=clock,
+    )
+
+    with pytest.raises(RentError, match="годного сервера"):
+        session._rent(provider)
+
+    records = [record for record in log_records if "Попытка аренды c1" in record["message"]]
+    assert records
+    assert "хост не выдал IP/порт" in records[0]["message"]
+    assert state[0] >= 60
+
+
+def test_rent_reports_the_reasons_of_every_verified_pass(tmp_path: Path, monkeypatch) -> None:
+    provider = _RefillProvider(searches=[["1"], []])
+    state, clock, sleep = _clock_pair()
+    monkeypatch.setattr(vast, "_POLL_SECONDS", 5.0)
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(tmp_path, rent_pool_size=1, server_ready_timeout=60),
+        provider=provider,
+        sleep=sleep,
+        clock=clock,
+    )
+
+    with pytest.raises(RentError) as caught:
+        session._rent(provider)
+
+    text = str(caught.value)
+    assert "хост не выдал IP/порт" in text
+    assert "рынок Vast.ai не дал офферов" in text
+    assert state[0] >= 60
 
 
 def test_rent_does_not_try_the_next_verified_pass_after_a_fatal_error(
@@ -1343,11 +1420,48 @@ def test_pool_ends_the_pass_when_failed_attempts_find_no_fresh_offers(
         clock=clock,
     )
 
-    with pytest.raises(RentError, match="годного сервера"):
-        session._rent(provider)
+    with pytest.raises(RentError):
+        session._rent_pool(provider, True, set(), set())
 
     assert provider.created == []
-    assert state[0] == 10.0
+    assert len(provider.queries) == 2
+    assert 10.0 <= state[0] < 20.0
+    assert session._contracts == set()
+
+
+def test_pool_destroys_rented_servers_when_the_refresh_search_raises(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls = 0
+
+    def search(query: dict[str, Any]) -> list[dict[str, Any]]:
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise RentError("Vast.ai вернул не-JSON при поиске офферов")
+        return [{"id": "1"}]
+
+    provider = _RefillProvider(ready="")
+    provider.search_offers = search  # type: ignore[method-assign]
+    state, clock, sleep = _refill_clock(monkeypatch)
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(
+            tmp_path,
+            rent_pool_size=2,
+            offer_refresh_seconds=10,
+            server_ready_timeout=60,
+        ),
+        provider=provider,
+        sleep=sleep,
+        clock=clock,
+    )
+
+    with pytest.raises(RentError, match="не-JSON"):
+        session._rent_pool(provider, True, set(), set())
+
+    assert [config["offer_id"] for config in provider.created] == ["1"]
+    assert provider.destroyed == ["c1"]
     assert session._contracts == set()
 
 
