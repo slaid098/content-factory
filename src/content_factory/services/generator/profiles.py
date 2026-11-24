@@ -19,8 +19,12 @@ from typing import Any
 
 import yaml
 
-from content_factory.constants import LANGUAGE_CODE_RE, NICHE_CODE_RE
 from content_factory.exceptions.generator import ProfileError
+from content_factory.utils.profiles import (
+    read_profile_language,
+    read_profile_niche,
+    read_profile_positive_int,
+)
 
 _SHARED_DIR = "_shared"
 _FONTS_DIR = "fonts"
@@ -163,15 +167,15 @@ def load_profile(name: str, root: Path) -> _Profile:
     profile_name = _profile_name(directory, root)
     profile = _Profile(
         name=profile_name,
-        language=_language(data, name),
-        niche=_niche(data, profile_name, name),
+        language=read_profile_language(data, name),
+        niche=read_profile_niche(data, name, profile_name.split("/", 1)[0]),
         dir=directory,
-        count=_positive_int(data, "count", name),
-        width=_positive_int(data, "width", name),
-        height=_positive_int(data, "height", name),
-        frames=_positive_int(data, "frames", name),
+        count=read_profile_positive_int(data, "count", name),
+        width=read_profile_positive_int(data, "width", name),
+        height=read_profile_positive_int(data, "height", name),
+        frames=read_profile_positive_int(data, "frames", name),
         frames_jitter=_non_negative_int(data, "frames_jitter", name),
-        fps=_positive_int(data, "fps", name),
+        fps=read_profile_positive_int(data, "fps", name),
         image=_string(data, "image", name),
         gpu=_string(data, "gpu", name),
         max_cost=_positive_float(data, "max_cost", name),
@@ -274,22 +278,6 @@ def _profile_name(directory: Path, root: Path) -> str:
         return directory.relative_to(root).as_posix()
     except ValueError:
         return directory.name
-
-
-def _language(data: Mapping[str, Any], name: str) -> str:
-    """Return a validated language code; ``ru`` is the default."""
-    value = str(data.get("language") or "ru").strip()
-    if LANGUAGE_CODE_RE.fullmatch(value) is None:
-        raise ProfileError(f"в профиле {name} недопустимый язык: {value!r}")
-    return value
-
-
-def _niche(data: Mapping[str, Any], profile_name: str, name: str) -> str:
-    """Return a validated niche; an empty value falls back to the category."""
-    value = str(data.get("niche") or "").strip() or profile_name.split("/", 1)[0]
-    if NICHE_CODE_RE.fullmatch(value) is None:
-        raise ProfileError(f"в профиле {name} недопустимая ниша: {value!r}")
-    return value
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -421,17 +409,6 @@ def _string(data: Mapping[str, Any], key: str, name: str) -> str:
     value = str(data.get(key) or "").strip()
     if not value:
         raise ProfileError(f"в профиле {name} пустой ключ {key}")
-    return value
-
-
-def _positive_int(data: Mapping[str, Any], key: str, name: str) -> int:
-    """Required positive integer value."""
-    try:
-        value = int(data.get(key, 0))
-    except (TypeError, ValueError) as ex:
-        raise ProfileError(f"в профиле {name} {key} должен быть числом") from ex
-    if value <= 0:
-        raise ProfileError(f"в профиле {name} {key} должен быть больше нуля")
     return value
 
 

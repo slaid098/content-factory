@@ -29,6 +29,7 @@ from content_factory.schemas.config.runtime import (
     DeliveryConfig,
     DownloadConfig,
     FilterConfig,
+    GeneratorConfig,
     LanguageConfig,
     RunConfig,
     RuntimeConfig,
@@ -413,6 +414,7 @@ def test_build_supplier_config_merges_env_runtime_and_paths(tmp_path: Path) -> N
         captcha=CaptchaConfig(streak=3, pause=1800.0, long_pause=21600.0),
         alerts=AlertsConfig(cooldown=3600.0),
         languages={"ru": LanguageConfig(enabled=True, stock_target=100)},
+        generator=GeneratorConfig(target=20, refill_at=2),
         delivery=DeliveryConfig(max_count=100),
     )
 

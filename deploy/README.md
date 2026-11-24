@@ -580,12 +580,24 @@ sudo docker compose run --rm --no-deps worker prefect deployment ls
 sudo docker compose logs -f worker
 ```
 
-`prefect.yaml` задаёт два deployment: `stock_topup` с cron `*/15 * * * *` и
-`titles` с cron `*/10 * * * *`. Оба используют pool `content-factory`, шаг
+`prefect.yaml` задаёт четыре deployment: `stock_topup` с cron `*/15 * * * *`,
+`titles` с cron `*/10 * * * *`, `profile_refill` с cron `*/15 * * * *` и
+`generate_batch` без расписания. Все используют pool `content-factory`, шаг
 `set_working_directory` на `/app`, где в образе лежат `src/` и `prefect.yaml`;
 deployment не зависит от текущего каталога процесса. Cron `stock_topup` — это
 тик планировщика; решение о производстве принимает сам flow по
 `config.run.interval`, поэтому холостые тики выходят сразу.
+
+`profile_refill` — такой же тик планировщика. Он смотрит на профили
+генератора и запускает `generate_batch` для первого по id профиля, у которого
+остаток не выше порога. По умолчанию все профили выключены
+(`refill_enabled = 0` в таблице `profile_settings`), поэтому тик ничего не
+запускает и денег не тратит. Глобальные цель и порог задают
+`generator.target` и `generator.refill_at` в `app_data/config/config.yaml`
+(по умолчанию `20` и `2`); профиль может переопределить оба числа. Включение
+добора стоит денег: каждый запуск `generate_batch` арендует сервер Vast.ai.
+API и страница управления профилями появятся в следующей задаче; до неё
+включать добор на сервере не нужно.
 
 Одновременность ограничена на двух уровнях:
 

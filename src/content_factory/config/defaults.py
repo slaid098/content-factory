@@ -16,6 +16,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "download": {"workers": 2, "pause": "10s"},
     "captcha": {"streak": 3, "pause": "2h", "long_pause": "6h"},
     "alerts": {"cooldown": "6h"},
+    "generator": {"target": 20, "refill_at": 2},
     "delivery": {"max_count": 100},
     "languages": {
         "ru": {"enabled": True, "stock_target": 150},
@@ -65,6 +66,12 @@ captcha:
 alerts:
   # Минимальный интервал между одинаковыми алертами.
   cooldown: "6h"
+
+generator:
+  # Цель по стоку на один профиль генератора, видео.
+  target: 20
+  # Остаток, при котором запускается добор профиля.
+  refill_at: 2
 
 delivery:
   # Максимум видео в одном архиве ручной выдачи.

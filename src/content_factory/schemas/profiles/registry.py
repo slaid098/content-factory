@@ -1,0 +1,28 @@
+"""One generator profile as the registry sees it."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileInfo:
+    """Profile fields needed to plan production and count its stock.
+
+    The registry reads only ``profile.yaml``; prompts, fonts and appearance
+    cards are validated later by the generator itself.
+    """
+
+    id: str
+    category: str
+    name: str
+    language: str
+    niche: str
+    width: int
+    height: int
+    audio: bool
+    dir: Path
+
+
+__all__ = ["ProfileInfo"]
