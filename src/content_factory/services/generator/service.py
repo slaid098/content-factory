@@ -27,7 +27,7 @@ from content_factory.schemas.generator.run import (
     RunTotals,
 )
 from content_factory.schemas.generator.server import ServerConnection, ServerInfo
-from content_factory.services.generator import comfy, media, overlay, profiles, qa, texts
+from content_factory.services.generator import comfy, media, overlay, profiles, qa, rotation, texts
 from content_factory.services.generator.plan import _PlannedItem, plan_batch, validate_count
 from content_factory.services.generator.profiles import _Profile, load_profile
 from content_factory.services.generator.vast import VastSession
@@ -119,7 +119,7 @@ def generate_batch(
     loaded = [load_profile(name, root) for name in names]
     started = now or datetime.now(UTC)
     run_id = _choose_run_id(config.output_dir, loaded, started)
-    prepared = [(profile, plan_batch(profile, count, run_id, rng=randomizer)) for profile in loaded]
+    prepared = _prepare(config, loaded, count, run_id, randomizer)
     if not dry_run:
         media.ensure_free_space(config.output_dir)
     run_dirs: list[Path] = []
@@ -154,6 +154,29 @@ def generate_batch(
         failed=failed,
         dry_run=dry_run,
     )
+
+
+def _prepare(
+    config: GeneratorSettings,
+    loaded: list[_Profile],
+    count: int,
+    run_id: str,
+    randomizer: random.Random,
+) -> list[tuple[_Profile, tuple[_PlannedItem, ...]]]:
+    """Read the rotation cursor of every profile and build its batch plan."""
+    return [
+        (
+            profile,
+            plan_batch(
+                profile,
+                count,
+                run_id,
+                rng=randomizer,
+                start_after=rotation.read_cursor(_cursor_path(config.output_dir, profile)),
+            ),
+        )
+        for profile in loaded
+    ]
 
 
 def _produce_safely(
@@ -259,6 +282,7 @@ def _postprocess(
                 "Постобработка ролика не удалась"
             )
         else:
+            _advance_cursor(settings.output_dir, profile, item, report.run_id)
             logger.bind(file=item.file, duration=item.duration).info("Ролик готов")
         _write_report(run_dir, report)
     for item in report.items:
@@ -266,6 +290,24 @@ def _postprocess(
             item.status = RunStatus.FAILED
             item.error = item.error or "результат не получен"
     _write_report(run_dir, report)
+
+
+def _advance_cursor(output_dir: Path, profile: _Profile, item: RunItem, run_id: str) -> None:
+    """Move the rotation cursor after a finished video without failing it."""
+    try:
+        rotation.advance_cursor(
+            _cursor_path(output_dir, profile),
+            item.look_id,
+            run_id,
+            datetime.now(UTC),
+        )
+    except OSError as ex:
+        logger.bind(
+            profile=profile.name,
+            look_id=item.look_id,
+            error=str(ex),
+            error_type=type(ex).__name__,
+        ).warning("Курсор карточек не обновлён — следующий прогон может повторить карточку")
 
 
 def _finish_item(
@@ -404,6 +446,11 @@ def _status(generated: int, failed: int) -> str:
 def _slug(profile: _Profile) -> str:
     """Return the profile directory name used in output paths."""
     return profile.name.replace("/", "_")
+
+
+def _cursor_path(output_dir: Path, profile: _Profile) -> Path:
+    """Return the rotation cursor path of one ``language + profile`` pair."""
+    return output_dir / profile.language / _slug(profile) / rotation.ROTATION_FILENAME
 
 
 __all__ = ["generate_batch"]

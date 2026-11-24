@@ -99,6 +99,34 @@ def _fake_postprocess(monkeypatch, events: list[str]) -> None:
     monkeypatch.setattr(qa, "check_video", check)
 
 
+def _cursor_path(tmp_path: Path) -> Path:
+    return tmp_path / "generated" / "ru" / "dating_profile_2" / "rotation.json"
+
+
+def _run_batch(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    count: int = 1,
+    fail_first: bool = False,
+) -> service._BatchResult:
+    events: list[str] = []
+    session = FakeSession(events)
+    _fake_postprocess(monkeypatch, events)
+    return service.generate_batch(
+        profiles="dating/profile_2",
+        count=count,
+        data_dir=tmp_path,
+        settings=_settings(tmp_path),
+        session_factory=lambda profile, settings: session,
+        client_factory=lambda connection: _Transport(events, fail_first=fail_first),
+        text_writer=_Writer(events),
+        store=lambda path, content: path.write_bytes(content),
+        rng=random.Random(1),
+        now=_NOW,
+    )
+
+
 def test_dry_run_writes_report_without_network(tmp_path: Path) -> None:
     fixture_profile(tmp_path / "profiles")
 
@@ -276,3 +304,62 @@ def test_non_positive_count_happens_before_rent(tmp_path: Path) -> None:
             session_factory=fail,
             now=_NOW,
         )
+
+
+def test_dry_run_does_not_create_the_rotation_cursor(tmp_path: Path) -> None:
+    fixture_profile(tmp_path / "profiles")
+
+    service.generate_batch(
+        profiles="dating/profile_2",
+        count=2,
+        dry_run=True,
+        data_dir=tmp_path,
+        settings=_settings(tmp_path),
+        rng=random.Random(1),
+        now=_NOW,
+    )
+
+    assert not _cursor_path(tmp_path).exists()
+
+
+def test_done_video_moves_the_cursor_to_its_card(tmp_path: Path, monkeypatch) -> None:
+    fixture_profile(tmp_path / "profiles")
+
+    _run_batch(tmp_path, monkeypatch)
+
+    cursor = json.loads(_cursor_path(tmp_path).read_text(encoding="utf-8"))
+    assert cursor["last_look_id"] == "c01"
+    assert cursor["run_id"] == _RUN_ID
+
+
+def test_failed_video_keeps_the_previous_cursor(tmp_path: Path, monkeypatch) -> None:
+    fixture_profile(tmp_path / "profiles")
+    path = _cursor_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "last_look_id": "c01",
+                "run_id": "old-run",
+                "updated_at": "2025-12-31T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_batch(tmp_path, monkeypatch, fail_first=True)
+
+    assert result.failed == 1
+    cursor = json.loads(path.read_text(encoding="utf-8"))
+    assert cursor["last_look_id"] == "c01"
+    assert cursor["run_id"] == "old-run"
+
+
+def test_next_batch_starts_after_the_cursor(tmp_path: Path, monkeypatch) -> None:
+    fixture_profile(tmp_path / "profiles")
+    _run_batch(tmp_path, monkeypatch)
+
+    second = _run_batch(tmp_path, monkeypatch, count=2)
+
+    report = json.loads((second.run_dirs[0] / "run.json").read_text(encoding="utf-8"))
+    assert [item["look_id"] for item in report["items"]] == ["c02", "c03"]
