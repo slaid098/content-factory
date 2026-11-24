@@ -9,6 +9,7 @@ live in ``<profiles>/_shared``.
 from __future__ import annotations
 
 import json
+import math
 import random
 import re
 from collections.abc import Mapping
@@ -26,6 +27,7 @@ _WORKFLOWS_DIR = "workflows"
 _DEFAULT_WORKFLOW = "video_gen_workflow.json"
 _SUPPORTED_RENDERERS = ("default",)
 _AUDIO_SUFFIXES = (".mp3", ".wav")
+_DEFAULT_MAX_TEXT_WIDTH = 0.86
 
 _REQUIRED_KEYS = ("count", "width", "height", "frames", "fps", "image", "gpu", "max_cost")
 _SPIN = re.compile(r"\{([^{}|]+(?:\|[^{}]+)+)\}")
@@ -58,6 +60,8 @@ class _OverlayStyle:
     block1_y: float = 0.62
     block2_y: float | None = None
     gap: float = 0.05
+    hug_text: bool = False
+    max_text_width: float = _DEFAULT_MAX_TEXT_WIDTH
     text_color: str = "#000000"
     text_bg_color: str = "#FFFFFF"
     text_bg_alpha: int = 255
@@ -335,11 +339,21 @@ def _resolve_font(directory: Path, name: str, root: Path) -> Path:
 
 def _overlay_style(data: Mapping[str, Any]) -> _OverlayStyle:
     """Build overlay geometry and colours from the profile values."""
+    max_text_width = _float_or(
+        data.get("max_text_width"), _DEFAULT_MAX_TEXT_WIDTH, "max_text_width"
+    )
+    if not 0.2 <= max_text_width <= 0.9:
+        raise ProfileError(f"max_text_width должен быть в диапазоне 0.2..0.9: {max_text_width}")
+    gap = _float_or(data.get("gap"), 0.05, "gap")
+    if not 0 <= gap <= 1:
+        raise ProfileError(f"gap должен быть в диапазоне 0..1: {gap}")
     return _OverlayStyle(
-        font_size=_float_or(data.get("size"), 0.06),
-        block1_y=_float_or(data.get("block1_y"), 0.62),
+        font_size=_float_or(data.get("size"), 0.06, "size"),
+        block1_y=_float_or(data.get("block1_y"), 0.62, "block1_y"),
         block2_y=_optional_number(data.get("block2_y")),
-        gap=_float_or(data.get("gap"), 0.05),
+        gap=gap,
+        hug_text=_bool_or(data.get("hug_text"), False, "hug_text"),
+        max_text_width=max_text_width,
         text_color=str(data.get("text_color") or "#000000"),
         text_bg_color=str(data.get("text_bg_color") or "#FFFFFF"),
         text_bg_alpha=_alpha(data.get("text_bg_alpha")),
@@ -452,7 +466,12 @@ def _optional_str(value: object) -> str | None:
 
 def _optional_int(value: object) -> int | None:
     """Optional integer."""
-    return None if value is None else int(str(value))
+    if value is None:
+        return None
+    try:
+        return int(str(value))
+    except (TypeError, ValueError) as ex:
+        raise ProfileError(f"ожидалось целое число, получено {value!r}") from ex
 
 
 def _optional_number(value: object) -> float | None:
@@ -460,9 +479,12 @@ def _optional_number(value: object) -> float | None:
     if value is None:
         return None
     try:
-        return float(str(value))
+        number = float(str(value))
     except (TypeError, ValueError) as ex:
         raise ProfileError(f"ожидалось число, получено {value!r}") from ex
+    if not math.isfinite(number):
+        raise ProfileError(f"ожидалось конечное число, получено {value!r}")
+    return number
 
 
 def _alpha(value: object) -> int:
@@ -475,6 +497,23 @@ def _alpha(value: object) -> int:
         raise ProfileError(f"ожидалась непрозрачность 0..255, получено {value!r}") from ex
 
 
-def _float_or(value: object, default: float) -> float:
-    """Float value or *default* when absent."""
-    return default if value is None else float(str(value))
+def _float_or(value: object, default: float, key: str) -> float:
+    """Float value or *default* when absent; a bad value names its key."""
+    if value is None:
+        return default
+    try:
+        number = float(str(value))
+    except (TypeError, ValueError) as ex:
+        raise ProfileError(f"{key} должен быть числом: {value!r}") from ex
+    if not math.isfinite(number):
+        raise ProfileError(f"{key} должен быть конечным числом: {value!r}")
+    return number
+
+
+def _bool_or(value: object, default: bool, key: str) -> bool:
+    """Strict boolean value or *default* when absent."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    raise ProfileError(f"{key} должен быть true или false: {value!r}")

@@ -19,7 +19,7 @@ def _patch_font(monkeypatch) -> None:
     monkeypatch.setattr(
         overlay_module,
         "_load_font",
-        lambda path, size: ImageFont.load_default(),
+        lambda path, size: ImageFont.load_default(size=size),
     )
 
 
@@ -163,3 +163,142 @@ def test_blocks_without_text_are_skipped(tmp_path: Path, monkeypatch) -> None:
     card = _Overlay(blocks=(_TextBlock(lines=("   ",)),))
 
     assert block_boxes(profile, card) == ()
+
+
+def test_hug_text_card_is_as_wide_as_the_text(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+    profile = replace(profile, style=replace(profile.style, hug_text=True))
+    _patch_font(monkeypatch)
+    card = _Overlay(blocks=(_TextBlock(lines=("Коротко", "Подлиннее строка")),))
+
+    boxes = block_boxes(profile, card)
+
+    font = ImageFont.load_default(size=boxes[0].font_px)
+    pad_x = max(10, int(profile.width * 0.028))
+    expected = max(int(font.getlength(line)) for line in boxes[0].lines) + 2 * pad_x
+    assert boxes[0].width == expected
+    assert boxes[0].left == (profile.width - expected) // 2
+    assert boxes[0].left + boxes[0].width <= profile.width
+
+
+def test_hug_text_wraps_at_profile_text_width(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+    profile = replace(profile, style=replace(profile.style, hug_text=True, max_text_width=0.25))
+    _patch_font(monkeypatch)
+    card = _Overlay(
+        blocks=(_TextBlock(lines=("one two three four five six seven eight nine ten",)),)
+    )
+
+    boxes = block_boxes(profile, card)
+
+    font = ImageFont.load_default(size=boxes[0].font_px)
+    limit = int(profile.width * profile.style.max_text_width)
+    assert len(boxes[0].lines) > 1
+    assert all(font.getlength(line) <= limit for line in boxes[0].lines)
+
+
+def test_hug_text_breaks_a_word_wider_than_the_text_limit(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+    profile = replace(profile, style=replace(profile.style, hug_text=True, max_text_width=0.2))
+    _patch_font(monkeypatch)
+    card = _Overlay(blocks=(_TextBlock(lines=("x" * 20,)),))
+
+    boxes = block_boxes(profile, card)
+
+    assert len(boxes[0].lines) > 1
+    assert boxes[0].left >= 0
+    assert boxes[0].left + boxes[0].width <= profile.width
+
+
+def test_hug_font_below_twenty_pixels_is_kept(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles", hug_text=True)
+    profile = replace(profile, style=replace(profile.style, font_size=0.038))
+    _patch_font(monkeypatch)
+    card = _Overlay(blocks=(_TextBlock(lines=("Текст",)),))
+
+    boxes = block_boxes(profile, card)
+
+    assert boxes[0].font_px == 19
+
+
+def test_hug_font_floor_is_twelve_pixels(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles", hug_text=True)
+    profile = replace(profile, style=replace(profile.style, font_size=0.02))
+    _patch_font(monkeypatch)
+    card = _Overlay(blocks=(_TextBlock(lines=("Текст",)),))
+
+    boxes = block_boxes(profile, card)
+
+    assert boxes[0].font_px == 12
+
+
+def test_full_width_profile_keeps_the_twenty_pixel_floor(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+    profile = replace(profile, style=replace(profile.style, font_size=0.038))
+    _patch_font(monkeypatch)
+    card = _Overlay(blocks=(_TextBlock(lines=("Текст",)),))
+
+    boxes = block_boxes(profile, card)
+
+    assert boxes[0].font_px == 20
+
+
+def test_full_width_card_keeps_its_geometry(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+    _patch_font(monkeypatch)
+    card = _Overlay(blocks=(_TextBlock(lines=("Текст",)),))
+
+    boxes = block_boxes(profile, card)
+
+    box = boxes[0]
+    pad_x = int(profile.width * 0.04)
+    assert box.left == pad_x
+    assert box.width == profile.width - 2 * pad_x
+    assert box.font_px == 30
+    assert box.height == int(30 * 1.28) + 2 * (30 // 3)
+
+
+def test_hug_text_blocks_stack_with_profile_gap(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles", hug_text=True)
+    _patch_font(monkeypatch)
+    card = _Overlay(blocks=(_TextBlock(lines=("Первый",)), _TextBlock(lines=("Второй",))))
+
+    boxes = block_boxes(profile, card)
+
+    gap = int(profile.style.gap * profile.height)
+    assert boxes[1].top == boxes[0].top + boxes[0].height + gap
+
+
+def test_hug_text_ignores_an_empty_first_block(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles", hug_text=True)
+    _patch_font(monkeypatch)
+    card = _Overlay(blocks=(_TextBlock(lines=("   ",)), _TextBlock(lines=("Второй",))))
+
+    boxes = block_boxes(profile, card)
+
+    assert len(boxes) == 1
+    assert abs(boxes[0].top + boxes[0].height / 2 - profile.style.block1_y * profile.height) <= 1
+    assert boxes[0].background == (255, 241, 220, 215)
+
+
+def test_hug_text_stack_moves_up_to_fit_the_frame(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles", hug_text=True)
+    profile = replace(profile, style=replace(profile.style, block1_y=0.95))
+    _patch_font(monkeypatch)
+    card = _Overlay(blocks=(_TextBlock(lines=("Первый",)), _TextBlock(lines=("Второй",))))
+
+    boxes = block_boxes(profile, card)
+
+    gap = int(profile.style.gap * profile.height)
+    assert boxes[1].top == boxes[0].top + boxes[0].height + gap
+    assert boxes[-1].top + boxes[-1].height == profile.height
+
+
+def test_hug_text_stack_taller_than_the_frame_is_reported(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles", hug_text=True)
+    profile = replace(profile, style=replace(profile.style, max_text_width=0.2))
+    _patch_font(monkeypatch)
+    card = _Overlay(blocks=(_TextBlock(lines=(" ".join(["слово"] * 200),)),))
+
+    with pytest.raises(OverlayError, match="не помещается"):
+        block_boxes(profile, card)
