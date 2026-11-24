@@ -12,7 +12,7 @@ import httpx
 import pytest
 from tests.unit.generator.helpers import fixture_profile
 
-from content_factory.exceptions.generator import ComfyError
+from content_factory.exceptions.generator import ComfyError, SafetyError
 from content_factory.schemas.generator.server import ServerConnection
 from content_factory.services.generator import comfy, media
 from content_factory.services.generator.comfy import (
@@ -408,3 +408,124 @@ def test_store_video_strips_model_audio_and_drops_the_raw_file(tmp_path: Path, m
 
     assert target.read_bytes() == b"clean"
     assert not (tmp_path / "video.mp4.raw").exists()
+
+
+def test_verify_rejection_regenerates_the_item_with_the_next_attempt(tmp_path: Path) -> None:
+    transport = _Transport()
+    items = _items(tmp_path, count=1)
+    seen: list[int] = []
+
+    def verify(item: _PlannedItem, path: Path, attempt: int) -> str | None:
+        assert item.seq == 1
+        assert path.is_file()
+        seen.append(attempt)
+        return "спина" if attempt == 1 else None
+
+    results = run_jobs(
+        transport,
+        items,
+        _build,
+        tmp_path / "source",
+        store=lambda path, content: path.write_bytes(content),
+        verify=verify,
+        safety_frame_attempts=2,
+    )
+
+    assert seen == [1, 2]
+    assert len(transport.submitted) == 2
+    assert results[0].path is not None
+
+
+def test_second_verify_rejection_fails_with_its_reason(tmp_path: Path) -> None:
+    transport = _Transport()
+    items = _items(tmp_path, count=1)
+    calls: list[int] = []
+
+    def verify(item: _PlannedItem, path: Path, attempt: int) -> str | None:
+        del item, path
+        calls.append(attempt)
+        return "спина"
+
+    results = run_jobs(
+        transport,
+        items,
+        _build,
+        tmp_path / "source",
+        store=lambda path, content: path.write_bytes(content),
+        verify=verify,
+        safety_frame_attempts=2,
+    )
+
+    assert calls == [1, 2]
+    assert len(transport.submitted) == 2
+    assert results[0].path is None
+    assert results[0].error == "спина"
+
+
+def test_verify_error_fails_closed_without_regeneration(tmp_path: Path) -> None:
+    transport = _Transport()
+    items = _items(tmp_path, count=1)
+
+    def verify(item: _PlannedItem, path: Path, attempt: int) -> str | None:
+        del item, path, attempt
+        raise SafetyError("Clef недоступен")
+
+    results = run_jobs(
+        transport,
+        items,
+        _build,
+        tmp_path / "source",
+        store=lambda path, content: path.write_bytes(content),
+        verify=verify,
+        safety_frame_attempts=2,
+    )
+
+    assert len(transport.submitted) == 1
+    assert results[0].path is None
+    assert "Clef недоступен" in (results[0].error or "")
+    assert not (tmp_path / "source" / items[0].filename).exists()
+
+
+def test_verify_rejection_at_the_last_allowed_attempt_fails_immediately(tmp_path: Path) -> None:
+    transport = _Transport()
+    items = _items(tmp_path, count=1)
+
+    results = run_jobs(
+        transport,
+        items,
+        _build,
+        tmp_path / "source",
+        store=lambda path, content: path.write_bytes(content),
+        verify=lambda item, path, attempt: "спина",
+        safety_frame_attempts=1,
+    )
+
+    assert len(transport.submitted) == 1
+    assert results[0].error == "спина"
+
+
+def test_comfy_failure_does_not_spend_the_safety_regeneration(tmp_path: Path) -> None:
+    transport = _Transport(empty_downloads=1)
+    items = _items(tmp_path, count=1)
+    seen: list[int] = []
+
+    def verify(item: _PlannedItem, path: Path, attempt: int) -> str | None:
+        del item
+        assert path.is_file()
+        seen.append(attempt)
+        return "спина" if len(seen) == 1 else None
+
+    results = run_jobs(
+        transport,
+        items,
+        _build,
+        tmp_path / "source",
+        store=lambda path, content: path.write_bytes(content),
+        verify=verify,
+        safety_frame_attempts=2,
+        attempts=3,
+    )
+
+    assert seen == [2, 3]
+    assert len(transport.submitted) == 3
+    assert results[0].path is not None

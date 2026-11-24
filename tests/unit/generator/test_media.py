@@ -191,3 +191,67 @@ def test_capture_maps_start_and_timeout_errors(monkeypatch) -> None:
 
     monkeypatch.setattr(media.subprocess, "run", broken)
     assert _capture(["ffprobe"], 1.0) is None
+
+
+def _completed_bytes(
+    returncode: int = 0, stdout: bytes = b"", stderr: bytes = b""
+) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.CompletedProcess(["ffmpeg"], returncode, stdout=stdout, stderr=stderr)
+
+
+def test_frame_png_builds_the_ffmpeg_command(tmp_path: Path, monkeypatch) -> None:
+    commands: list[list[str]] = []
+
+    def capture(command: list[str], timeout: float) -> subprocess.CompletedProcess[bytes]:
+        del timeout
+        commands.append(command)
+        return _completed_bytes(stdout=b"png")
+
+    monkeypatch.setattr(media, "_capture_bytes", capture)
+
+    assert media.frame_png(tmp_path / "in.mp4", 1.234) == b"png"
+    assert commands[0][:7] == [
+        "ffmpeg",
+        "-ss",
+        "1.234",
+        "-i",
+        str(tmp_path / "in.mp4"),
+        "-frames:v",
+        "1",
+    ]
+    assert commands[0][-5:] == ["-f", "image2pipe", "-vcodec", "png", "-"]
+
+
+def test_frame_png_clamps_negative_time_and_fails_closed(tmp_path: Path, monkeypatch) -> None:
+    seen: list[str] = []
+
+    def capture(command: list[str], timeout: float) -> subprocess.CompletedProcess[bytes]:
+        del timeout
+        seen.append(command[2])
+        return _completed_bytes(stdout=b"png")
+
+    monkeypatch.setattr(media, "_capture_bytes", capture)
+
+    media.frame_png(tmp_path / "in.mp4", -1.0)
+
+    assert seen == ["0.000"]
+
+    monkeypatch.setattr(media, "_capture_bytes", lambda command, timeout: None)
+    with pytest.raises(GeneratorError, match="не запустился"):
+        media.frame_png(tmp_path / "in.mp4", 1.0)
+
+    monkeypatch.setattr(
+        media,
+        "_capture_bytes",
+        lambda command, timeout: _completed_bytes(1, stderr=b"x" * 500 + b" tail"),
+    )
+    with pytest.raises(GeneratorError, match="кодом 1: .*tail"):
+        media.frame_png(tmp_path / "in.mp4", 1.0)
+
+    monkeypatch.setattr(
+        media,
+        "_capture_bytes",
+        lambda command, timeout: _completed_bytes(stdout=b""),
+    )
+    with pytest.raises(GeneratorError, match="не вытащил"):
+        media.frame_png(tmp_path / "in.mp4", 1.0)

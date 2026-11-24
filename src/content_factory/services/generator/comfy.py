@@ -166,6 +166,8 @@ def run_jobs(
     *,
     store: Callable[[Path, bytes], None] | None = None,
     attempts: int = _MAX_ATTEMPTS,
+    verify: Callable[[_PlannedItem, Path, int], str | None] | None = None,
+    safety_frame_attempts: int = 2,
     poll_interval: float = _HISTORY_POLL,
     job_timeout: float = _JOB_TIMEOUT,
     sleep: Callable[[float], None] = time.sleep,
@@ -176,7 +178,9 @@ def run_jobs(
     At most two prompts are queued in ComfyUI: one runs and one waits. When
     a result is ready, the next prompt is submitted before the finished file
     is downloaded. A failed job is retried on the same server up to
-    *attempts* times.
+    *attempts* times. When *verify* rejects a saved source, the item goes
+    back into the queue with the next attempt and a new workflow seed; after
+    *safety_frame_attempts* rejections the video fails with the reason.
 
     Args:
         client: ComfyUI client.
@@ -184,7 +188,9 @@ def run_jobs(
         build: Workflow builder called with the item and the attempt number.
         directory: Directory that receives downloaded silent sources.
         store: Saver of the downloaded bytes; defaults to the ffmpeg cut.
-        attempts: Attempts per video before it fails.
+        attempts: ComfyUI attempts per video before it fails.
+        verify: Safety check of a saved source; returns a defect reason.
+        safety_frame_attempts: Safety attempts per video before it fails.
         poll_interval: Seconds between history polls.
         job_timeout: Seconds a prompt may stay without a result.
         sleep: Pause function; tests replace it to stay fast.
@@ -195,24 +201,54 @@ def run_jobs(
     """
     directory.mkdir(parents=True, exist_ok=True)
     saver = store or _store_video
-    queue: deque[tuple[_PlannedItem, int]] = deque((item, 1) for item in items)
-    running: dict[str, _Running] = {}
-    finished: dict[int, _JobResult] = {}
-    while queue or running:
-        _fill(client, build, queue, running, finished, attempts, clock)
-        if not running:
+    state = _BatchState(
+        queue=deque((item, 1) for item in items),
+        running={},
+        finished={},
+        comfy_failures={},
+        safety_rejections={},
+    )
+    while state.queue or state.running:
+        _fill(client, build, state, attempts, clock)
+        if not state.running:
             continue
-        ready = _ready(client, running)
+        ready = _ready(client, state.running)
         if ready is None:
-            _expire(client, build, queue, running, finished, attempts, job_timeout, clock)
-            if running:
+            _expire(client, build, state, attempts, job_timeout, clock)
+            if state.running:
                 sleep(poll_interval)
             continue
         prompt_id, history = ready
-        job = running.pop(prompt_id)
-        _fill(client, build, queue, running, finished, attempts, clock)
-        _download(client, history, job, directory, saver, queue, finished, attempts)
-    return tuple(finished[index] for index in sorted(finished))
+        job = state.running.pop(prompt_id)
+        _fill(client, build, state, attempts, clock)
+        _download(
+            client,
+            history,
+            job,
+            directory,
+            saver,
+            state,
+            attempts,
+            verify,
+            safety_frame_attempts,
+        )
+    return tuple(state.finished[index] for index in sorted(state.finished))
+
+
+@dataclass(slots=True)
+class _BatchState:
+    """Mutable queue and independent failure counters of one ``run_jobs`` call.
+
+    ``attempt`` in the queue is the generation number that picks the seed and
+    grows on any requeue. Comfy failures and safety rejections are counted
+    separately, so one kind of retry never spends the budget of the other.
+    """
+
+    queue: deque[tuple[_PlannedItem, int]]
+    running: dict[str, _Running]
+    finished: dict[int, _JobResult]
+    comfy_failures: dict[int, int]
+    safety_rejections: dict[int, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,21 +263,19 @@ class _Running:
 def _fill(
     client: _ComfyTransport,
     build: Callable[[_PlannedItem, int], dict[str, Any]],
-    queue: deque[tuple[_PlannedItem, int]],
-    running: dict[str, _Running],
-    finished: dict[int, _JobResult],
+    state: _BatchState,
     attempts: int,
     clock: Callable[[], float],
 ) -> None:
     """Submit prompts until two are in flight or the queue is empty."""
-    while queue and len(running) < _MAX_IN_FLIGHT:
-        item, attempt = queue.popleft()
+    while state.queue and len(state.running) < _MAX_IN_FLIGHT:
+        item, attempt = state.queue.popleft()
         try:
             prompt_id = client.submit(build(item, attempt))
         except GeneratorError as ex:
-            _retry(item, attempt, ex, queue, finished, attempts, "постановка")
+            _retry(item, attempt, ex, state, attempts, "постановка")
             continue
-        running[prompt_id] = _Running(item=item, attempt=attempt, started=clock())
+        state.running[prompt_id] = _Running(item=item, attempt=attempt, started=clock())
 
 
 def _ready(
@@ -262,11 +296,12 @@ def _download(
     job: _Running,
     directory: Path,
     store: Callable[[Path, bytes], None],
-    queue: deque[tuple[_PlannedItem, int]],
-    finished: dict[int, _JobResult],
+    state: _BatchState,
     attempts: int,
+    verify: Callable[[_PlannedItem, Path, int], str | None] | None,
+    safety_frame_attempts: int,
 ) -> None:
-    """Download a ready result and save it, or retry the job."""
+    """Download a ready result, save it and run the safety check."""
     try:
         output = extract_output(history)
         content = client.download(output)
@@ -275,59 +310,109 @@ def _download(
         path = directory / job.item.filename
         store(path, content)
     except (GeneratorError, OSError) as ex:
-        _retry(job.item, job.attempt, ex, queue, finished, attempts, "скачивание")
+        _retry(job.item, job.attempt, ex, state, attempts, "скачивание")
         return
-    finished[job.item.seq] = _JobResult(item=job.item, path=path)
+    if verify is not None:
+        try:
+            reason = verify(job.item, path, job.attempt)
+        except (GeneratorError, OSError) as ex:
+            _remove_source(path)
+            logger.bind(
+                file=job.item.filename,
+                attempt=job.attempt,
+                error=str(ex),
+                error_type=type(ex).__name__,
+            ).error("Проверка кадров не удалась — ролик пропущен")
+            state.finished[job.item.seq] = _JobResult(item=job.item, error=str(ex))
+            return
+        if reason is not None:
+            _reject(job.item, job.attempt, reason, path, state, safety_frame_attempts)
+            return
+    state.finished[job.item.seq] = _JobResult(item=job.item, path=path)
     logger.bind(file=path.name, seed=job.item.seed).info("Исходник видео сохранён")
+
+
+def _reject(
+    item: _PlannedItem,
+    attempt: int,
+    reason: str,
+    path: Path,
+    state: _BatchState,
+    attempts: int,
+) -> None:
+    """Drop an unsafe source and count the safety rejection of the video."""
+    _remove_source(path)
+    rejections = state.safety_rejections.get(item.seq, 0) + 1
+    state.safety_rejections[item.seq] = rejections
+    if rejections < attempts:
+        logger.bind(file=item.filename, attempt=attempt, reason=reason).warning(
+            "Кадры не прошли проверку — перегенерация с новым seed"
+        )
+        state.queue.append((item, attempt + 1))
+        return
+    logger.bind(file=item.filename, attempts=rejections, reason=reason).error(
+        "Кадры не прошли проверку — ролик пропущен"
+    )
+    state.finished[item.seq] = _JobResult(item=item, error=reason)
+
+
+def _remove_source(path: Path) -> None:
+    """Delete a rejected source, tolerating an already removed file."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as ex:
+        logger.bind(path=str(path), error=str(ex), error_type=type(ex).__name__).warning(
+            "Брак кадра не удалён с диска"
+        )
 
 
 def _expire(
     client: _ComfyTransport,
     build: Callable[[_PlannedItem, int], dict[str, Any]],
-    queue: deque[tuple[_PlannedItem, int]],
-    running: dict[str, _Running],
-    finished: dict[int, _JobResult],
+    state: _BatchState,
     attempts: int,
     job_timeout: float,
     clock: Callable[[], float],
 ) -> None:
     """Move prompts without a result for *job_timeout* back to the queue."""
     now = clock()
-    for prompt_id, job in list(running.items()):
+    for prompt_id, job in list(state.running.items()):
         if now - job.started <= job_timeout:
             continue
-        del running[prompt_id]
+        del state.running[prompt_id]
         error = ComfyError(f"нет результата за {job_timeout:g} с")
-        _retry(job.item, job.attempt, error, queue, finished, attempts, "ожидание")
-        _fill(client, build, queue, running, finished, attempts, clock)
+        _retry(job.item, job.attempt, error, state, attempts, "ожидание")
+        _fill(client, build, state, attempts, clock)
 
 
 def _retry(
     item: _PlannedItem,
     attempt: int,
     error: Exception,
-    queue: deque[tuple[_PlannedItem, int]],
-    finished: dict[int, _JobResult],
+    state: _BatchState,
     attempts: int,
     stage: str,
 ) -> None:
-    """Requeue a failed job or record its final failure."""
-    if attempt < attempts:
+    """Count a Comfy failure and requeue the video or record its final failure."""
+    failures = state.comfy_failures.get(item.seq, 0) + 1
+    state.comfy_failures[item.seq] = failures
+    if failures < attempts:
         logger.bind(
             file=item.filename,
             attempt=attempt,
+            failures=failures,
             error=str(error),
             error_type=type(error).__name__,
         ).warning(f"Сбой на этапе «{stage}» — повтор")
-        queue.append((item, attempt + 1))
+        state.queue.append((item, attempt + 1))
         return
     logger.bind(
         file=item.filename,
-        attempts=attempt,
+        attempts=failures,
         error=str(error),
         error_type=type(error).__name__,
     ).error(f"Сбой на этапе «{stage}» — ролик пропущен")
-    finished[item.seq] = _JobResult(item=item, error=str(error))
+    state.finished[item.seq] = _JobResult(item=item, error=str(error))
 
 
 def _store_video(path: Path, content: bytes) -> None:

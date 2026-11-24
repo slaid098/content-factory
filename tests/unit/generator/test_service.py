@@ -12,9 +12,15 @@ import pytest
 from tests.unit.generator.helpers import FakeSession, fixture_profile, make_profile
 
 from content_factory.config.settings import GeneratorSettings
-from content_factory.exceptions.generator import GeneratorError, ProfileError, RentError
-from content_factory.services.generator import media, overlay, qa, service
+from content_factory.exceptions.generator import (
+    GeneratorError,
+    ProfileError,
+    RentError,
+    SafetyError,
+)
+from content_factory.services.generator import media, overlay, qa, safety, service
 from content_factory.services.generator.comfy import _OutputFile
+from content_factory.services.generator.plan import attempt_seed
 
 _NOW = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
 _RUN_ID = "20260101T000000Z"
@@ -29,11 +35,13 @@ class _Transport:
         self.closed = False
         self.fail_first = fail_first
         self.prefixes: dict[str, str] = {}
+        self.seeds: list[int] = []
 
     def submit(self, workflow: dict[str, Any]) -> str:
         self.submitted += 1
         prompt_id = f"prompt-{self.submitted}"
         self.prefixes[prompt_id] = str(workflow["15"]["inputs"]["filename_prefix"])
+        self.seeds.append(int(workflow["11"]["inputs"]["seed"]))
         self.events.append("submit")
         return prompt_id
 
@@ -73,8 +81,43 @@ class _Writer:
         return "<result><block>Текст карточки</block><block>напиши мне</block></result>"
 
 
-def _settings(tmp_path: Path) -> GeneratorSettings:
-    return GeneratorSettings(output_dir=tmp_path / "generated")
+class _Checker:
+    """Clef checker fake: records calls and replays verdicts or an error."""
+
+    def __init__(
+        self,
+        events: list[str] | None = None,
+        *,
+        reasons: list[str | None] | None = None,
+        error: SafetyError | None = None,
+        preflight_error: SafetyError | None = None,
+    ) -> None:
+        self.events = events if events is not None else []
+        self.reasons = list(reasons or [])
+        self.error = error
+        self.preflight_error = preflight_error
+        self.preflights = 0
+        self.calls: list[tuple[str, int]] = []
+
+    def preflight(self) -> None:
+        self.preflights += 1
+        self.events.append("preflight")
+        if self.preflight_error is not None:
+            raise self.preflight_error
+
+    def verify(self, item, source: Path, attempt: int) -> str | None:
+        assert source.is_file()
+        self.calls.append((item.filename, attempt))
+        self.events.append("verify")
+        if self.error is not None:
+            raise self.error
+        return self.reasons.pop(0) if self.reasons else None
+
+
+def _settings(tmp_path: Path, **overrides: Any) -> GeneratorSettings:
+    values: dict[str, Any] = {"output_dir": tmp_path / "generated", "safety_enabled": False}
+    values.update(overrides)
+    return GeneratorSettings(**values)
 
 
 def _fake_postprocess(monkeypatch, events: list[str]) -> None:
@@ -84,7 +127,9 @@ def _fake_postprocess(monkeypatch, events: list[str]) -> None:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(b"final")
 
-    def check(path: Path, expected: float) -> media._MediaInfo:
+    def check(path: Path, expected: float, expect_audio: bool = False) -> media._MediaInfo:
+        if expect_audio:
+            events.append("audio")
         return media._MediaInfo(
             path=path,
             duration=expected,
@@ -363,3 +408,249 @@ def test_next_batch_starts_after_the_cursor(tmp_path: Path, monkeypatch) -> None
 
     report = json.loads((second.run_dirs[0] / "run.json").read_text(encoding="utf-8"))
     assert [item["look_id"] for item in report["items"]] == ["c02", "c03"]
+
+
+class _SafeClef:
+    """Clef transport that accepts every frame."""
+
+    def __init__(self) -> None:
+        self.images: list[bytes] = []
+
+    def scores(self, png: bytes) -> dict[str, float]:
+        self.images.append(png)
+        return {
+            "back": 0.0,
+            "short_skirt": 0.0,
+            "cleavage": 0.0,
+            "all_skin": 0.0,
+            "nude": 0.0,
+        }
+
+
+def _run_safety_batch(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    checker: _Checker,
+    safety_enabled: bool = True,
+    safety_frame_attempts: int = 2,
+) -> tuple[service._BatchResult, _Transport]:
+    events: list[str] = []
+    session = FakeSession(events)
+    transport = _Transport(events)
+    _fake_postprocess(monkeypatch, events)
+    checker.events = events
+    result = service.generate_batch(
+        profiles="dating/profile_2",
+        count=1,
+        data_dir=tmp_path,
+        settings=_settings(
+            tmp_path,
+            safety_enabled=safety_enabled,
+            safety_frame_attempts=safety_frame_attempts,
+        ),
+        session_factory=lambda profile, settings: session,
+        client_factory=lambda connection: transport,
+        text_writer=_Writer(events),
+        store=lambda path, content: path.write_bytes(content),
+        safety_checker=checker,
+        rng=random.Random(1),
+        now=_NOW,
+    )
+    return result, transport
+
+
+def test_preflight_runs_before_rent(tmp_path: Path, monkeypatch) -> None:
+    fixture_profile(tmp_path / "profiles")
+    checker = _Checker()
+
+    result, _ = _run_safety_batch(tmp_path, monkeypatch, checker=checker)
+
+    assert result.generated == 1
+    assert checker.preflights == 1
+    assert checker.events.index("preflight") < checker.events.index("open")
+
+
+def test_preflight_failure_stops_the_batch_before_rent(tmp_path: Path, monkeypatch) -> None:
+    fixture_profile(tmp_path / "profiles")
+    checker = _Checker(preflight_error=SafetyError("Clef недоступен"))
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise AssertionError("preflight errors must happen before rent")
+
+    with pytest.raises(SafetyError, match="Clef недоступен"):
+        service.generate_batch(
+            profiles="dating/profile_2",
+            data_dir=tmp_path,
+            settings=_settings(tmp_path, safety_enabled=True),
+            session_factory=fail,
+            client_factory=fail,
+            safety_checker=checker,
+            now=_NOW,
+        )
+
+
+def test_disabled_safety_skips_preflight_and_frames(tmp_path: Path, monkeypatch) -> None:
+    fixture_profile(tmp_path / "profiles")
+    events: list[str] = []
+    session = FakeSession(events)
+    checker = _Checker(preflight_error=SafetyError("must not be called"))
+    _fake_postprocess(monkeypatch, events)
+
+    result = service.generate_batch(
+        profiles="dating/profile_2",
+        data_dir=tmp_path,
+        settings=_settings(tmp_path),
+        session_factory=lambda profile, settings: session,
+        client_factory=lambda connection: _Transport(events),
+        text_writer=_Writer(events),
+        store=lambda path, content: path.write_bytes(content),
+        safety_checker=checker,
+        rng=random.Random(1),
+        now=_NOW,
+    )
+
+    assert result.generated == 1
+    assert checker.preflights == 0
+    assert checker.calls == []
+
+
+def test_unsafe_source_is_regenerated_with_the_next_seed(tmp_path: Path, monkeypatch) -> None:
+    fixture_profile(tmp_path / "profiles")
+    checker = _Checker(reasons=["спина", None])
+
+    result, transport = _run_safety_batch(tmp_path, monkeypatch, checker=checker)
+
+    assert result.generated == 1
+    assert result.failed == 0
+    assert checker.calls == [
+        ("dating_profile_2_20260101T000000Z_001.mp4", 1),
+        ("dating_profile_2_20260101T000000Z_001.mp4", 2),
+    ]
+    report = json.loads((result.run_dirs[0] / "run.json").read_text(encoding="utf-8"))
+    planned = report["items"][0]["seed"]
+    assert transport.seeds[0] == planned
+    assert transport.seeds[1] == attempt_seed(planned, 2)
+    assert transport.seeds[0] != transport.seeds[1]
+    assert checker.events.index("verify") < checker.events.index("mix")
+
+
+def test_second_unsafe_source_makes_the_slot_failed(tmp_path: Path, monkeypatch) -> None:
+    fixture_profile(tmp_path / "profiles")
+    checker = _Checker(reasons=["спина", "спина"])
+
+    result, transport = _run_safety_batch(tmp_path, monkeypatch, checker=checker)
+
+    assert result.generated == 0
+    assert result.failed == 1
+    assert transport.submitted == 2
+    report = json.loads((result.run_dirs[0] / "run.json").read_text(encoding="utf-8"))
+    assert report["items"][0]["status"] == "failed"
+    assert "спина" in report["items"][0]["error"]
+
+
+def test_clef_error_fails_the_video_without_regeneration(tmp_path: Path, monkeypatch) -> None:
+    fixture_profile(tmp_path / "profiles")
+    checker = _Checker(error=SafetyError("Clef недоступен"))
+
+    result, transport = _run_safety_batch(tmp_path, monkeypatch, checker=checker)
+
+    assert result.generated == 0
+    assert result.failed == 1
+    assert transport.submitted == 1
+    report = json.loads((result.run_dirs[0] / "run.json").read_text(encoding="utf-8"))
+    assert "Clef недоступен" in report["items"][0]["error"]
+
+
+def test_twelve_frames_include_the_last_second_of_the_source(tmp_path: Path, monkeypatch) -> None:
+    fixture_profile(tmp_path / "profiles")
+    clef = _SafeClef()
+    moments: list[float] = []
+
+    def probe(path: Path, *, timeout: float) -> media._MediaInfo:
+        del timeout
+        return media._MediaInfo(
+            path=path,
+            duration=5.0,
+            width=512,
+            height=896,
+            has_video=True,
+            has_audio=True,
+            size=20_000,
+        )
+
+    def frame(path: Path, seconds: float, *, timeout: float) -> bytes:
+        del path, timeout
+        moments.append(seconds)
+        return b"frame"
+
+    monkeypatch.setattr(media, "probe", probe)
+    monkeypatch.setattr(media, "frame_png", frame)
+    events: list[str] = []
+    session = FakeSession(events)
+    _fake_postprocess(monkeypatch, events)
+
+    result = service.generate_batch(
+        profiles="dating/profile_2",
+        data_dir=tmp_path,
+        settings=_settings(tmp_path, safety_enabled=True),
+        session_factory=lambda profile, settings: session,
+        client_factory=lambda connection: _Transport(events),
+        text_writer=_Writer(events),
+        store=lambda path, content: path.write_bytes(content),
+        safety_checker=safety.FrameChecker(
+            _settings(tmp_path, safety_enabled=True),
+            client=clef,
+        ),
+        rng=random.Random(1),
+        now=_NOW,
+    )
+
+    assert result.generated == 1
+    assert len(moments) == 12
+    assert moments[0] == pytest.approx(0.1)
+    assert moments[-1] == pytest.approx(4.95)
+    assert moments == sorted(moments)
+    assert len(clef.images) == 13
+
+
+def test_profile_music_requires_an_audio_track(tmp_path: Path, monkeypatch) -> None:
+    fixture_profile(tmp_path / "profiles")
+    events: list[str] = []
+    session = FakeSession(events)
+    _fake_postprocess(monkeypatch, events)
+
+    service.generate_batch(
+        profiles="dating/profile_2",
+        data_dir=tmp_path,
+        settings=_settings(tmp_path),
+        session_factory=lambda profile, settings: session,
+        client_factory=lambda connection: _Transport(events),
+        text_writer=_Writer(events),
+        store=lambda path, content: path.write_bytes(content),
+        rng=random.Random(1),
+        now=_NOW,
+    )
+
+    assert "audio" in events
+
+
+def test_silent_profile_does_not_require_audio(tmp_path: Path, monkeypatch) -> None:
+    fixture_profile(tmp_path / "profiles", audio=False)
+    events: list[str] = []
+    session = FakeSession(events)
+    _fake_postprocess(monkeypatch, events)
+
+    service.generate_batch(
+        profiles="dating/profile_2",
+        data_dir=tmp_path,
+        settings=_settings(tmp_path),
+        session_factory=lambda profile, settings: session,
+        client_factory=lambda connection: _Transport(events),
+        text_writer=_Writer(events),
+        store=lambda path, content: path.write_bytes(content),
+        rng=random.Random(1),
+        now=_NOW,
+    )
+
+    assert "audio" not in events

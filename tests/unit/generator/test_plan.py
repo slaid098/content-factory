@@ -9,7 +9,7 @@ import pytest
 from tests.unit.generator.helpers import fixture_profile
 
 from content_factory.exceptions.generator import GeneratorError, ProfileError
-from content_factory.services.generator.plan import plan_batch, validate_count
+from content_factory.services.generator.plan import attempt_seed, plan_batch, validate_count
 
 _RUN_ID = "20260101T000000Z"
 
@@ -108,3 +108,17 @@ def test_single_card_cannot_fill_a_multi_item_batch(tmp_path: Path) -> None:
 
     with pytest.raises(ProfileError, match="одна карточка"):
         plan_batch(profile, 2, _RUN_ID, rng=random.Random(1))
+
+
+def test_attempt_seed_keeps_the_first_attempt_and_changes_the_next_ones() -> None:
+    seed = 123456789
+
+    assert attempt_seed(seed, 1) == seed
+    assert attempt_seed(seed, 2) == attempt_seed(seed, 2)
+    assert attempt_seed(seed, 2) != seed
+    assert attempt_seed(seed, 3) not in {seed, attempt_seed(seed, 2)}
+    assert 0 < attempt_seed(seed, 2) < 2**48
+
+
+def test_attempt_seed_depends_on_the_planned_seed() -> None:
+    assert attempt_seed(1, 2) != attempt_seed(2, 2)
