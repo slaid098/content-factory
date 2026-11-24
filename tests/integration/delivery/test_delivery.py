@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import sqlite3
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -22,6 +23,7 @@ from content_factory.db.video_meta import load_video_meta
 from content_factory.exceptions import DeliveryError
 from content_factory.schemas.content.delivery import DeliveryJobInfo
 from content_factory.schemas.content.video import VideoMeta
+from content_factory.services.delivery import service as delivery_service
 from content_factory.services.delivery.archives import (
     find_archive,
     list_archives,
@@ -99,6 +101,22 @@ def _zip_title(data: bytes, entry: str = "001.json") -> str:
 def _zip_bytes(data: bytes, entry: str) -> bytes:
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         return archive.read(entry)
+
+
+def _stock_paths(data_dir: Path) -> list[str]:
+    with sqlite3.connect(data_dir / "db" / "db.sqlite3") as connection:
+        rows = connection.execute("SELECT path FROM stock_items ORDER BY path").fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def _stock_delivery(data_dir: Path, path: str) -> tuple[str | None, str | None]:
+    with sqlite3.connect(data_dir / "db" / "db.sqlite3") as connection:
+        row = connection.execute(
+            "SELECT delivered_at, request_id FROM stock_items WHERE path = ?",
+            (path,),
+        ).fetchone()
+    assert row is not None
+    return (None if row[0] is None else str(row[0]), None if row[1] is None else str(row[1]))
 
 
 def test_deliver_builds_zip_with_stored_titles_and_removes_sources(
@@ -206,12 +224,12 @@ def test_deliver_writes_stored_title_without_normalization(tmp_path: Path) -> No
     assert _zip_title(archive.read_bytes()) == title
 
 
-def test_deliver_returns_none_without_database(tmp_path: Path) -> None:
+def test_deliver_creates_stock_index_without_database(tmp_path: Path) -> None:
     source = touch_mp4(tmp_path / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"))
 
     assert deliver(tmp_path, "ru", 1, REQUEST_ID, retention_hours=24) is None
     assert source.is_file()
-    assert not (tmp_path / "db" / "db.sqlite3").exists()
+    assert (tmp_path / "db" / "db.sqlite3").is_file()
 
 
 def test_deliver_returns_none_without_titles_table(tmp_path: Path) -> None:
@@ -293,6 +311,74 @@ def test_deliver_returns_existing_archive_and_keeps_new_stock(tmp_path: Path) ->
     assert second.read_bytes() == original
     assert (directory / "0.mp4").is_file()
     assert (directory / "b.mp4").is_file()
+    assert _stock_paths(tmp_path) == ["content/ru/a.mp4"]
+
+
+def test_deliver_marks_stock_rows_delivered_with_request_id(tmp_path: Path) -> None:
+    sha256 = "a" * 64
+    source = touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{sha256}.mp4", b"video")
+    add_title(tmp_path / "db" / "db.sqlite3", sha256, "Название выданного видео")
+
+    archive = deliver(tmp_path, "ru", 1, REQUEST_ID, retention_hours=24)
+
+    assert archive is not None
+    relative = f"content/ru/{sha256}.mp4"
+    delivered_at, request_id = _stock_delivery(tmp_path, relative)
+    assert delivered_at is not None
+    assert request_id == str(REQUEST_ID)
+    assert not source.exists()
+
+
+def test_deliver_skips_file_removed_after_sync(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    log_records: list[dict[str, Any]],
+) -> None:
+    sha256 = "a" * 64
+    source = touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{sha256}.mp4", b"video")
+    add_title(tmp_path / "db" / "db.sqlite3", sha256, "Название исчезнувшего видео")
+    original_sync = delivery_service.sync_stock
+
+    def _sync_then_remove(data_dir: Path) -> int:
+        count = original_sync(data_dir)
+        source.unlink()
+        return count
+
+    monkeypatch.setattr(delivery_service, "sync_stock", _sync_then_remove)
+
+    assert deliver(tmp_path, "ru", 1, REQUEST_ID, retention_hours=24) is None
+    assert not _archive_path(tmp_path).exists()
+    records = [record for record in log_records if record["function"] == "_available_sources"]
+    assert [record["level"].name for record in records] == ["WARNING"]
+    assert records[0]["extra"] == {
+        "path": f"content/ru/{sha256}.mp4",
+        "language": "ru",
+    }
+
+
+def test_delivered_row_is_not_offered_again_when_file_survives(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sha256 = "a" * 64
+    source = touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{sha256}.mp4", b"video")
+    add_title(tmp_path / "db" / "db.sqlite3", sha256, "Название оставшегося файла")
+    original_unlink = Path.unlink
+
+    def _deny_mp4(self: Path, *args: object, **kwargs: object) -> None:
+        if self.suffix == ".mp4":
+            raise OSError("permission denied")
+        original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", _deny_mp4)
+
+    first = deliver(tmp_path, "ru", 1, REQUEST_ID, retention_hours=24)
+    assert first is not None
+    assert source.is_file()
+    original_unlink(first)
+
+    assert deliver(tmp_path, "ru", 1, REQUEST_ID, retention_hours=24) is None
+    assert source.is_file()
 
 
 def test_deliver_rebuilds_expired_archive(tmp_path: Path) -> None:

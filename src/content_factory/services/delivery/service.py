@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import zipfile
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -11,16 +12,18 @@ from uuid import UUID
 
 from loguru import logger
 
-from content_factory.constants import ARCHIVE_DIR, CONTENT_DIR, DB_DIR, DB_FILENAME
+from content_factory.constants import ARCHIVE_DIR, DB_DIR, DB_FILENAME
+from content_factory.db.connection import connect, connect_readonly
 from content_factory.db.delivery import load_language_queries as load_language_queries
 from content_factory.db.lock import DELIVERY_LOCK, lock_path, locked
+from content_factory.db.stock import list_available, mark_delivered
 from content_factory.db.titles import load_titles
 from content_factory.db.video_meta import load_video_meta as load_video_meta
 from content_factory.exceptions.errors import DeliveryError, LockError
 from content_factory.schemas.content.video import VideoMeta
 from content_factory.services.delivery.archives import is_archive_expired
 from content_factory.services.delivery.sidecars import read_job_file
-from content_factory.services.stock import language_files
+from content_factory.services.stock import sync_stock
 
 _ZIP_SUFFIX = ".zip"
 _TMP_SUFFIX = ".tmp"
@@ -97,8 +100,7 @@ def _deliver_locked(
     try:
         _remove_stale(archive_path)
         sources, titles = _select_sources(
-            data_dir / CONTENT_DIR,
-            language,
+            _available_sources(data_dir, language),
             count,
             db_path=data_dir / DB_DIR / DB_FILENAME,
             query=query,
@@ -111,6 +113,10 @@ def _deliver_locked(
         _discard_tmp(archive_path)
         raise DeliveryError(f"не удалось собрать архив {request_id}") from ex
 
+    try:
+        _mark_delivered(data_dir, sources, request_id, now)
+    except (OSError, sqlite3.Error) as ex:
+        raise DeliveryError(f"не удалось отметить выдачу {request_id}") from ex
     _remove_sources(sources)
     logger.bind(
         request_id=str(request_id),
@@ -310,31 +316,80 @@ def _remove_stale(path: Path) -> None:
     path.unlink(missing_ok=True)
 
 
+def _available_sources(data_dir: Path, language: str) -> list[Path]:
+    """Synchronize the index and return existing undelivered files of a language.
+
+    A database failure is logged and yields no candidates: delivery must not
+    hand out stock it cannot record as delivered.
+
+    Args:
+        data_dir: Root of the runtime data directory.
+        language: Validated two- or three-letter language code.
+
+    Returns:
+        Absolute paths of files that still exist on disk, in path order.
+    """
+    try:
+        sync_stock(data_dir)
+    except (OSError, sqlite3.Error) as ex:
+        logger.bind(
+            path=str(data_dir / DB_DIR / DB_FILENAME),
+            error=ex,
+            error_type=type(ex).__name__,
+        ).warning("Не удалось синхронизировать индекс стока")
+        return []
+    connection = connect_readonly(data_dir / DB_DIR / DB_FILENAME)
+    try:
+        rows = list_available(connection, language)
+    finally:
+        connection.close()
+    sources: list[Path] = []
+    for relative, _profile_id in rows:
+        path = data_dir / relative
+        if not path.is_file():
+            logger.bind(path=relative, language=language).warning(
+                "Файл стока исчез после синхронизации и пропущен: {}", relative
+            )
+            continue
+        sources.append(path)
+    return sources
+
+
 def _select_sources(
-    content_dir: Path,
-    language: str,
+    candidates: Sequence[Path],
     count: int,
     *,
     db_path: Path,
     query: str | None = None,
 ) -> tuple[list[Path], dict[str, str]]:
-    """Pick up to ``count`` titled mp4 files of one language and their titles.
+    """Pick up to ``count`` titled candidates and their titles.
 
-    Candidates come from every niche of the language in ``(niche, name)``
-    order. A title made only of whitespace counts as absent, so such a file
-    is never selected. A stored title is returned unchanged and is not
-    trimmed.
+    A title made only of whitespace counts as absent, so such a file is never
+    selected. A stored title is returned unchanged and is not trimmed.
     """
-    candidates = language_files(content_dir, language)
-    stored = load_titles(db_path, [item.path.stem for item in candidates])
-    titled = [item for item in candidates if stored.get(item.path.stem, "").strip()]
+    stored = load_titles(db_path, [path.stem for path in candidates])
+    titled = [path for path in candidates if stored.get(path.stem, "").strip()]
     if query is not None:
-        meta = load_video_meta(db_path, [item.path.stem for item in titled])
-        titled = [item for item in titled if _matches_query(meta, item.path.stem, query)]
+        meta = load_video_meta(db_path, [path.stem for path in titled])
+        titled = [path for path in titled if _matches_query(meta, path.stem, query)]
     selected = titled[:count]
-    return [item.path for item in selected], {
-        item.path.stem: stored[item.path.stem] for item in selected
-    }
+    return selected, {path.stem: stored[path.stem] for path in selected}
+
+
+def _mark_delivered(
+    data_dir: Path,
+    sources: Sequence[Path],
+    request_id: UUID,
+    now: datetime,
+) -> None:
+    """Record the delivered stock rows before their files are removed."""
+    paths = [source.relative_to(data_dir).as_posix() for source in sources]
+    connection = connect(data_dir / DB_DIR / DB_FILENAME)
+    try:
+        mark_delivered(connection, paths, str(request_id), now.isoformat())
+        connection.commit()
+    finally:
+        connection.close()
 
 
 def _matches_query(meta: Mapping[str, VideoMeta], sha256: str, query: str) -> bool:

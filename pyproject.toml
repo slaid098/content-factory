@@ -169,3 +169,13 @@ reason = "финализация скачивания под db.lock (fcntl), н
 check_id = "capsule_part_reachable"
 path = "src/content_factory/services/stock/migrate.py"
 reason = "отдельный CLI-вход миграции, не часть графа оркестратора stock"
+
+# index.py — адаптер синхронизации индекса стока: он открывает SQLite через
+# единую фабрику db.connection и пишет таблицу stock_items. ORM-моделей в
+# капсуле нет, поэтому протечка базы в ядро здесь ожидаема; сервисный
+# entry service.py остаётся учётной логикой без записи в базу.
+[[tool.audit.ignore]]
+check_id = "orm_in_core"
+path = "src/content_factory/services/stock/index.py"
+reason = "синхронизация индекса stock_items через db.connection, ORM-моделей нет"
+
