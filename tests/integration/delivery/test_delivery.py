@@ -128,6 +128,40 @@ def test_deliver_builds_zip_with_stored_titles_and_removes_sources(
     assert all("Просроченный архив отсутствует" not in record["message"] for record in log_records)
 
 
+def test_deliver_collects_candidates_from_all_niches_in_niche_order(tmp_path: Path) -> None:
+    general_hash = "a" * 64
+    dating_hash = "b" * 64
+    flat_hash = "c" * 64
+    general = touch_mp4(
+        tmp_path / CONTENT_DIR / "general" / "ru" / f"{general_hash}.mp4", b"general"
+    )
+    dating = touch_mp4(tmp_path / CONTENT_DIR / "dating" / "ru" / f"{dating_hash}.mp4", b"dating")
+    flat = touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{flat_hash}.mp4", b"flat")
+    add_title(tmp_path / "db" / "db.sqlite3", general_hash, "Название поставщика")
+    add_title(tmp_path / "db" / "db.sqlite3", dating_hash, "Название генератора")
+    add_title(tmp_path / "db" / "db.sqlite3", flat_hash, "Плоское название")
+
+    archive = deliver(tmp_path, "ru", 10, REQUEST_ID, retention_hours=24)
+
+    assert archive is not None
+    data = archive.read_bytes()
+    assert sorted(_zip_entries(data)) == [
+        "001.json",
+        "001.mp4",
+        "002.json",
+        "002.mp4",
+        "003.json",
+        "003.mp4",
+    ]
+    assert _zip_bytes(data, "001.mp4") == b"dating"
+    assert _zip_bytes(data, "002.mp4") == b"general"
+    assert _zip_bytes(data, "003.mp4") == b"flat"
+    assert _zip_title(data, "001.json") == "Название генератора"
+    assert not general.exists()
+    assert not dating.exists()
+    assert not flat.exists()
+
+
 def test_deliver_returns_none_for_untitled_stock_and_keeps_file(tmp_path: Path) -> None:
     source = touch_mp4(tmp_path / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"))
 
@@ -542,6 +576,25 @@ def test_collect_topics_counts_by_query_and_unclassified(tmp_path: Path) -> None
         ("курятник", 2),
     ]
     assert result.unclassified == 2
+
+
+def test_collect_topics_counts_files_across_niches(tmp_path: Path) -> None:
+    db_path = tmp_path / "db" / "db.sqlite3"
+    hashes = {"general": "a" * 64, "dating": "b" * 64, "flat": "c" * 64}
+    touch_mp4(tmp_path / CONTENT_DIR / "general" / "ru" / f"{hashes['general']}.mp4")
+    touch_mp4(tmp_path / CONTENT_DIR / "dating" / "ru" / f"{hashes['dating']}.mp4")
+    touch_mp4(tmp_path / CONTENT_DIR / "ru" / f"{hashes['flat']}.mp4")
+    add_downloaded_video(db_path, hashes["general"], "Описание", query="курятник")
+    add_downloaded_video(db_path, hashes["dating"], "Описание", query="курятник")
+    add_downloaded_video(db_path, hashes["flat"], "Описание", query="заправка")
+
+    result = collect_topics(tmp_path, "ru")
+
+    assert [(topic.query, topic.count) for topic in result.topics] == [
+        ("заправка", 1),
+        ("курятник", 2),
+    ]
+    assert result.unclassified == 0
 
 
 def test_collect_topics_without_language_directory_returns_empty(tmp_path: Path) -> None:

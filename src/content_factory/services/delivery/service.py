@@ -20,6 +20,7 @@ from content_factory.exceptions.errors import DeliveryError, LockError
 from content_factory.schemas.content.video import VideoMeta
 from content_factory.services.delivery.archives import is_archive_expired
 from content_factory.services.delivery.sidecars import read_job_file
+from content_factory.services.stock.layout import language_files
 
 _ZIP_SUFFIX = ".zip"
 _TMP_SUFFIX = ".tmp"
@@ -96,7 +97,8 @@ def _deliver_locked(
     try:
         _remove_stale(archive_path)
         sources, titles = _select_sources(
-            data_dir / CONTENT_DIR / language,
+            data_dir / CONTENT_DIR,
+            language,
             count,
             db_path=data_dir / DB_DIR / DB_FILENAME,
             query=query,
@@ -309,30 +311,30 @@ def _remove_stale(path: Path) -> None:
 
 
 def _select_sources(
-    directory: Path,
+    content_dir: Path,
+    language: str,
     count: int,
     *,
     db_path: Path,
     query: str | None = None,
 ) -> tuple[list[Path], dict[str, str]]:
-    """Pick up to ``count`` titled mp4 files and return their stored titles.
+    """Pick up to ``count`` titled mp4 files of one language and their titles.
 
-    A title made only of whitespace counts as absent, so such a file is never
-    selected. A stored title is returned unchanged and is not trimmed.
+    Candidates come from every niche of the language in ``(niche, name)``
+    order. A title made only of whitespace counts as absent, so such a file
+    is never selected. A stored title is returned unchanged and is not
+    trimmed.
     """
-    if not directory.is_dir():
-        return [], {}
-    candidates = sorted(
-        (path for path in directory.iterdir() if path.is_file() and path.suffix == ".mp4"),
-        key=lambda path: path.name,
-    )
-    stored = load_titles(db_path, [path.stem for path in candidates])
-    titled = [path for path in candidates if stored.get(path.stem, "").strip()]
+    candidates = language_files(content_dir, language)
+    stored = load_titles(db_path, [item.path.stem for item in candidates])
+    titled = [item for item in candidates if stored.get(item.path.stem, "").strip()]
     if query is not None:
-        meta = load_video_meta(db_path, [path.stem for path in titled])
-        titled = [path for path in titled if _matches_query(meta, path.stem, query)]
+        meta = load_video_meta(db_path, [item.path.stem for item in titled])
+        titled = [item for item in titled if _matches_query(meta, item.path.stem, query)]
     selected = titled[:count]
-    return selected, {path.stem: stored[path.stem] for path in selected}
+    return [item.path for item in selected], {
+        item.path.stem: stored[item.path.stem] for item in selected
+    }
 
 
 def _matches_query(meta: Mapping[str, VideoMeta], sha256: str, query: str) -> bool:

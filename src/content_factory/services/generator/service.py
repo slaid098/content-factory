@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import random
+import shutil
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -17,7 +19,7 @@ from content_factory.config.settings import (
     get_settings,
     load_generator_settings,
 )
-from content_factory.constants import PROFILES_DIR
+from content_factory.constants import CONTENT_DIR, PROFILES_DIR
 from content_factory.exceptions.generator import GeneratorError, ProfileError
 from content_factory.schemas.generator.run import (
     RunItem,
@@ -149,6 +151,7 @@ def generate_batch(
     run_id = _choose_run_id(config.output_dir, loaded, started)
     prepared = _prepare(config, loaded, count, run_id, randomizer)
     checker = _prepare_media(config, dry_run, safety_checker)
+    data_root = root.parent
     run_dirs, generated, failed = _run_all(
         prepared,
         config,
@@ -162,6 +165,7 @@ def generate_batch(
         store,
         checker,
         randomizer,
+        data_root,
     )
     return _BatchResult(
         run_id=run_id,
@@ -202,6 +206,7 @@ def _run_all(
     store: _Store | None,
     checker: safety._Checker | None,
     randomizer: random.Random,
+    data_root: Path,
 ) -> tuple[list[Path], int, int]:
     """Write one report per profile, produce its videos and count the outcomes."""
     run_dirs: list[Path] = []
@@ -226,6 +231,7 @@ def _run_all(
             store,
             checker,
             randomizer,
+            data_root,
         )
         generated += report.totals.generated
         failed += report.totals.failed
@@ -267,6 +273,7 @@ def _produce_safely(
     store: _Store | None,
     checker: safety._Checker | None,
     rng: random.Random,
+    data_root: Path,
 ) -> None:
     """Run one profile and mark its report failed before re-raising a fatal error."""
     try:
@@ -282,6 +289,7 @@ def _produce_safely(
             store,
             checker,
             rng,
+            data_root,
         )
     except BaseException:
         report.status = RunStatus.FAILED
@@ -302,6 +310,7 @@ def _produce(
     store: _Store | None,
     checker: safety._Checker | None,
     rng: random.Random,
+    data_root: Path,
 ) -> None:
     """Run the remote phase and then the local post-processing."""
     session = session_factory(profile, settings)
@@ -332,7 +341,7 @@ def _produce(
         _destroy(session, profile.name)
     report.status = RunStatus.POSTPROCESSING
     _write_report(run_dir, report)
-    _postprocess(profile, results, run_dir, report, settings, text_writer, rng)
+    _postprocess(profile, results, run_dir, report, settings, text_writer, rng, data_root)
     _finalize(report, run_dir, items)
 
 
@@ -344,6 +353,7 @@ def _postprocess(
     settings: GeneratorSettings,
     text_writer: texts._TextWriter | None,
     rng: random.Random,
+    data_root: Path,
 ) -> None:
     """Generate texts, overlay cards, mix music and check every mp4."""
     writer = text_writer or texts.TextClient(settings)
@@ -358,7 +368,7 @@ def _postprocess(
             _write_report(run_dir, report)
             continue
         try:
-            _finish_item(profile, item, result.path, run_dir, writer, rng)
+            _finish_item(profile, item, result.path, run_dir, writer, rng, data_root)
         except (GeneratorError, OSError) as ex:
             item.status = RunStatus.FAILED
             item.error = str(ex)
@@ -401,8 +411,9 @@ def _finish_item(
     run_dir: Path,
     writer: texts._TextWriter,
     rng: random.Random,
+    data_root: Path,
 ) -> None:
-    """Run the local stages of one video."""
+    """Run the local stages of one video and publish its final into the stock."""
     card = texts.generate_overlay(profile, writer, rng=rng)
     texts.save_overlay(run_dir / _TEXT_DIR / f"{Path(item.file).stem}.json", card)
     audio = rng.choice(profile.audio_tracks) if profile.audio_tracks else None
@@ -413,8 +424,54 @@ def _finish_item(
         media.video_seconds(item.frames, profile.fps),
         expect_audio=bool(profile.audio_tracks),
     )
+    publish_stock(profile, final, data_root)
     item.duration = round(info.duration, 2)
     item.status = RunStatus.DONE
+
+
+def publish_stock(profile: _Profile, final: Path, data_root: Path) -> Path:
+    """Publish one final video into ``content/<niche>/<language>/``.
+
+    A hard link keeps the video in ``generated/`` without spending disk space.
+    When linking is impossible, the file is copied instead. An existing stock
+    file is never overwritten: that is a publication error.
+
+    Args:
+        profile: Profile that produced the video; an empty niche falls back
+            to the profile category.
+        final: Finished mp4 inside the run ``final`` directory.
+        data_root: Root ``app_data`` directory.
+
+    Returns:
+        Path of the published stock file.
+
+    Raises:
+        GeneratorError: The stock file already exists, the destination cannot
+            be created or neither linking nor copying succeeded.
+    """
+    niche = profile.niche or profile.name.split("/", 1)[0]
+    destination = data_root / CONTENT_DIR / niche / profile.language / final.name
+    if destination.exists():
+        raise GeneratorError(_publish_error(destination))
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as ex:
+        raise GeneratorError(_publish_error(destination)) from ex
+    try:
+        os.link(final, destination)
+    except FileExistsError as ex:
+        raise GeneratorError(_publish_error(destination)) from ex
+    except OSError:
+        try:
+            shutil.copy2(final, destination)
+        except OSError as ex:
+            raise GeneratorError(_publish_error(destination)) from ex
+    return destination
+
+
+def _publish_error(destination: Path) -> str:
+    """Return the user-facing text of a failed stock publication."""
+    return f"не удалось положить в сток: {destination}"
 
 
 def _destroy(session: _ServerSession, profile: str) -> None:
@@ -482,4 +539,4 @@ def _cursor_path(output_dir: Path, profile: _Profile) -> Path:
     return output_dir / profile.language / _slug(profile) / rotation.ROTATION_FILENAME
 
 
-__all__ = ["generate_batch"]
+__all__ = ["generate_batch", "publish_stock"]
