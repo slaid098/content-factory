@@ -106,6 +106,15 @@ class _Farm:
         return session
 
 
+class _InterruptedSession(FakeSession):
+    """Session whose rent is cancelled before a server becomes ready."""
+
+    def open(self) -> None:
+        self.events.append("open")
+        self.opened += 1
+        raise KeyboardInterrupt
+
+
 class _Writer:
     def __init__(self, events: list[str] | None = None) -> None:
         self.events = events if events is not None else []
@@ -688,6 +697,58 @@ def test_all_servers_dead_fail_the_batch_after_teardown(tmp_path: Path, monkeypa
     report = json.loads((result.run_dirs[0] / "run.json").read_text(encoding="utf-8"))
     assert report["status"] == "failed"
     assert [item["status"] for item in report["items"]] == ["failed"] * 14
+
+
+def test_cancelled_rent_in_single_server_mode_destroys_the_session(tmp_path: Path) -> None:
+    fixture_profile(tmp_path / "profiles")
+    events: list[str] = []
+    session = _InterruptedSession(events)
+
+    with pytest.raises(KeyboardInterrupt):
+        service.generate_batch(
+            profiles="dating/profile_2",
+            count=1,
+            data_dir=tmp_path,
+            settings=_settings(tmp_path),
+            session_factory=lambda profile, settings: session,
+            client_factory=lambda connection: _Transport(events),
+            text_writer=_Writer(events),
+            store=lambda path, content: path.write_bytes(content),
+            rng=random.Random(1),
+            now=_NOW,
+        )
+
+    assert session.opened == 1
+    assert session.destroyed == 1
+
+
+def test_cancelled_rent_in_every_split_chunk_destroys_its_session(tmp_path: Path) -> None:
+    fixture_profile(tmp_path / "profiles")
+    events: list[str] = []
+    sessions: list[_InterruptedSession] = []
+
+    def factory(profile: object, settings: object) -> _InterruptedSession:
+        del profile, settings
+        session = _InterruptedSession(events)
+        sessions.append(session)
+        return session
+
+    with pytest.raises(KeyboardInterrupt):
+        service.generate_batch(
+            profiles="dating/profile_2",
+            count=14,
+            data_dir=tmp_path,
+            settings=_settings(tmp_path),
+            session_factory=factory,
+            client_factory=lambda connection: _Transport(events),
+            text_writer=_Writer(events),
+            store=lambda path, content: path.write_bytes(content),
+            rng=random.Random(1),
+            now=_NOW,
+        )
+
+    assert len(sessions) == 2
+    assert all(session.destroyed == 1 for session in sessions)
 
 
 class _DeadTransport:

@@ -392,13 +392,9 @@ def run_server(
     Returns:
         Ready server info and one result per item, ordered by ``seq``.
     """
+    info: ServerInfo | None = None
     try:
         info = session.open()
-    except Exception as ex:  # noqa: BLE001 — teardown must run before re-raising
-        _log_chunk(0, items, None, str(ex), type(ex).__name__)
-        _destroy(session, label)
-        raise
-    try:
         results = _generate(
             client_factory,
             info,
