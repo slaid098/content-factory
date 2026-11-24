@@ -6,15 +6,14 @@ import os
 from pathlib import Path
 from typing import Any
 
+import pytest
 from tests.unit.common.delivery_helpers import touch_mp4
 
-from content_factory.services.stock import migrate
+from content_factory.schemas.stock.layout import StockFile
+from content_factory.services.stock import language_files, migrate, stock_files
 from content_factory.services.stock.layout import (
-    StockFile,
-    language_files,
     migrate_flat_layout,
     profile_slugs,
-    stock_files,
 )
 
 
@@ -181,14 +180,15 @@ def test_migrate_flat_layout_ignores_missing_and_invalid_directories(tmp_path: P
     assert (content / "RU" / "video.mp4").is_file()
 
 
-def test_migrate_module_prints_the_moved_count(
-    tmp_path: Path,
-    capsys: Any,
-) -> None:
+def test_migrate_module_returns_the_moved_count(tmp_path: Path) -> None:
     touch_mp4(tmp_path / "content" / "ru" / "a.mp4")
 
+    assert migrate.main([str(tmp_path)]) == 1
     assert migrate.main([str(tmp_path)]) == 0
-    assert capsys.readouterr().out == "1\n"
-    assert migrate.main([str(tmp_path)]) == 0
-    assert capsys.readouterr().out == "0\n"
-    assert migrate.main([]) == 2
+
+
+def test_migrate_module_requires_a_data_dir() -> None:
+    with pytest.raises(SystemExit) as error:
+        migrate.main([])
+
+    assert error.value.code == 2

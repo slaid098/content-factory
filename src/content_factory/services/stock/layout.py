@@ -9,31 +9,19 @@ before the layout change keeps working until it is migrated.
 from __future__ import annotations
 
 import os
-import re
 import shutil
 from collections.abc import Mapping
-from dataclasses import dataclass
 from pathlib import Path
 
 from loguru import logger
 
-from content_factory.constants import CONTENT_DIR, LANGUAGE_CODE_RE, PROFILES_DIR
+from content_factory.constants import CONTENT_DIR, LANGUAGE_CODE_RE, NICHE_CODE_RE, PROFILES_DIR
+from content_factory.schemas.stock.layout import StockFile
 
-_NICHE_RE = re.compile(r"^[a-z0-9_-]+$")
 _PROFILE_FILENAME = "profile.yaml"
 _SHARED_DIR = "_shared"
 _GENERAL = "general"
 _MP4_SUFFIX = ".mp4"
-
-
-@dataclass(frozen=True, slots=True)
-class StockFile:
-    """One mp4 file of the stock and the niche it belongs to."""
-
-    niche: str
-    language: str
-    path: Path
-    profile_id: str | None
 
 
 def stock_files(
@@ -200,7 +188,7 @@ def _flat_language_dirs(content_dir: Path) -> list[Path]:
     for directory in _child_dirs(content_dir):
         if LANGUAGE_CODE_RE.fullmatch(directory.name) is not None:
             directories.append(directory)
-        elif _NICHE_RE.fullmatch(directory.name) is None:
+        elif NICHE_CODE_RE.fullmatch(directory.name) is None:
             _warn_invalid(directory, "ниши или языка")
     return directories
 
@@ -211,7 +199,7 @@ def _niche_dirs(content_dir: Path) -> list[Path]:
     for directory in _child_dirs(content_dir):
         if LANGUAGE_CODE_RE.fullmatch(directory.name) is not None:
             continue
-        if _NICHE_RE.fullmatch(directory.name) is None:
+        if NICHE_CODE_RE.fullmatch(directory.name) is None:
             continue
         directories.append(directory)
     return directories
@@ -223,7 +211,7 @@ def _nested_language_dirs(niche_dir: Path) -> list[Path]:
     for directory in _child_dirs(niche_dir):
         if LANGUAGE_CODE_RE.fullmatch(directory.name) is not None:
             directories.append(directory)
-        elif _NICHE_RE.fullmatch(directory.name) is None:
+        elif NICHE_CODE_RE.fullmatch(directory.name) is None:
             _warn_invalid(directory, "языка")
     return directories
 
@@ -338,7 +326,6 @@ def _warn_invalid(directory: Path, expected: str) -> None:
 
 
 __all__ = [
-    "StockFile",
     "language_files",
     "migrate_flat_layout",
     "profile_slugs",

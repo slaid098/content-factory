@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import os
 import random
-import shutil
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -19,7 +17,7 @@ from content_factory.config.settings import (
     get_settings,
     load_generator_settings,
 )
-from content_factory.constants import CONTENT_DIR, PROFILES_DIR
+from content_factory.constants import PROFILES_DIR
 from content_factory.exceptions.generator import GeneratorError, ProfileError
 from content_factory.schemas.generator.run import (
     RunItem,
@@ -45,6 +43,7 @@ from content_factory.services.generator.plan import (
     validate_count,
 )
 from content_factory.services.generator.profiles import _Profile, load_profile
+from content_factory.services.generator.publish import publish_stock
 from content_factory.services.generator.report import (
     _FINAL_DIR,
     _finalize,
@@ -427,51 +426,6 @@ def _finish_item(
     publish_stock(profile, final, data_root)
     item.duration = round(info.duration, 2)
     item.status = RunStatus.DONE
-
-
-def publish_stock(profile: _Profile, final: Path, data_root: Path) -> Path:
-    """Publish one final video into ``content/<niche>/<language>/``.
-
-    A hard link keeps the video in ``generated/`` without spending disk space.
-    When linking is impossible, the file is copied instead. An existing stock
-    file is never overwritten: that is a publication error.
-
-    Args:
-        profile: Profile that produced the video; an empty niche falls back
-            to the profile category.
-        final: Finished mp4 inside the run ``final`` directory.
-        data_root: Root ``app_data`` directory.
-
-    Returns:
-        Path of the published stock file.
-
-    Raises:
-        GeneratorError: The stock file already exists, the destination cannot
-            be created or neither linking nor copying succeeded.
-    """
-    niche = profile.niche or profile.name.split("/", 1)[0]
-    destination = data_root / CONTENT_DIR / niche / profile.language / final.name
-    if destination.exists():
-        raise GeneratorError(_publish_error(destination))
-    try:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as ex:
-        raise GeneratorError(_publish_error(destination)) from ex
-    try:
-        os.link(final, destination)
-    except FileExistsError as ex:
-        raise GeneratorError(_publish_error(destination)) from ex
-    except OSError:
-        try:
-            shutil.copy2(final, destination)
-        except OSError as ex:
-            raise GeneratorError(_publish_error(destination)) from ex
-    return destination
-
-
-def _publish_error(destination: Path) -> str:
-    """Return the user-facing text of a failed stock publication."""
-    return f"не удалось положить в сток: {destination}"
 
 
 def _destroy(session: _ServerSession, profile: str) -> None:

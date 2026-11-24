@@ -101,6 +101,31 @@ def test_unsupported_renderer_fails_before_rent(tmp_path: Path) -> None:
         load_profile("dating/profile_2", root)
 
 
+def test_empty_niche_falls_back_to_the_profile_category(tmp_path: Path) -> None:
+    root = tmp_path / "profiles"
+    make_profile(root, extra={"niche": ""})
+
+    assert load_profile("dating/profile_2", root).niche == "dating"
+
+
+@pytest.mark.parametrize("niche", ["../generated", "/tmp/x", "Dating", "dating/ru"])
+def test_invalid_niche_fails_before_rent(tmp_path: Path, niche: str) -> None:
+    root = tmp_path / "profiles"
+    make_profile(root, extra={"niche": niche})
+
+    with pytest.raises(ProfileError, match="ниша"):
+        load_profile("dating/profile_2", root)
+
+
+@pytest.mark.parametrize("language", ["RU", "ru/../x", "r"])
+def test_invalid_language_fails_before_rent(tmp_path: Path, language: str) -> None:
+    root = tmp_path / "profiles"
+    make_profile(root, extra={"language": language})
+
+    with pytest.raises(ProfileError, match="язык"):
+        load_profile("dating/profile_2", root)
+
+
 def test_prompt_placeholders_and_spin_are_filled(tmp_path: Path) -> None:
     root = tmp_path / "profiles"
     profile = fixture_profile(root)

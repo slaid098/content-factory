@@ -1,6 +1,6 @@
 """Shared constants for the service."""
 
-from content_factory.constants.languages import LANGUAGE_CODE_RE
+from content_factory.constants.languages import LANGUAGE_CODE_RE, NICHE_CODE_RE
 from content_factory.constants.paths import (
     ARCHIVE_DIR,
     CONFIG_DIR,
@@ -22,6 +22,7 @@ __all__ = [
     "DB_FILENAME",
     "GENERATED_DIR",
     "LANGUAGE_CODE_RE",
+    "NICHE_CODE_RE",
     "PROFILES_DIR",
     "QUERIES_DIR",
 ]

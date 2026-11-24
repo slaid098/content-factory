@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,7 @@ from content_factory.exceptions.generator import (
     RentError,
     SafetyError,
 )
-from content_factory.services.generator import media, overlay, qa, safety, service
+from content_factory.services.generator import media, overlay, publish, qa, safety, service
 from content_factory.services.generator.comfy import _OutputFile
 from content_factory.services.generator.plan import attempt_seed
 
@@ -277,7 +278,7 @@ def test_publish_stock_hardlinks_final_into_profile_niche(tmp_path: Path) -> Non
     final.parent.mkdir(parents=True)
     final.write_bytes(b"video")
 
-    destination = service.publish_stock(profile, final, tmp_path)
+    destination = publish.publish_stock(profile, final, tmp_path)
 
     assert destination == tmp_path / "content" / "dating" / "ru" / "final.mp4"
     assert destination.read_bytes() == b"video"
@@ -297,9 +298,9 @@ def test_publish_stock_copies_when_hardlink_fails(
     def fail_link(*args: object, **kwargs: object) -> None:
         raise OSError("cross-device link")
 
-    monkeypatch.setattr(service.os, "link", fail_link)
+    monkeypatch.setattr(publish.os, "link", fail_link)
 
-    destination = service.publish_stock(profile, final, tmp_path)
+    destination = publish.publish_stock(profile, final, tmp_path)
 
     assert destination.read_bytes() == b"video"
     assert destination.stat().st_ino != final.stat().st_ino
@@ -312,7 +313,7 @@ def test_publish_stock_uses_profile_category_when_niche_is_empty(tmp_path: Path)
     final.parent.mkdir(parents=True)
     final.write_bytes(b"video")
 
-    destination = service.publish_stock(profile, final, tmp_path)
+    destination = publish.publish_stock(profile, final, tmp_path)
 
     assert destination == tmp_path / "content" / "dating" / "ru" / "final.mp4"
 
@@ -327,7 +328,7 @@ def test_publish_stock_never_overwrites_an_existing_file(tmp_path: Path) -> None
     destination.write_bytes(b"old")
 
     with pytest.raises(GeneratorError, match="не удалось положить в сток"):
-        service.publish_stock(profile, final, tmp_path)
+        publish.publish_stock(profile, final, tmp_path)
 
     assert destination.read_bytes() == b"old"
     assert final.read_bytes() == b"new"
@@ -345,14 +346,92 @@ def test_publish_stock_reports_copy_failure(
     def fail(*args: object, **kwargs: object) -> None:
         raise OSError("permission denied")
 
-    monkeypatch.setattr(service.os, "link", fail)
-    monkeypatch.setattr(service.shutil, "copy2", fail)
+    monkeypatch.setattr(publish.os, "link", fail)
+    monkeypatch.setattr(publish.shutil, "copy2", fail)
 
     with pytest.raises(GeneratorError, match="не удалось положить в сток"):
-        service.publish_stock(profile, final, tmp_path)
+        publish.publish_stock(profile, final, tmp_path)
 
     assert final.is_file()
     assert not (tmp_path / "content" / "dating" / "ru" / "final.mp4").exists()
+
+
+@pytest.mark.parametrize("niche", ["../escape", "Dating", "dating/ru"])
+def test_publish_stock_rejects_an_invalid_niche(tmp_path: Path, niche: str) -> None:
+    profile = replace(fixture_profile(tmp_path / "profiles"), niche=niche)
+    final = tmp_path / "generated" / "final.mp4"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"video")
+
+    with pytest.raises(GeneratorError, match="не удалось положить в сток"):
+        publish.publish_stock(profile, final, tmp_path)
+
+    assert not (tmp_path / "escape").exists()
+    assert not (tmp_path / "content").exists()
+
+
+def test_publish_stock_rejects_an_absolute_niche(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    profile = replace(fixture_profile(tmp_path / "profiles"), niche=str(outside))
+    final = tmp_path / "generated" / "final.mp4"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"video")
+
+    with pytest.raises(GeneratorError, match="не удалось положить в сток"):
+        publish.publish_stock(profile, final, tmp_path)
+
+    assert not outside.exists()
+
+
+@pytest.mark.parametrize("language", ["RU", "ru/../x", "r"])
+def test_publish_stock_rejects_an_invalid_language(tmp_path: Path, language: str) -> None:
+    profile = replace(fixture_profile(tmp_path / "profiles"), language=language)
+    final = tmp_path / "generated" / "final.mp4"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"video")
+
+    with pytest.raises(GeneratorError, match="не удалось положить в сток"):
+        publish.publish_stock(profile, final, tmp_path)
+
+    assert not (tmp_path / "content").exists()
+
+
+def test_publish_stock_refuses_a_niche_symlinked_outside_content(tmp_path: Path) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+    content = tmp_path / "content"
+    content.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (content / "dating").symlink_to(outside, target_is_directory=True)
+    final = tmp_path / "generated" / "final.mp4"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"video")
+
+    with pytest.raises(GeneratorError, match="не удалось положить в сток"):
+        publish.publish_stock(profile, final, tmp_path)
+
+    assert list(outside.rglob("*.mp4")) == []
+
+
+def test_invalid_profile_niche_fails_before_the_rent(tmp_path: Path) -> None:
+    make_profile(tmp_path / "profiles", extra={"niche": "../escape"})
+    events: list[str] = []
+    session = FakeSession(events)
+
+    with pytest.raises(ProfileError, match="ниша"):
+        service.generate_batch(
+            profiles="dating/profile_2",
+            data_dir=tmp_path,
+            settings=_settings(tmp_path),
+            session_factory=lambda profile, settings: session,
+            client_factory=lambda connection: _Transport(events),
+            text_writer=_Writer(events),
+            store=lambda path, content: path.write_bytes(content),
+            rng=random.Random(1),
+            now=_NOW,
+        )
+
+    assert session.opened == 0
 
 
 def test_publication_error_marks_the_video_failed_and_keeps_the_final(

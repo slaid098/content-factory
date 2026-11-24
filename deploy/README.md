@@ -562,7 +562,8 @@ sudo docker image ls ghcr.io/slaid098/content-factory
 - Healthcheck API: `curl -f http://127.0.0.1:8000/api/v1/stock`.
 - После деплоя новой раскладки разово перенесите плоский сток:
   `sudo docker compose exec api python -m content_factory.services.stock.migrate /app/app_data`.
-  Без переноса чтение работает, а повторный запуск печатает `0`.
+  Без переноса чтение работает, а повторный запуск пишет в лог
+  `Перенесено файлов стока: 0`.
 
 Снаружи API доступен только через SSH-туннель:
 

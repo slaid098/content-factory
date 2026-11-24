@@ -8,7 +8,7 @@ from pathlib import Path
 from content_factory.constants import CONTENT_DIR, DB_DIR, DB_FILENAME
 from content_factory.schemas.content.topics import TopicCount, TopicsResponse
 from content_factory.services.delivery.metadata import load_video_meta
-from content_factory.services.stock.layout import language_files
+from content_factory.services.stock import language_files
 
 
 def collect_topics(data_dir: Path, language: str) -> TopicsResponse:

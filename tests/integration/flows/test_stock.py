@@ -12,7 +12,7 @@ from content_factory.db.runtime_state import save_state
 from content_factory.schemas.config.runtime import LanguageConfig
 from content_factory.schemas.state.state import RuntimeState
 from content_factory.schemas.stock.stock import LanguageStock, StockSnapshot
-from content_factory.services.stock.layout import language_files, stock_files
+from content_factory.services.stock import language_files, stock_files
 from content_factory.services.stock.service import collect_stock, count_stock
 
 _MOMENT = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)

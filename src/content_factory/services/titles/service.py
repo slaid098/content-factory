@@ -16,7 +16,7 @@ from content_factory.db.video_meta import load_video_meta
 from content_factory.exceptions.titles import TitleError
 from content_factory.schemas.content.titles import TitlePassResult
 from content_factory.schemas.content.video import VideoMeta
-from content_factory.services.stock.layout import stock_files
+from content_factory.services.stock import stock_files
 from content_factory.services.titles.client import generate_titles
 from content_factory.services.titles.frames import extract_frames
 from content_factory.services.titles.text import (

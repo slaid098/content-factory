@@ -20,7 +20,7 @@ from content_factory.exceptions.errors import DeliveryError, LockError
 from content_factory.schemas.content.video import VideoMeta
 from content_factory.services.delivery.archives import is_archive_expired
 from content_factory.services.delivery.sidecars import read_job_file
-from content_factory.services.stock.layout import language_files
+from content_factory.services.stock import language_files
 
 _ZIP_SUFFIX = ".zip"
 _TMP_SUFFIX = ".tmp"

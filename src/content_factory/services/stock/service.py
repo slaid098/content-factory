@@ -15,8 +15,9 @@ from content_factory.db.runtime_state import read_state
 from content_factory.db.titles import load_titles
 from content_factory.schemas.config.runtime import LanguageConfig
 from content_factory.schemas.state.state import RuntimeState
+from content_factory.schemas.stock.layout import StockFile
 from content_factory.schemas.stock.stock import LanguageStock, StockSnapshot
-from content_factory.services.stock.layout import StockFile, language_files
+from content_factory.services.stock.layout import language_files, stock_files
 
 
 def count_stock(content_dir: Path, languages: Iterable[str]) -> dict[str, int]:
@@ -106,3 +107,6 @@ def _read_runtime_state(data_dir: Path) -> RuntimeState:
             "Не удалось прочитать состояние цикла"
         )
         return RuntimeState.empty()
+
+
+__all__ = ["collect_stock", "count_stock", "language_files", "stock_files"]

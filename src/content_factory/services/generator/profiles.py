@@ -19,6 +19,7 @@ from typing import Any
 
 import yaml
 
+from content_factory.constants import LANGUAGE_CODE_RE, NICHE_CODE_RE
 from content_factory.exceptions.generator import ProfileError
 
 _SHARED_DIR = "_shared"
@@ -159,10 +160,11 @@ def load_profile(name: str, root: Path) -> _Profile:
     renderer = str(data.get("renderer") or "default").strip().lower()
     if renderer not in _SUPPORTED_RENDERERS:
         raise ProfileError(f"renderer={renderer!r} не поддержан в v0: допустим только default")
+    profile_name = _profile_name(directory, root)
     profile = _Profile(
-        name=_profile_name(directory, root),
-        language=str(data.get("language") or "ru").strip(),
-        niche=str(data.get("niche") or "").strip(),
+        name=profile_name,
+        language=_language(data, name),
+        niche=_niche(data, profile_name, name),
         dir=directory,
         count=_positive_int(data, "count", name),
         width=_positive_int(data, "width", name),
@@ -192,6 +194,18 @@ def load_profile(name: str, root: Path) -> _Profile:
     prompt_template(profile)
     text_prompt(profile)
     return profile
+
+
+def profile_niche(profile: _Profile) -> str:
+    """Return the stock niche of a loaded profile.
+
+    Args:
+        profile: Loaded profile.
+
+    Returns:
+        Its niche or, for a profile without one, the profile category.
+    """
+    return profile.niche or profile.name.split("/", 1)[0]
 
 
 def prompt_template(profile: _Profile) -> str:
@@ -260,6 +274,22 @@ def _profile_name(directory: Path, root: Path) -> str:
         return directory.relative_to(root).as_posix()
     except ValueError:
         return directory.name
+
+
+def _language(data: Mapping[str, Any], name: str) -> str:
+    """Return a validated language code; ``ru`` is the default."""
+    value = str(data.get("language") or "ru").strip()
+    if LANGUAGE_CODE_RE.fullmatch(value) is None:
+        raise ProfileError(f"в профиле {name} недопустимый язык: {value!r}")
+    return value
+
+
+def _niche(data: Mapping[str, Any], profile_name: str, name: str) -> str:
+    """Return a validated niche; an empty value falls back to the category."""
+    value = str(data.get("niche") or "").strip() or profile_name.split("/", 1)[0]
+    if NICHE_CODE_RE.fullmatch(value) is None:
+        raise ProfileError(f"в профиле {name} недопустимая ниша: {value!r}")
+    return value
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
