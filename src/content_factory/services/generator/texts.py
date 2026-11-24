@@ -6,6 +6,7 @@ import json
 import random
 import re
 import time
+import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -25,8 +26,9 @@ _REQUEST_TIMEOUT = 120.0
 # обрезать: хвост содержит правила <result><block>. Лимит только от абсурда.
 _MAX_DATA_LENGTH = 20000
 _PRINTABLE_KEY_RANGE = range(33, 127)
-_RESULT_RE = re.compile(r"<result>\s*(.*?)\s*</result>", re.DOTALL)
-_BLOCK_RE = re.compile(r"<block>\s*(.*?)\s*</block>", re.DOTALL)
+_RESULT_RE = re.compile(r"<result(?:\s[^>]*)?>\s*(.*?)\s*</result>", re.DOTALL | re.IGNORECASE)
+_BLOCK_RE = re.compile(r"<block(?:\s[^>]*)?>\s*(.*?)\s*</block>", re.DOTALL | re.IGNORECASE)
+_FENCE_RE = re.compile(r"^\s*```[^\n]*$", re.MULTILINE)
 _MIN_TEXT_LEN = 5
 _USER_MESSAGE = "Сгенерируй один текст для одного видео."
 
@@ -168,6 +170,10 @@ def generate_overlay(
 def parse_overlays(raw: str) -> tuple[_Overlay, ...]:
     """Parse the ``<result><block>...</block></result>`` answer.
 
+    An answer whose card text holds a Latin, CJK or replacement character is
+    rejected as a whole, so the caller asks the model again instead of drawing
+    a mixed-language card.
+
     Args:
         raw: Raw model answer.
 
@@ -175,8 +181,8 @@ def parse_overlays(raw: str) -> tuple[_Overlay, ...]:
         One overlay per ``<result>``; a plain answer without tags becomes a
         single-block overlay. Empty and too short blocks are skipped.
     """
-    text = raw.strip()
-    if not text:
+    text = _clean_answer(raw)
+    if not text or _foreign_text(text):
         return ()
     results = _RESULT_RE.findall(text)
     if not results:
@@ -213,6 +219,36 @@ def _parse_single(text: str) -> _Overlay | None:
     if lines and sum(len(line) for line in lines) >= _MIN_TEXT_LEN:
         return _Overlay(blocks=(_TextBlock(lines=lines),))
     return None
+
+
+def _clean_answer(raw: str) -> str:
+    """Strip Markdown code fences around the card answer."""
+    return _FENCE_RE.sub("", raw).strip()
+
+
+def _foreign_text(text: str) -> bool:
+    """Return whether any extracted card text has a forbidden letter."""
+    parts = list(_BLOCK_RE.findall(text))
+    parts.extend(_BLOCK_RE.sub(" ", part) for part in _RESULT_RE.findall(text))
+    if not parts:
+        parts = [text]
+    return any(_foreign_lines(_lines(part)) for part in parts)
+
+
+def _foreign_lines(lines: tuple[str, ...]) -> bool:
+    """Return whether a line holds a Latin, CJK or replacement character."""
+    return any(_foreign_char(char) for line in lines for char in line)
+
+
+def _foreign_char(char: str) -> bool:
+    """Return whether one character is outside the Cyrillic alphabet.
+
+    Digits, spaces, punctuation, symbols and emoji are allowed; any letter of
+    another script and U+FFFD are not.
+    """
+    if char == "\ufffd":
+        return True
+    return unicodedata.category(char).startswith("L") and not "\u0400" <= char <= "\u04ff"
 
 
 def _lines(text: str) -> tuple[str, ...]:

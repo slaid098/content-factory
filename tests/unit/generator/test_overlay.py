@@ -141,10 +141,32 @@ def test_mix_reports_a_broken_card(tmp_path: Path, monkeypatch) -> None:
         )
 
 
-def test_wrap_splits_long_lines_by_width() -> None:
-    lines = overlay_module._wrap(("one two three", "single"), ImageFont.load_default(), 1)
+def test_wrap_joins_the_model_lines_into_one_paragraph() -> None:
+    font = ImageFont.load_default(size=30)
+    limit = int(font.getlength("one two three")) + 1
 
-    assert lines == ("one", "two", "three", "single")
+    lines = overlay_module._wrap(("one two", "three"), font, limit)
+
+    assert lines == ("one two three",)
+
+
+def test_wrap_splits_long_lines_by_width() -> None:
+    font = ImageFont.load_default(size=30)
+    limit = int(font.getlength("one two")) + 1
+
+    lines = overlay_module._wrap(("one two three", "single"), font, limit)
+
+    assert lines == ("one two", "three", "single")
+
+
+def test_wrap_flushes_the_line_before_an_overlong_word() -> None:
+    font = ImageFont.load_default(size=30)
+    limit = int(font.getlength("one")) + 1
+
+    lines = overlay_module._wrap(("one xxxxxxxxxx",), font, limit)
+
+    assert lines[0] == "one"
+    assert len(lines) > 2
 
 
 def test_colours_are_parsed_and_validated() -> None:
@@ -281,6 +303,14 @@ def test_hug_text_ignores_an_empty_first_block(tmp_path: Path, monkeypatch) -> N
     assert boxes[0].background == (255, 241, 220, 215)
 
 
+def test_hug_text_without_text_draws_nothing(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles", hug_text=True)
+    _patch_font(monkeypatch)
+    card = _Overlay(blocks=(_TextBlock(lines=("   ",)),))
+
+    assert block_boxes(profile, card) == ()
+
+
 def test_hug_text_stack_moves_up_to_fit_the_frame(tmp_path: Path, monkeypatch) -> None:
     profile = fixture_profile(tmp_path / "profiles", hug_text=True)
     profile = replace(profile, style=replace(profile.style, block1_y=0.95))
@@ -302,3 +332,206 @@ def test_hug_text_stack_taller_than_the_frame_is_reported(tmp_path: Path, monkey
 
     with pytest.raises(OverlayError, match="не помещается"):
         block_boxes(profile, card)
+
+
+def test_block_lines_are_joined_into_one_paragraph(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+    _patch_font(monkeypatch)
+    card = _Overlay(blocks=(_TextBlock(lines=("Первый абзац", "текст")),))
+
+    boxes = block_boxes(profile, card)
+
+    assert boxes[0].lines == ("Первый абзац текст",)
+
+
+def test_hug_paragraph_has_no_single_word_lines(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles", hug_text=True, max_text_width=0.6)
+    _patch_font(monkeypatch)
+    words = ["раз", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять", "десять"]
+    card = _Overlay(blocks=(_TextBlock(lines=tuple(words)),))
+
+    boxes = block_boxes(profile, card)
+
+    assert len(boxes[0].lines) > 1
+    assert all(len(line.split()) > 1 for line in boxes[0].lines)
+
+
+def test_card_width_is_centred_and_fits_the_frame(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles", extra={"card_width": 0.6})
+    _patch_font(monkeypatch)
+    card = _Overlay(
+        blocks=(
+            _TextBlock(lines=("Основной текст",)),
+            _TextBlock(lines=("напиши мне",)),
+        )
+    )
+
+    boxes = block_boxes(profile, card)
+    image = render_card(profile, card)
+
+    expected = int(profile.width * 0.6)
+    assert len(boxes) == 2
+    assert all(box.width == expected for box in boxes)
+    assert all(box.left == (profile.width - expected) // 2 for box in boxes)
+    assert all(box.left + box.width <= profile.width for box in boxes)
+    assert boxes[-1].top + boxes[-1].height <= profile.height
+    frame = image.getbbox()
+    assert frame is not None
+    assert frame[0] == boxes[0].left
+    assert frame[2] - frame[0] in (expected, expected + 1)
+    assert frame[3] <= profile.height
+
+
+def test_merge_blocks_draws_one_card_with_a_divider_and_bigger_cta(
+    tmp_path: Path, monkeypatch
+) -> None:
+    profile = fixture_profile(
+        tmp_path / "profiles",
+        extra={
+            "merge_blocks": True,
+            "cta_divider": True,
+            "cta_scale": 1.5,
+            "card_width": 0.7,
+        },
+    )
+    _patch_font(monkeypatch)
+    card = _Overlay(
+        blocks=(
+            _TextBlock(lines=("Первый абзац", "продолжение текста")),
+            _TextBlock(lines=("напиши мне",)),
+        )
+    )
+
+    boxes = block_boxes(profile, card)
+    image = render_card(profile, card)
+
+    assert len(boxes) == 1
+    box = boxes[0]
+    assert box.width == int(profile.width * 0.7)
+    assert "напиши мне" not in " ".join(box.lines)
+    assert box.cta_lines == ("напиши мне",)
+    assert box.font_px == 30
+    assert box.cta_font_px == 45
+    assert box.cta_line_px == int(30 * 1.5 * 1.28)
+    assert box.cta_color == (255, 248, 239)
+    assert box.divider is True
+    column = box.left + 15
+    divider_rows = [
+        y for y in range(box.top, box.top + box.height) if image.getpixel((column, y))[3] == 60
+    ]
+    assert len(divider_rows) == 1
+
+
+def test_merge_blocks_without_cta_has_no_divider(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(
+        tmp_path / "profiles", extra={"merge_blocks": True, "cta_divider": True}
+    )
+    _patch_font(monkeypatch)
+    card = _Overlay(blocks=(_TextBlock(lines=("Одна карточка",)),))
+
+    boxes = block_boxes(profile, card)
+
+    assert len(boxes) == 1
+    assert boxes[0].cta_lines == ()
+    assert boxes[0].divider is False
+
+
+def test_long_cta_wraps_above_the_divider(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(
+        tmp_path / "profiles",
+        extra={"merge_blocks": True, "cta_divider": True, "card_width": 0.4},
+    )
+    _patch_font(monkeypatch)
+    card = _Overlay(
+        blocks=(
+            _TextBlock(lines=("Основной текст",)),
+            _TextBlock(lines=("напиши мне пожалуйста прямо сейчас",)),
+        )
+    )
+
+    boxes = block_boxes(profile, card)
+
+    assert len(boxes[0].cta_lines) > 1
+    assert boxes[0].divider is True
+
+
+def test_cta_scale_enlarges_the_separate_second_card(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles", extra={"cta_scale": 1.33})
+    _patch_font(monkeypatch)
+    card = _Overlay(blocks=(_TextBlock(lines=("Первый",)), _TextBlock(lines=("Второй",))))
+
+    boxes = block_boxes(profile, card)
+
+    assert boxes[0].font_px == 30
+    assert boxes[0].line_px == int(30 * 1.28)
+    assert boxes[1].font_px == 39
+    assert boxes[1].line_px == int(30 * 1.33 * 1.28)
+
+
+def test_full_width_text_pad_x_keeps_lines_inside_the_card(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles", extra={"text_pad_x": 0.10})
+    _patch_font(monkeypatch)
+    card = _Overlay(blocks=(_TextBlock(lines=(" ".join(["а"] * 60),)),))
+
+    boxes = block_boxes(profile, card)
+
+    font = ImageFont.load_default(size=boxes[0].font_px)
+    assert boxes[0].width == profile.width - 2 * int(profile.width * 0.10)
+    assert all(font.getlength(line) <= boxes[0].width for line in boxes[0].lines)
+
+
+def test_card_width_first_card_taller_than_the_frame_is_reported(
+    tmp_path: Path, monkeypatch
+) -> None:
+    profile = fixture_profile(tmp_path / "profiles", extra={"card_width": 0.2})
+    _patch_font(monkeypatch)
+    card = _Overlay(
+        blocks=(
+            _TextBlock(lines=(" ".join(["слово"] * 40),)),
+            _TextBlock(lines=("Второй",)),
+        )
+    )
+
+    with pytest.raises(OverlayError, match="не помещается"):
+        block_boxes(profile, card)
+
+
+def test_card_taller_than_the_frame_is_reported(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles", extra={"card_width": 0.2})
+    _patch_font(monkeypatch)
+    card = _Overlay(blocks=(_TextBlock(lines=(" ".join(["слово"] * 40),)),))
+
+    with pytest.raises(OverlayError, match="не помещается"):
+        block_boxes(profile, card)
+
+
+def test_single_word_block_does_not_crash_a_merged_card(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles", extra={"merge_blocks": True})
+    _patch_font(monkeypatch)
+    card = _Overlay(blocks=(_TextBlock(lines=("Слово",)),))
+
+    boxes = block_boxes(profile, card)
+
+    assert len(boxes) == 1
+    assert boxes[0].lines == ("Слово",)
+    assert boxes[0].cta_lines == ()
+
+
+def test_merge_blocks_with_only_blank_blocks_draws_nothing(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles", extra={"merge_blocks": True})
+    _patch_font(monkeypatch)
+    card = _Overlay(blocks=(_TextBlock(lines=("   ",)), _TextBlock(lines=())))
+
+    assert block_boxes(profile, card) == ()
+
+
+def test_text_pad_x_narrows_the_wrap_of_a_fixed_card(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles", extra={"card_width": 0.6, "text_pad_x": 0.10})
+    _patch_font(monkeypatch)
+    card = _Overlay(blocks=(_TextBlock(lines=("Первый абзац продолжение текста",)),))
+
+    boxes = block_boxes(profile, card)
+
+    font = ImageFont.load_default(size=boxes[0].font_px)
+    limit = int(profile.width * 0.6) - 2 * int(profile.width * 0.10)
+    assert all(font.getlength(line) <= limit for line in boxes[0].lines)

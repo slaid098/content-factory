@@ -15,63 +15,170 @@ from content_factory.services.generator.texts import _Overlay
 
 _MIN_HUG_FONT_PX = 12
 _FULL_WIDTH_MIN_FONT_PX = 20
-_HORIZONTAL_PAD = 0.04
 _LINE_HEIGHT = 1.28
 _BOX_RADIUS = 18
 _HUG_PAD_X = 0.028
 _HUG_PAD_Y = 0.42
 _HUG_LINE_HEIGHT = 1.25
 _HUG_RADIUS = 10
+_CTA_DIVIDER_INSET = 14
+_CTA_DIVIDER_GAP = 6
+_CTA_DIVIDER_ALPHA = 60
 _MUSIC_VOLUME = 0.35
 
 
 @dataclass(frozen=True, slots=True)
 class _TextBox:
-    """One drawn text block and its rectangle in the frame."""
+    """One drawn card and its rectangle in the frame.
+
+    ``lines`` are the main paragraph. A merged card keeps its call to action
+    in ``cta_lines``; separate cards leave the CTA fields empty.
+    """
 
     lines: tuple[str, ...]
     font_px: int
+    line_px: int
     left: int
     top: int
     width: int
     height: int
     background: tuple[int, int, int, int]
     color: tuple[int, int, int]
+    cta_lines: tuple[str, ...] = ()
+    cta_font_px: int = 0
+    cta_line_px: int = 0
+    cta_color: tuple[int, int, int] | None = None
+    divider: bool = False
 
 
 def block_boxes(profile: _Profile, overlay: _Overlay) -> tuple[_TextBox, ...]:
-    """Lay out one or two text blocks inside the video frame.
+    """Lay out the text card of the video.
 
-    The first block sits at ``block1_y``. With ``hug_text`` every next block
-    follows the previous one with ``gap`` of empty frame space; otherwise the
-    next block sits at ``block2_y``. The second block receives the accent
-    colours of the profile. A hug stack that does not fit moves up as a whole;
-    a stack taller than the frame fails instead of drawing a cut card.
+    ``merge_blocks`` draws every block as one card with the last block as the
+    CTA. Otherwise the first block sits at ``block1_y``; with ``hug_text``
+    every next block follows the previous one with ``gap`` of empty frame
+    space, and without it the next block sits at ``block2_y`` or ``block1_y +
+    gap``. Hug, fixed-width and merged cards move up as a whole to stay in the
+    frame and fail instead of drawing a cut card.
 
     Args:
         profile: Loaded profile with frame size and text style.
         overlay: Parsed card of the video.
 
     Returns:
-        Boxes in block order.
+        Boxes in block order; a merged card is the only box.
+    """
+    if profile.style.merge_blocks:
+        card = _merged_card(profile, overlay)
+        return _fit_stack((card,), profile.height) if card is not None else ()
+    style = profile.style
+    floor = _MIN_HUG_FONT_PX if style.hug_text else _FULL_WIDTH_MIN_FONT_PX
+    font_px = max(floor, int(profile.width * style.font_size))
+    max_text_width = _text_limit(profile)
+    boxes: list[_TextBox] = []
+    for index, block in enumerate(overlay.blocks):
+        number = len(boxes) if style.hug_text else index
+        is_cta = number > 0
+        block_px = int(font_px * style.cta_scale) if is_cta else font_px
+        line_px = (
+            _cta_line_height(font_px, style.cta_scale) if is_cta else _line_height(style, font_px)
+        )
+        font = _load_font(profile.font, block_px)
+        lines = _wrap(block.lines, font, max_text_width)
+        if not lines:
+            continue
+        y_pct = style.block1_y if number == 0 else _second_y(style)
+        box = _box(profile, style, number, lines, font, block_px, line_px, y_pct)
+        if style.hug_text and boxes:
+            box = _below(box, boxes[-1], int(style.gap * profile.height))
+        boxes.append(box)
+    stacked = style.hug_text or style.card_width is not None
+    return _fit_stack(tuple(boxes), profile.height) if stacked else tuple(boxes)
+
+
+def _merged_card(profile: _Profile, overlay: _Overlay) -> _TextBox | None:
+    """Build the single card of ``merge_blocks``.
+
+    All blocks but the last are one paragraph; the last block is the CTA,
+    wrapped at its own scaled font and separated by the optional divider.
     """
     style = profile.style
     floor = _MIN_HUG_FONT_PX if style.hug_text else _FULL_WIDTH_MIN_FONT_PX
     font_px = max(floor, int(profile.width * style.font_size))
     font = _load_font(profile.font, font_px)
-    max_text_width = int(profile.width * style.max_text_width)
-    boxes: list[_TextBox] = []
-    for index, block in enumerate(overlay.blocks):
-        lines = _wrap(block.lines, font, max_text_width, break_words=style.hug_text)
-        if not lines:
-            continue
-        number = len(boxes) if style.hug_text else index
-        y_pct = style.block1_y if number == 0 else _second_y(style)
-        box = _box(profile, style, number, lines, font, font_px, y_pct)
-        if style.hug_text and boxes:
-            box = _below(box, boxes[-1], int(style.gap * profile.height))
-        boxes.append(box)
-    return _fit_stack(tuple(boxes), profile.height) if style.hug_text else tuple(boxes)
+    text_width = _text_limit(profile)
+    blocks = tuple(
+        block.lines for block in overlay.blocks if any(line.strip() for line in block.lines)
+    )
+    if not blocks:
+        return None
+    cta_raw = blocks[-1] if len(blocks) > 1 else ()
+    main_raw = tuple(line for lines in (blocks[:-1] if cta_raw else blocks) for line in lines)
+    lines = _wrap(main_raw, font, text_width)
+    cta_font_px = int(font_px * style.cta_scale)
+    cta_font = _load_font(profile.font, cta_font_px)
+    cta_lines = _wrap(cta_raw, cta_font, text_width)
+    line_px = _line_height(style, font_px)
+    cta_line_px = _cta_line_height(font_px, style.cta_scale)
+    divider = bool(cta_lines and style.cta_divider)
+    pad_y = font_px // 3
+    height = line_px * len(lines) + cta_line_px * len(cta_lines) + 2 * pad_y
+    if divider:
+        height += 2 * _CTA_DIVIDER_GAP + 1
+    width, left = _card_geometry(profile)
+    background, color = _colors(style, 0)
+    return _TextBox(
+        lines=lines,
+        font_px=font_px,
+        line_px=line_px,
+        left=left,
+        top=_card_top(profile, height),
+        width=width,
+        height=height,
+        background=background,
+        color=color,
+        cta_lines=cta_lines,
+        cta_font_px=cta_font_px,
+        cta_line_px=cta_line_px,
+        cta_color=_colors(style, 1)[1] if cta_lines else None,
+        divider=divider,
+    )
+
+
+def _text_limit(profile: _Profile) -> int:
+    """Return the wrap width inside the card of the profile."""
+    style = profile.style
+    if style.hug_text:
+        return int(profile.width * style.max_text_width)
+    width, _ = _card_geometry(profile)
+    if style.card_width is not None:
+        return max(1, width - 2 * _pad_x(profile))
+    return max(1, min(int(profile.width * style.max_text_width), width))
+
+
+def _pad_x(profile: _Profile) -> int:
+    """Horizontal text padding of a full or fixed-width card."""
+    return int(profile.width * profile.style.text_pad_x)
+
+
+def _card_geometry(profile: _Profile) -> tuple[int, int]:
+    """Return the width and left edge of a full or fixed-width card."""
+    if profile.style.card_width is not None:
+        width = int(profile.width * profile.style.card_width)
+    else:
+        width = profile.width - 2 * _pad_x(profile)
+    return width, (profile.width - width) // 2
+
+
+def _card_top(profile: _Profile, height: int) -> int:
+    """Centre a card at ``block1_y`` and keep it inside the frame."""
+    top = int(profile.style.block1_y * profile.height - height / 2)
+    return max(0, min(top, profile.height - height))
+
+
+def _cta_line_height(font_px: int, scale: float) -> int:
+    """Return the line height of the CTA at its scaled font."""
+    return int(font_px * scale * _LINE_HEIGHT)
 
 
 def _below(box: _TextBox, previous: _TextBox, gap: int) -> _TextBox:
@@ -80,22 +187,24 @@ def _below(box: _TextBox, previous: _TextBox, gap: int) -> _TextBox:
 
 
 def _fit_stack(boxes: tuple[_TextBox, ...], frame_height: int) -> tuple[_TextBox, ...]:
-    """Move a hug stack up so its last card ends inside the frame.
+    """Move a card stack up so every card ends inside the frame.
 
     Raises:
-        OverlayError: The stack is taller than the frame and cannot fit.
+        OverlayError: A card is taller than the frame or the stack cannot move
+            up enough to fit every card.
     """
     if not boxes:
         return boxes
-    bottom = boxes[-1].top + boxes[-1].height
+    bottom = max(box.top + box.height for box in boxes)
     if bottom <= frame_height:
         return boxes
     shift = bottom - frame_height
-    if boxes[0].top < shift:
+    shifted = tuple(replace(box, top=box.top - shift) for box in boxes)
+    if any(box.top < 0 or box.top + box.height > frame_height for box in shifted):
         raise OverlayError(
             f"текст не помещается в кадр: нижняя кромка {bottom} при высоте {frame_height}"
         )
-    return tuple(replace(box, top=box.top - shift) for box in boxes)
+    return shifted
 
 
 def _second_y(style: _OverlayStyle) -> float:
@@ -114,7 +223,7 @@ def render_card(profile: _Profile, overlay: _Overlay) -> Image.Image:
 
     Args:
         profile: Loaded profile.
-        overlay: Parsed card with one or two blocks.
+        overlay: Parsed card with one or more blocks.
 
     Returns:
         RGBA image of ``profile.width x profile.height``.
@@ -128,15 +237,60 @@ def render_card(profile: _Profile, overlay: _Overlay) -> Image.Image:
             radius=radius,
             fill=box.background,
         )
-        font = _load_font(profile.font, box.font_px)
-        line_h = _line_height(profile.style, box.font_px)
-        text_h = line_h * len(box.lines)
-        y = box.top + (box.height - text_h) // 2
-        for line in box.lines:
-            width = draw.textlength(line, font=font)
-            draw.text((box.left + (box.width - width) / 2, y), line, font=font, fill=box.color)
-            y += line_h
+        _draw_card_text(draw, profile, box)
     return image
+
+
+def _draw_card_text(draw: ImageDraw.ImageDraw, profile: _Profile, box: _TextBox) -> None:
+    """Draw the main paragraph, the CTA divider and the CTA of one card."""
+    main_h = box.line_px * len(box.lines)
+    cta_h = box.cta_line_px * len(box.cta_lines)
+    divider_h = 2 * _CTA_DIVIDER_GAP + 1 if box.divider else 0
+    y = box.top + (box.height - main_h - divider_h - cta_h) // 2
+    font = _load_font(profile.font, box.font_px)
+    _draw_lines(draw, box.lines, font, box.color, box.left, y, box.width, box.line_px)
+    y += main_h
+    if box.divider:
+        y += _CTA_DIVIDER_GAP
+        draw.line(
+            [
+                (box.left + _CTA_DIVIDER_INSET, y),
+                (box.left + box.width - _CTA_DIVIDER_INSET, y),
+            ],
+            fill=(*_rgb(profile.style.text_color), _CTA_DIVIDER_ALPHA),
+            width=1,
+        )
+        y += 1 + _CTA_DIVIDER_GAP
+    if box.cta_lines:
+        font = _load_font(profile.font, box.cta_font_px)
+        _draw_lines(
+            draw,
+            box.cta_lines,
+            font,
+            box.cta_color or box.color,
+            box.left,
+            y,
+            box.width,
+            box.cta_line_px,
+        )
+
+
+def _draw_lines(
+    draw: ImageDraw.ImageDraw,
+    lines: tuple[str, ...],
+    font: ImageFont.FreeTypeFont,
+    color: tuple[int, int, int],
+    left: int,
+    top: int,
+    width: int,
+    line_px: int,
+) -> None:
+    """Draw centered lines of one part of a card."""
+    y = top
+    for line in lines:
+        text_width = draw.textlength(line, font=font)
+        draw.text((left + (width - text_width) / 2, y), line, font=font, fill=color)
+        y += line_px
 
 
 def mix(
@@ -176,33 +330,32 @@ def _box(
     lines: tuple[str, ...],
     font: ImageFont.FreeTypeFont,
     font_px: int,
+    line_px: int,
     y_pct: float,
 ) -> _TextBox:
     """Build the rectangle and colours of one block.
 
-    Profiles with ``hug_text`` get a card as wide as the text; the default
-    keeps the full-width card of the older profiles.
+    Profiles with ``hug_text`` get a card as wide as the text, ``card_width``
+    gets a fixed centered card and the default keeps the full-width card of
+    the older profiles.
     """
     background, color = _colors(style, index)
     if style.hug_text:
         pad_x = max(10, int(profile.width * _HUG_PAD_X))
         pad_y = max(7, int(font_px * _HUG_PAD_Y))
-        line_h = _line_height(style, font_px)
         width = max(int(font.getlength(line)) for line in lines) + 2 * pad_x
         width = min(width, profile.width)
         left = max(0, (profile.width - width) // 2)
     else:
-        pad_x = int(profile.width * _HORIZONTAL_PAD)
         pad_y = font_px // 3
-        line_h = _line_height(style, font_px)
-        width = profile.width - 2 * pad_x
-        left = pad_x
-    height = line_h * len(lines) + 2 * pad_y
+        width, left = _card_geometry(profile)
+    height = line_px * len(lines) + 2 * pad_y
     top = int(y_pct * profile.height - height / 2)
     top = max(0, min(top, profile.height - height))
     return _TextBox(
         lines=lines,
         font_px=font_px,
+        line_px=line_px,
         left=left,
         top=top,
         width=width,
@@ -287,32 +440,30 @@ def _wrap(
     lines: tuple[str, ...],
     font: ImageFont.FreeTypeFont,
     max_width: int,
-    *,
-    break_words: bool = False,
 ) -> tuple[str, ...]:
-    """Wrap card lines by words; an overlong word is split by characters."""
+    """Wrap the paragraph of one block by words.
+
+    The model lines of a block are one paragraph, so they are joined before
+    wrapping. A word wider than the limit is split by characters.
+    """
+    words = " ".join(lines).split()
     wrapped: list[str] = []
-    for line in lines:
-        words = line.split()
-        if not words:
-            continue
-        current = ""
-        for word in words:
-            if break_words and font.getlength(word) > max_width:
-                if current:
-                    wrapped.append(current)
-                    current = ""
-                wrapped.extend(_chunks(word, font, max_width))
-                continue
-            if not current:
-                current = word
-            elif font.getlength(f"{current} {word}") <= max_width:
-                current = f"{current} {word}"
-            else:
+    current = ""
+    for word in words:
+        if font.getlength(word) > max_width:
+            if current:
                 wrapped.append(current)
-                current = word
-        if current:
+                current = ""
+            wrapped.extend(_chunks(word, font, max_width))
+        elif not current:
+            current = word
+        elif font.getlength(f"{current} {word}") <= max_width:
+            current = f"{current} {word}"
+        else:
             wrapped.append(current)
+            current = word
+    if current:
+        wrapped.append(current)
     return tuple(wrapped)
 
 

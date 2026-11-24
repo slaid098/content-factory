@@ -62,6 +62,11 @@ class _OverlayStyle:
     gap: float = 0.05
     hug_text: bool = False
     max_text_width: float = _DEFAULT_MAX_TEXT_WIDTH
+    card_width: float | None = None
+    text_pad_x: float = 0.04
+    cta_scale: float = 1.0
+    cta_divider: bool = False
+    merge_blocks: bool = False
     text_color: str = "#000000"
     text_bg_color: str = "#FFFFFF"
     text_bg_alpha: int = 255
@@ -339,21 +344,22 @@ def _resolve_font(directory: Path, name: str, root: Path) -> Path:
 
 def _overlay_style(data: Mapping[str, Any]) -> _OverlayStyle:
     """Build overlay geometry and colours from the profile values."""
-    max_text_width = _float_or(
-        data.get("max_text_width"), _DEFAULT_MAX_TEXT_WIDTH, "max_text_width"
-    )
-    if not 0.2 <= max_text_width <= 0.9:
-        raise ProfileError(f"max_text_width должен быть в диапазоне 0.2..0.9: {max_text_width}")
-    gap = _float_or(data.get("gap"), 0.05, "gap")
-    if not 0 <= gap <= 1:
-        raise ProfileError(f"gap должен быть в диапазоне 0..1: {gap}")
+    hug_text = _bool_or(data.get("hug_text"), False, "hug_text")
+    card_width = _optional_ratio(data, "card_width", 0.2, 0.9)
+    if hug_text and card_width is not None:
+        raise ProfileError("hug_text и card_width взаимоисключающи: выберите один режим карточки")
     return _OverlayStyle(
         font_size=_float_or(data.get("size"), 0.06, "size"),
         block1_y=_float_or(data.get("block1_y"), 0.62, "block1_y"),
         block2_y=_optional_number(data.get("block2_y")),
-        gap=gap,
-        hug_text=_bool_or(data.get("hug_text"), False, "hug_text"),
-        max_text_width=max_text_width,
+        gap=_ratio(data, "gap", 0.05, 0, 1),
+        hug_text=hug_text,
+        max_text_width=_ratio(data, "max_text_width", _DEFAULT_MAX_TEXT_WIDTH, 0.2, 0.9),
+        card_width=card_width,
+        text_pad_x=_ratio(data, "text_pad_x", 0.04, 0.01, 0.10),
+        cta_scale=_ratio(data, "cta_scale", 1.0, 0.8, 2.0),
+        cta_divider=_bool_or(data.get("cta_divider"), False, "cta_divider"),
+        merge_blocks=_bool_or(data.get("merge_blocks"), False, "merge_blocks"),
         text_color=str(data.get("text_color") or "#000000"),
         text_bg_color=str(data.get("text_bg_color") or "#FFFFFF"),
         text_bg_alpha=_alpha(data.get("text_bg_alpha")),
@@ -508,6 +514,21 @@ def _float_or(value: object, default: float, key: str) -> float:
     if not math.isfinite(number):
         raise ProfileError(f"{key} должен быть конечным числом: {value!r}")
     return number
+
+
+def _ratio(data: Mapping[str, Any], key: str, default: float, low: float, high: float) -> float:
+    """Float value in ``low..high``; a bad value names its key and range."""
+    value = _float_or(data.get(key), default, key)
+    if not low <= value <= high:
+        raise ProfileError(f"{key} должен быть в диапазоне {low}..{high}: {value}")
+    return value
+
+
+def _optional_ratio(data: Mapping[str, Any], key: str, low: float, high: float) -> float | None:
+    """Optional float value in ``low..high``; absent stays ``None``."""
+    if data.get(key) is None:
+        return None
+    return _ratio(data, key, low, low, high)
 
 
 def _bool_or(value: object, default: bool, key: str) -> bool:

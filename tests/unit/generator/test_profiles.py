@@ -327,6 +327,88 @@ def test_overlay_hug_options_are_read(tmp_path: Path) -> None:
     assert profile.style.max_text_width == 0.7
 
 
+def test_overlay_card_options_default_to_the_old_look(tmp_path: Path) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+
+    assert profile.style.card_width is None
+    assert profile.style.text_pad_x == 0.04
+    assert profile.style.cta_scale == 1.0
+    assert profile.style.cta_divider is False
+    assert profile.style.merge_blocks is False
+
+
+def test_overlay_card_options_are_read(tmp_path: Path) -> None:
+    profile = fixture_profile(
+        tmp_path / "profiles",
+        extra={
+            "card_width": 0.6,
+            "text_pad_x": 0.02,
+            "cta_scale": 1.5,
+            "cta_divider": True,
+            "merge_blocks": True,
+        },
+    )
+
+    assert profile.style.card_width == 0.6
+    assert profile.style.text_pad_x == 0.02
+    assert profile.style.cta_scale == 1.5
+    assert profile.style.cta_divider is True
+    assert profile.style.merge_blocks is True
+
+
+@pytest.mark.parametrize("value", [0.2, 0.9])
+def test_card_width_bounds_are_accepted(tmp_path: Path, value: float) -> None:
+    profile = fixture_profile(tmp_path / "profiles", extra={"card_width": value})
+
+    assert profile.style.card_width == value
+
+
+@pytest.mark.parametrize("value", [0.19, 0.91, 1.5, "wide"])
+def test_bad_card_width_fails_before_rent(tmp_path: Path, value: object) -> None:
+    make_profile(tmp_path / "profiles", extra={"card_width": value})
+
+    with pytest.raises(ProfileError, match="card_width"):
+        load_profile("dating/profile_2", tmp_path / "profiles")
+
+
+@pytest.mark.parametrize("value", [0.01, 0.10])
+def test_text_pad_x_bounds_are_accepted(tmp_path: Path, value: float) -> None:
+    profile = fixture_profile(tmp_path / "profiles", extra={"text_pad_x": value})
+
+    assert profile.style.text_pad_x == value
+
+
+@pytest.mark.parametrize("value", [0.009, 0.11, "wide"])
+def test_bad_text_pad_x_fails_before_rent(tmp_path: Path, value: object) -> None:
+    make_profile(tmp_path / "profiles", extra={"text_pad_x": value})
+
+    with pytest.raises(ProfileError, match="text_pad_x"):
+        load_profile("dating/profile_2", tmp_path / "profiles")
+
+
+@pytest.mark.parametrize("value", [0.8, 2.0])
+def test_cta_scale_bounds_are_accepted(tmp_path: Path, value: float) -> None:
+    profile = fixture_profile(tmp_path / "profiles", extra={"cta_scale": value})
+
+    assert profile.style.cta_scale == value
+
+
+@pytest.mark.parametrize("value", [0.79, 2.01, "big"])
+def test_bad_cta_scale_fails_before_rent(tmp_path: Path, value: object) -> None:
+    make_profile(tmp_path / "profiles", extra={"cta_scale": value})
+
+    with pytest.raises(ProfileError, match="cta_scale"):
+        load_profile("dating/profile_2", tmp_path / "profiles")
+
+
+def test_hug_text_conflicts_with_card_width(tmp_path: Path) -> None:
+    fixture_profile(tmp_path / "profiles")
+    _rewrite(tmp_path / "profiles", hug_text=True, card_width=0.6)
+
+    with pytest.raises(ProfileError, match="card_width"):
+        load_profile("dating/profile_2", tmp_path / "profiles")
+
+
 def test_text_width_defaults_to_the_full_card_limit(tmp_path: Path) -> None:
     profile = fixture_profile(tmp_path / "profiles")
 
@@ -357,9 +439,10 @@ def test_bad_gap_fails_before_rent(tmp_path: Path, value: float) -> None:
         load_profile("dating/profile_2", tmp_path / "profiles")
 
 
-def test_hug_text_must_be_boolean(tmp_path: Path) -> None:
+@pytest.mark.parametrize("key", ["hug_text", "cta_divider", "merge_blocks"])
+def test_card_flags_must_be_boolean(tmp_path: Path, key: str) -> None:
     fixture_profile(tmp_path / "profiles")
-    _rewrite(tmp_path / "profiles", hug_text="false")
+    _rewrite(tmp_path / "profiles", **{key: "false"})
 
-    with pytest.raises(ProfileError, match="hug_text"):
+    with pytest.raises(ProfileError, match=key):
         load_profile("dating/profile_2", tmp_path / "profiles")
