@@ -67,6 +67,31 @@ def test_rent_pool_size_rejects_values_outside_the_pool(monkeypatch, value: str)
         load_generator_settings()
 
 
+def test_offer_refresh_defaults_to_sixty() -> None:
+    assert GeneratorSettings().offer_refresh_seconds == 60
+
+
+def test_offer_refresh_reads_the_env(monkeypatch) -> None:
+    monkeypatch.setenv("GENERATOR_OFFER_REFRESH_SECONDS", "30")
+
+    assert GeneratorSettings().offer_refresh_seconds == 30
+
+
+@pytest.mark.parametrize("value", ["10", "600"])
+def test_offer_refresh_accepts_the_window_edges(monkeypatch, value: str) -> None:
+    monkeypatch.setenv("GENERATOR_OFFER_REFRESH_SECONDS", value)
+
+    assert GeneratorSettings().offer_refresh_seconds == int(value)
+
+
+@pytest.mark.parametrize("value", ["9", "601"])
+def test_offer_refresh_rejects_values_outside_the_window(monkeypatch, value: str) -> None:
+    monkeypatch.setenv("GENERATOR_OFFER_REFRESH_SECONDS", value)
+
+    with pytest.raises(ConfigError, match="GENERATOR_OFFER_REFRESH_SECONDS"):
+        load_generator_settings()
+
+
 def test_bad_openai_base_url_names_the_variable_without_raw_value(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_BASE_URL", "ftp://secret-host")
 

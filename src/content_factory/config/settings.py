@@ -200,6 +200,7 @@ class GeneratorSettings(_OpenAIEndpointSettings):
     model: str = Field(default="deepseek-v4.1-flash", min_length=1)
     server_ready_timeout: int = Field(default=3600, ge=60)
     rent_pool_size: int = Field(default=3, ge=1, le=8)
+    offer_refresh_seconds: int = Field(default=60, ge=10, le=600)
     comfy_health_timeout: int = Field(default=300, ge=10)
     max_cost_per_hour: float | None = Field(default=None, gt=0)
     stale_instance_hours: int = Field(default=6, ge=1)
