@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -140,17 +141,27 @@ def _fast_poll(monkeypatch) -> None:
 
 
 class _RefillProvider(_Provider):
-    """Publishes prepared offers per search; only *ready* gets a ComfyUI port."""
+    """Publishes offers per search or from a callable; only *ready* gets a port."""
 
-    def __init__(self, searches: list[list[str]], ready: str = "", broken: str = "") -> None:
+    def __init__(
+        self,
+        searches: list[list[str]] | None = None,
+        ready: str = "",
+        broken: str = "",
+        *,
+        offer_source: Callable[[], list[str]] | None = None,
+    ) -> None:
         super().__init__()
-        self.searches = searches
+        self.searches = searches or []
+        self.offer_source = offer_source
         self.ready = ready
         self.broken = broken
         self.max_alive = 0
 
     def search_offers(self, query: dict[str, Any]) -> list[dict[str, Any]]:
         self.queries.append(dict(query))
+        if self.offer_source is not None:
+            return [{"id": offer_id} for offer_id in self.offer_source()]
         index = min(len(self.queries), len(self.searches)) - 1
         return [{"id": offer_id} for offer_id in self.searches[index]]
 
@@ -359,6 +370,92 @@ def test_wait_ready_keeps_polling_after_a_transient_show_error(tmp_path: Path, m
     assert connection.port == 40000
     assert len(calls) == 2
     assert state[0] < 60
+
+
+@pytest.mark.parametrize("absent_seconds", [30.0, 90.0], ids=["short", "past_grace"])
+def test_wait_ready_polls_for_an_unseen_instance_until_it_appears(
+    tmp_path: Path, monkeypatch, absent_seconds: float
+) -> None:
+    state, clock, sleep = _clock_pair()
+    monkeypatch.setattr(vast, "_healthy", lambda connection: True)
+    provider = _Provider(instances={"c1": _instance()})
+    show = provider.show_instance
+
+    def late(contract_id: str) -> dict[str, Any]:
+        if clock() < absent_seconds:
+            raise RentError(f"Instance {contract_id} not found")
+        return show(contract_id)
+
+    provider.show_instance = late  # type: ignore[method-assign]
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(tmp_path, server_ready_timeout=300),
+        sleep=sleep,
+        clock=clock,
+    )
+
+    connection = session._wait_ready(provider, "c1")
+
+    assert connection.port == 40000
+    assert state[0] >= absent_seconds
+
+
+def test_wait_ready_resets_the_gone_grace_when_the_instance_returns(
+    tmp_path: Path, monkeypatch
+) -> None:
+    state, clock, sleep = _clock_pair()
+    monkeypatch.setattr(vast, "_healthy", lambda connection: True)
+    provider = _Provider(instances={"c1": _instance()})
+    pending = _instance()
+    pending["ports"] = {}
+
+    def reappearing(contract_id: str) -> dict[str, Any]:
+        if clock() < 5:
+            return pending
+        if clock() < 35:
+            raise RentError(f"Instance {contract_id} not found")
+        return _instance()
+
+    provider.show_instance = reappearing  # type: ignore[method-assign]
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(tmp_path, server_ready_timeout=300),
+        sleep=sleep,
+        clock=clock,
+    )
+
+    connection = session._wait_ready(provider, "c1")
+
+    assert connection.port == 40000
+    assert 35 <= state[0] < vast._GONE_GRACE_SECONDS
+
+
+def test_wait_ready_does_not_treat_a_generic_error_as_a_disappearance(
+    tmp_path: Path, monkeypatch, log_records: list[dict[str, Any]]
+) -> None:
+    state, clock, sleep = _clock_pair()
+    monkeypatch.setattr(vast, "_healthy", lambda connection: True)
+    provider = _Provider(instances={"c1": _instance()})
+    show = provider.show_instance
+
+    def broken(contract_id: str) -> dict[str, Any]:
+        if clock() < 90:
+            raise RentError("Vast.ai CLI вернул не-JSON: unexpected output")
+        return show(contract_id)
+
+    provider.show_instance = broken  # type: ignore[method-assign]
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(tmp_path, server_ready_timeout=300),
+        sleep=sleep,
+        clock=clock,
+    )
+
+    connection = session._wait_ready(provider, "c1")
+
+    assert connection.port == 40000
+    assert state[0] >= 90
+    assert not [record for record in log_records if "исчез из аккаунта" in record["message"]]
 
 
 def test_destroy_is_verified_once(tmp_path: Path, monkeypatch) -> None:
@@ -744,8 +841,21 @@ def test_pool_does_not_rent_when_a_winner_appears_during_a_blocking_search(
 
 
 def test_pool_gives_a_later_offer_its_own_full_ready_timeout(tmp_path: Path, monkeypatch) -> None:
-    provider = _RefillProvider(searches=[["1"], [], [], [], [], [], ["2"]])
     state, clock, sleep = _refill_clock(monkeypatch)
+    offered: set[str] = set()
+
+    def offers() -> list[str]:
+        # The second offer appears on the fake clock, not on a search count:
+        # the coordinator's search rate must not decide the test outcome.
+        if "1" not in offered:
+            offered.add("1")
+            return ["1"]
+        if "2" not in offered and clock() >= 60:
+            offered.add("2")
+            return ["2"]
+        return []
+
+    provider = _RefillProvider(offer_source=offers)
     monkeypatch.setattr(vast, "_POLL_SECONDS", 5.0)
     session = VastSession(
         fixture_profile(tmp_path / "profiles"),
@@ -778,7 +888,9 @@ def test_pool_gives_a_later_offer_its_own_full_ready_timeout(tmp_path: Path, mon
     with pytest.raises(RentError, match="годного сервера"):
         session._rent(provider)
 
-    assert budgets == [("c1", 60.0), ("c2", 60.0)]
+    assert [contract_id for contract_id, _ in budgets] == ["c1", "c2"]
+    assert budgets[0][1] == pytest.approx(60.0, abs=2.0)
+    assert budgets[1][1] == pytest.approx(60.0, abs=2.0)
     assert state[0] > 60
     assert sorted(provider.destroyed) == ["c1", "c2"]
     assert session._contracts == set()
@@ -787,11 +899,29 @@ def test_pool_gives_a_later_offer_its_own_full_ready_timeout(tmp_path: Path, mon
 def test_pool_replaces_an_offer_that_disappeared_from_the_account(
     tmp_path: Path, monkeypatch, log_records: list[dict[str, Any]]
 ) -> None:
-    provider = _RefillProvider(searches=[["1"], [], [], [], [], [], [], ["2"]], ready="2")
+    offered: set[str] = set()
+    provider = _RefillProvider(ready="2")
+
+    def offers() -> list[str]:
+        if "1" not in offered:
+            offered.add("1")
+            return ["1"]
+        # The replacement appears only after the vanished candidate is destroyed.
+        if "2" not in offered and "c1" in provider.destroyed:
+            offered.add("2")
+            return ["2"]
+        return []
+
+    provider.offer_source = offers
     show = provider.show_instance
+    sightings = 0
 
     def gone(contract_id: str) -> dict[str, Any]:
+        nonlocal sightings
         if contract_id == "c1":
+            if sightings == 0:
+                sightings += 1
+                return show(contract_id)
             raise RentError("Instance c1 not found")
         return show(contract_id)
 
@@ -823,6 +953,56 @@ def test_pool_replaces_an_offer_that_disappeared_from_the_account(
     ready = [record for record in log_records if "Сервер ComfyUI готов" in record["message"]]
     assert ready
     assert "c2" in ready[0]["message"]
+
+
+def test_pool_propagates_a_fatal_error_without_trying_a_ready_replacement(
+    tmp_path: Path, monkeypatch
+) -> None:
+    offered: set[str] = set()
+
+    def offers() -> list[str]:
+        if "1" not in offered:
+            offered.add("1")
+            return ["1"]
+        if "2" not in offered:
+            offered.add("2")
+            return ["2"]
+        return []
+
+    provider = _RefillProvider(offer_source=offers, ready="2")
+    show = provider.show_instance
+    calls = 0
+
+    def fatal(contract_id: str) -> dict[str, Any]:
+        nonlocal calls
+        if contract_id == "c1" and calls == 0:
+            calls += 1
+            raise _VastFatal("Vast.ai: Unauthorized — проверьте VAST_API_TOKEN")
+        return show(contract_id)
+
+    provider.show_instance = fatal  # type: ignore[method-assign]
+    state, clock, sleep = _refill_clock(monkeypatch)
+    monkeypatch.setattr(vast, "_healthy", lambda connection: True)
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(
+            tmp_path,
+            rent_pool_size=2,
+            offer_refresh_seconds=10,
+            server_ready_timeout=60,
+        ),
+        provider=provider,
+        sleep=sleep,
+        clock=clock,
+    )
+
+    with pytest.raises(_VastFatal, match="Unauthorized"):
+        session._rent(provider)
+
+    assert [config["offer_id"] for config in provider.created] == ["1"]
+    assert provider.destroyed == ["c1"]
+    assert len(provider.queries) == 1
+    assert session._contracts == set()
 
 
 def test_sequential_path_gives_every_offer_its_own_full_ready_timeout(
@@ -866,6 +1046,45 @@ def test_sequential_path_gives_every_offer_its_own_full_ready_timeout(
     assert starts[1][1] >= 60
     assert state[0] >= 120
     assert sorted(provider.destroyed) == ["c1", "c2"]
+    assert session._contracts == set()
+
+
+def test_rent_does_not_try_the_next_verified_pass_after_a_fatal_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    provider = _PoolProvider(
+        offers=[
+            {"id": "1", "public_ipaddr": "10.0.0.1"},
+            {"id": "2", "public_ipaddr": "10.0.0.2"},
+        ],
+        ready="2",
+    )
+    show = provider.show_instance
+    calls = 0
+
+    def fatal(contract_id: str) -> dict[str, Any]:
+        nonlocal calls
+        if contract_id == "c1" and calls == 0:
+            calls += 1
+            raise _VastFatal("Vast.ai: balance is empty — пополните баланс Vast.ai")
+        return show(contract_id)
+
+    provider.show_instance = fatal  # type: ignore[method-assign]
+    state, clock, sleep = _refill_clock(monkeypatch)
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(tmp_path, rent_pool_size=1, server_ready_timeout=60),
+        provider=provider,
+        sleep=sleep,
+        clock=clock,
+    )
+
+    with pytest.raises(_VastFatal, match="balance is empty"):
+        session._rent(provider)
+
+    assert [config["offer_id"] for config in provider.created] == ["1"]
+    assert provider.destroyed == ["c1"]
+    assert len(provider.queries) == 1
     assert session._contracts == set()
 
 
@@ -1178,14 +1397,27 @@ def test_stale_reap_skips_unavailable_list(tmp_path: Path) -> None:
     assert reap_stale(provider, 6, now=1_000_000.0) == []
 
 
-def test_stale_reap_skips_an_instance_without_a_start_date() -> None:
+@pytest.mark.parametrize("start_date", [0.0, -3600.0])
+def test_stale_reap_skips_an_instance_without_a_valid_start_date(
+    log_records: list[dict[str, Any]],
+    start_date: float,
+) -> None:
     now = 1_000_000.0
     provider = _Provider(
-        instances={"1": {"id": "1", "label": "content-factory-generator", "start_date": 0}}
+        instances={
+            "1": {
+                "id": "1",
+                "label": "content-factory-generator",
+                "start_date": start_date,
+            }
+        }
     )
 
     assert reap_stale(provider, 3, now=now) == []
     assert set(provider.instances) == {"1"}
+    warning = [record for record in log_records if "start_date" in record["message"]]
+    assert warning
+    assert "1" in warning[0]["message"]
 
 
 def test_stale_reap_keeps_going_when_one_destroy_fails(tmp_path: Path, monkeypatch) -> None:
