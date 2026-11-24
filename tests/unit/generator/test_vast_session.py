@@ -743,9 +743,7 @@ def test_pool_stops_renting_when_a_ready_worker_is_not_yet_reported(
         sleep=sleep,
         clock=clock,
     )
-    ready = threading.Event()
     release = threading.Event()
-    searched = threading.Event()
     attempt = session._attempt
 
     def delayed_attempt(*args: Any, **kwargs: Any) -> None:
@@ -754,7 +752,6 @@ def test_pool_stops_renting_when_a_ready_worker_is_not_yet_reported(
 
         def blocking_put(item: Any) -> None:
             if isinstance(item, ServerInfo):
-                ready.set()
                 release.wait(5)
             put(item)
 
@@ -765,31 +762,76 @@ def test_pool_stops_renting_when_a_ready_worker_is_not_yet_reported(
             outcomes.put = put
 
     session._attempt = delayed_attempt  # type: ignore[method-assign]
-    active = session._active
+    pool_sleep = session._pool_sleep
 
-    def releasing_active(pool_state: Any) -> int:
-        if searched.is_set():
+    def releasing_sleep(pool_state: Any, *args: Any, **kwargs: Any) -> Any:
+        if pool_state.stop.is_set():
             release.set()
-        return active(pool_state)
+        return pool_sleep(pool_state, *args, **kwargs)
 
-    session._active = releasing_active  # type: ignore[method-assign]
-    search = provider.search_offers
-
-    def blocked_search(query: dict[str, Any]) -> list[dict[str, Any]]:
-        offers = search(query)
-        if len(provider.queries) == 2:
-            assert ready.wait(5)
-            searched.set()
-        return offers
-
-    provider.search_offers = blocked_search  # type: ignore[method-assign]
+    session._pool_sleep = releasing_sleep  # type: ignore[method-assign]
 
     info = session._rent(provider)
 
     assert info.connection.contract_id == "c1"
     assert [config["offer_id"] for config in provider.created] == ["1"]
-    assert len(provider.queries) == 2
+    assert len(provider.queries) == 1
     assert state[0] < 60
+
+
+def test_pool_keeps_a_candidate_that_failed_to_tear_down(tmp_path: Path, monkeypatch) -> None:
+    provider = _RefillProvider(searches=[["1"]], ready="")
+    state, clock, sleep = _refill_clock(monkeypatch)
+
+    def failing_destroy(*args: Any, **kwargs: Any) -> bool:
+        raise RentError("destroy is down")
+
+    monkeypatch.setattr(vast, "destroy_verified", failing_destroy)
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(
+            tmp_path,
+            rent_pool_size=2,
+            offer_refresh_seconds=10,
+            server_ready_timeout=60,
+        ),
+        provider=provider,
+        sleep=sleep,
+        clock=clock,
+    )
+
+    def failing_wait(*args: Any, **kwargs: Any) -> ServerConnection:
+        raise RentError("хост не выдал порт")
+
+    session._wait_ready = failing_wait  # type: ignore[method-assign]
+
+    with pytest.raises(vast._TeardownError, match="не уничтожен"):
+        session._rent(provider)
+
+    assert [config["offer_id"] for config in provider.created] == ["1"]
+    assert len(provider.queries) == 1
+    assert session._contracts == {"c1"}
+    assert state[0] < 60
+
+
+def test_pool_does_not_rent_after_stop(tmp_path: Path) -> None:
+    provider = _RefillProvider(searches=[["1"]])
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(tmp_path, rent_pool_size=2),
+        provider=provider,
+    )
+    pool_state = vast._PoolState(deadline=session._clock() + 60)
+    pool_state.stop.set()
+    offers = [{"id": "1"}]
+
+    started = session._start_attempts(provider, offers, pool_state)
+    session._attempt(provider, offers[0], pool_state.deadline, pool_state.stop, pool_state.outcomes)
+
+    assert started == 0
+    assert provider.created == []
+    assert provider.queries == []
+    assert pool_state.outcomes.empty()
 
 
 @pytest.mark.parametrize(

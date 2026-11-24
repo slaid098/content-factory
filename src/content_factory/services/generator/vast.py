@@ -117,7 +117,7 @@ class VastSession:
             try:
                 if self._settings.rent_pool_size > 1:
                     return self._rent_pool(provider, verified, used_offers, used_ips)
-                return self._rent_batches(provider, verified, used_offers, used_ips)
+                return self._rent_sequential(provider, verified, used_offers, used_ips)
             except _TeardownError:
                 raise
             except RentError as ex:
@@ -155,7 +155,7 @@ class VastSession:
             candidates.append(offer)
         return candidates
 
-    def _rent_batches(
+    def _rent_sequential(
         self,
         provider: VastProvider,
         verified: bool | None,
@@ -165,9 +165,9 @@ class VastSession:
         """Rent the offers of one pass one by one without extra searches."""
         candidates = self._candidates(provider, verified, used_offers, used_ips)
         last: RentError | None = None
-        for batch in _batches(candidates, self._settings.rent_pool_size):
+        for offer in candidates:
             try:
-                return self._rent_offer(provider, batch[0])
+                return self._rent_offer(provider, offer)
             except _TeardownError:
                 raise
             except RentError as ex:
@@ -242,6 +242,7 @@ class VastSession:
             if (
                 not expired
                 and active < size
+                and not state.stop.is_set()
                 and now >= last_search + self._settings.offer_refresh_seconds
             ):
                 fresh = self._candidates(
@@ -662,12 +663,6 @@ def destroy_verified(
     raise RentError(
         f"сервер {contract_id} не уничтожен за {attempts} попыток — погасите вручную в кабинете"
     )
-
-
-def _batches(offers: list[Mapping[str, Any]], size: int) -> list[list[Mapping[str, Any]]]:
-    """Split offers into pools of at most *size* candidates, cheapest first."""
-    step = max(1, size)
-    return [offers[start : start + step] for start in range(0, len(offers), step)]
 
 
 def _poll_outcome(
