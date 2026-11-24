@@ -129,9 +129,10 @@ def profile_slugs(profiles_root: Path) -> dict[str, str]:
 
     Every ``profiles/<category>/<name>/profile.yaml`` becomes
     ``"<category>_<name>" -> "<category>/<name>"``. The shared ``_shared``
-    directory is skipped. A slug claimed by two profiles, or a profile name
-    repeated in two categories, is ambiguous: it is logged and left out of
-    the map, so its files get no profile id.
+    directory is skipped. A slug claimed by two profiles is ambiguous: it is
+    logged and both profiles are left out of the map, so their files get no
+    profile id. The same profile name in two categories is not a conflict:
+    the category makes their slugs different.
 
     Args:
         profiles_root: Root ``profiles`` directory of the runtime data.
@@ -141,7 +142,7 @@ def profile_slugs(profiles_root: Path) -> dict[str, str]:
     """
     if not profiles_root.is_dir():
         return {}
-    entries: list[tuple[str, str, str, str]] = []
+    entries: list[tuple[str, str]] = []
     for category in child_directories(profiles_root):
         if category.name == _SHARED_DIR:
             continue
@@ -149,37 +150,31 @@ def profile_slugs(profiles_root: Path) -> dict[str, str]:
             if not (directory / _PROFILE_FILENAME).is_file():
                 continue
             entries.append(
-                (
-                    f"{category.name}_{directory.name}",
-                    f"{category.name}/{directory.name}",
-                    category.name,
-                    directory.name,
-                )
+                (f"{category.name}_{directory.name}", f"{category.name}/{directory.name}")
             )
     conflicts = _conflicting_profile_ids(entries)
     slugs: dict[str, str] = {}
-    for slug, profile_id, _, _ in sorted(entries):
+    for slug, profile_id in sorted(entries):
         if profile_id not in conflicts:
             slugs[slug] = profile_id
     return slugs
 
 
-def _conflicting_profile_ids(entries: list[tuple[str, str, str, str]]) -> set[str]:
-    """Return profile ids whose slug or bare name is shared with another."""
+def _conflicting_profile_ids(entries: list[tuple[str, str]]) -> set[str]:
+    """Return profile ids whose slug is claimed by another profile."""
     conflicts: set[str] = set()
-    for field in (0, 3):
-        groups: dict[str, list[str]] = {}
-        for entry in entries:
-            groups.setdefault(entry[field], []).append(entry[1])
-        for key, profile_ids in sorted(groups.items()):
-            if len(profile_ids) < 2:
-                continue
-            conflicts.update(profile_ids)
-            logger.bind(value=key, profiles=profile_ids).warning(
-                "Префикс профиля {} неоднозначен: {}",
-                key,
-                ", ".join(profile_ids),
-            )
+    groups: dict[str, list[str]] = {}
+    for slug, profile_id in entries:
+        groups.setdefault(slug, []).append(profile_id)
+    for slug, profile_ids in sorted(groups.items()):
+        if len(profile_ids) < 2:
+            continue
+        conflicts.update(profile_ids)
+        logger.bind(value=slug, profiles=profile_ids).warning(
+            "Префикс профиля {} неоднозначен: {}",
+            slug,
+            ", ".join(profile_ids),
+        )
     return conflicts
 
 

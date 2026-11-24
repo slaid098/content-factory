@@ -104,8 +104,8 @@ def test_profile_slugs_drops_an_ambiguous_slug(
     log_records: list[dict[str, Any]],
 ) -> None:
     profiles = tmp_path / "profiles"
-    _profile(profiles, "dating/profile_1")
-    _profile(profiles, "general/profile_1")
+    _profile(profiles, "a_b/c")
+    _profile(profiles, "a/b_c")
     _profile(profiles, "dating/profile_2")
 
     slugs = profile_slugs(profiles)
@@ -114,9 +114,49 @@ def test_profile_slugs_drops_an_ambiguous_slug(
     records = [record for record in log_records if record["function"] == "_conflicting_profile_ids"]
     assert [record["level"].name for record in records] == ["WARNING"]
     assert records[0]["extra"] == {
-        "value": "profile_1",
-        "profiles": ["dating/profile_1", "general/profile_1"],
+        "value": "a_b_c",
+        "profiles": ["a/b_c", "a_b/c"],
     }
+
+
+def test_profile_slugs_keeps_the_same_name_in_two_categories(tmp_path: Path) -> None:
+    profiles = tmp_path / "profiles"
+    _profile(profiles, "dating/profile_1")
+    _profile(profiles, "overlay/profile_1")
+
+    assert profile_slugs(profiles) == {
+        "dating_profile_1": "dating/profile_1",
+        "overlay_profile_1": "overlay/profile_1",
+    }
+
+
+def test_profile_slugs_keeps_the_same_name_in_three_categories(tmp_path: Path) -> None:
+    profiles = tmp_path / "profiles"
+    _profile(profiles, "dating/profile_1")
+    _profile(profiles, "overlay/profile_1")
+    _profile(profiles, "general/profile_1")
+
+    assert profile_slugs(profiles) == {
+        "dating_profile_1": "dating/profile_1",
+        "general_profile_1": "general/profile_1",
+        "overlay_profile_1": "overlay/profile_1",
+    }
+
+
+def test_stock_files_attributes_a_name_shared_across_categories(tmp_path: Path) -> None:
+    profiles = tmp_path / "profiles"
+    _profile(profiles, "dating/profile_1")
+    _profile(profiles, "overlay/profile_1")
+    content = tmp_path / "content"
+    dating = touch_mp4(content / "dating" / "ru" / "dating_profile_1_run_001.mp4")
+    overlay = touch_mp4(content / "overlay" / "ru" / "overlay_profile_1_run_001.mp4")
+
+    files = stock_files(content)
+
+    assert files == [
+        StockFile("dating", "ru", dating, "dating/profile_1"),
+        StockFile("overlay", "ru", overlay, "overlay/profile_1"),
+    ]
 
 
 def test_stock_files_matches_profile_id_on_underscore_boundary(tmp_path: Path) -> None:
