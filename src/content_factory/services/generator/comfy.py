@@ -1,10 +1,13 @@
-"""ComfyUI HTTP client and the two-job generation queue."""
+"""ComfyUI client and generation on one or more rented servers."""
 
 from __future__ import annotations
 
+import sys
+import threading
 import time
 from collections import deque
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -12,10 +15,12 @@ from typing import Any, Protocol
 import httpx
 from loguru import logger
 
+from content_factory.config.settings import GeneratorSettings
 from content_factory.exceptions.generator import ComfyError, GeneratorError
-from content_factory.schemas.generator.server import ServerConnection
+from content_factory.schemas.generator.server import ServerConnection, ServerInfo
 from content_factory.services.generator import media
 from content_factory.services.generator.plan import _PlannedItem
+from content_factory.services.generator.profiles import _Profile
 
 _MAX_IN_FLIGHT = 2
 _MAX_ATTEMPTS = 3
@@ -65,6 +70,23 @@ class _ComfyTransport(Protocol):
     def close(self) -> None:
         """Release the HTTP resources of the client."""
         ...
+
+
+class _ServerSession(Protocol):
+    """Rented server used by one profile batch."""
+
+    def open(self) -> ServerInfo:
+        """Rent the server and return its ready connection."""
+        ...
+
+    def destroy(self) -> None:
+        """Destroy the server and verify it is gone."""
+        ...
+
+
+_SessionFactory = Callable[[_Profile, GeneratorSettings], _ServerSession]
+_ClientFactory = Callable[[ServerConnection], _ComfyTransport]
+_Store = Callable[[Path, bytes], None]
 
 
 class ComfyClient:
@@ -272,6 +294,305 @@ def run_jobs(
             safety_frame_attempts,
         )
     return tuple(state.finished[index] for index in sorted(state.finished))
+
+
+@dataclass(frozen=True, slots=True)
+class _BatchRun:
+    """Merged outcome of a batch split across several rented servers."""
+
+    servers: tuple[ServerInfo, ...]
+    results: tuple[_JobResult, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ChunkOutcome:
+    """Outcome of one chunk generated on one rented server."""
+
+    index: int
+    items: tuple[_PlannedItem, ...]
+    info: ServerInfo | None = None
+    results: tuple[_JobResult, ...] = ()
+    error: str | None = None
+
+
+def server_count(count: int, settings: GeneratorSettings) -> int:
+    """Return how many working servers a batch of *count* videos needs.
+
+    One server covers ``videos_per_server`` videos; the result is capped by
+    ``max_servers`` and never exceeds the number of videos, so a batch of one
+    or two videos never rents an extra server.
+
+    Args:
+        count: Number of videos in the profile batch, at least one.
+        settings: Generator settings with the split limits.
+
+    Returns:
+        Number of working servers, at least one.
+    """
+    by_size = (count + settings.videos_per_server - 1) // settings.videos_per_server
+    return min(settings.max_servers, count, by_size)
+
+
+def split_batch(
+    items: Sequence[_PlannedItem],
+    settings: GeneratorSettings,
+) -> tuple[tuple[_PlannedItem, ...], ...]:
+    """Split the plan into contiguous chunks, one per working server.
+
+    Chunks follow the production order and differ in size by at most one, so
+    the slowest server does not get a visibly shorter chunk.
+
+    Args:
+        items: Planned videos in production order.
+        settings: Generator settings with the split limits.
+
+    Returns:
+        Non-empty chunks whose videos concatenate into *items*.
+    """
+    workers = server_count(len(items), settings)
+    base, extra = divmod(len(items), workers)
+    chunks: list[tuple[_PlannedItem, ...]] = []
+    start = 0
+    for index in range(workers):
+        stop = start + base + (1 if index < extra else 0)
+        chunks.append(tuple(items[start:stop]))
+        start = stop
+    return tuple(chunks)
+
+
+def run_server(
+    session: _ServerSession,
+    client_factory: _ClientFactory,
+    items: Sequence[_PlannedItem],
+    build: Callable[[_PlannedItem, int], dict[str, Any]],
+    directory: Path,
+    *,
+    label: str,
+    settings: GeneratorSettings,
+    store: _Store | None = None,
+    verify: Callable[[_PlannedItem, Path, int], str | None] | None = None,
+) -> tuple[ServerInfo, tuple[_JobResult, ...]]:
+    """Rent one server, generate every item and destroy it before returning.
+
+    The teardown is verified even when the generation already failed, so a
+    paid server never outlives the call. The failure itself is re-raised after
+    the teardown.
+
+    Args:
+        session: Rental session of the profile.
+        client_factory: ComfyUI client factory.
+        items: Planned videos generated on this server.
+        build: Workflow builder called with the item and the attempt number.
+        directory: Directory that receives downloaded silent sources.
+        label: Profile name used in teardown logs.
+        settings: Generator settings with timeouts and safety attempts.
+        store: Saver of downloaded bytes; defaults to the ffmpeg cut.
+        verify: Safety check of a saved source; returns a defect reason.
+
+    Returns:
+        Ready server info and one result per item, ordered by ``seq``.
+    """
+    info: ServerInfo | None = None
+    try:
+        info = session.open()
+        results = _generate(
+            client_factory,
+            info,
+            items,
+            build,
+            directory,
+            settings,
+            store,
+            verify,
+        )
+    except Exception as ex:  # noqa: BLE001 — teardown must run before re-raising
+        _log_chunk(0, items, info, str(ex), type(ex).__name__)
+        raise
+    finally:
+        _destroy(session, label)
+    _log_chunk(0, items, info, None, None)
+    return info, results
+
+
+def run_servers(
+    profile: _Profile,
+    settings: GeneratorSettings,
+    chunks: Sequence[Sequence[_PlannedItem]],
+    session_factory: _SessionFactory,
+    client_factory: _ClientFactory,
+    build: Callable[[_PlannedItem, int], dict[str, Any]],
+    directory: Path,
+    *,
+    store: _Store | None = None,
+    verify: Callable[[_PlannedItem, Path, int], str | None] | None = None,
+) -> _BatchRun:
+    """Generate every chunk on its own server, one rent race at a time.
+
+    Only one session rents at a time: its internal pool already fills
+    ``rent_pool_size`` candidates, so overlapping rents would multiply paid
+    instances. A ready server leaves the lock and generates its chunk while
+    the next one rents. A failed chunk fails only its own videos; the other
+    chunks continue. Every session is destroyed before the call returns,
+    including the failure path.
+
+    Args:
+        profile: Loaded profile of the batch.
+        settings: Generator settings with the split limits and timeouts.
+        chunks: Contiguous chunks of the plan, one per server.
+        session_factory: Rental factory; tests inject a fake server.
+        client_factory: ComfyUI client factory; tests inject a fake client.
+        build: Workflow builder called with the item and the attempt number.
+        directory: Directory that receives downloaded silent sources.
+        store: Saver of downloaded bytes; defaults to the ffmpeg cut.
+        verify: Safety check of a saved source; returns a defect reason.
+
+    Returns:
+        First ready servers in chunk order and one result per planned video,
+        ordered by ``seq``; videos of a failed chunk carry its error.
+    """
+    rent_lock = threading.Lock()
+    with ThreadPoolExecutor(max_workers=min(len(chunks), settings.max_servers)) as pool:
+        futures = [
+            pool.submit(
+                _run_chunk,
+                index,
+                tuple(chunk),
+                profile=profile,
+                settings=settings,
+                session_factory=session_factory,
+                client_factory=client_factory,
+                build=build,
+                directory=directory,
+                rent_lock=rent_lock,
+                store=store,
+                verify=verify,
+            )
+            for index, chunk in enumerate(chunks)
+        ]
+        outcomes = [future.result() for future in futures]
+    return _merge_chunks(outcomes)
+
+
+def _run_chunk(
+    index: int,
+    items: tuple[_PlannedItem, ...],
+    *,
+    profile: _Profile,
+    settings: GeneratorSettings,
+    session_factory: _SessionFactory,
+    client_factory: _ClientFactory,
+    build: Callable[[_PlannedItem, int], dict[str, Any]],
+    directory: Path,
+    rent_lock: threading.Lock,
+    store: _Store | None,
+    verify: Callable[[_PlannedItem, Path, int], str | None] | None,
+) -> _ChunkOutcome:
+    """Rent one server and generate one chunk; a failure stays in its chunk."""
+    session = session_factory(profile, settings)
+    info: ServerInfo | None = None
+    results: tuple[_JobResult, ...] = ()
+    error: str | None = None
+    try:
+        try:
+            with rent_lock:
+                info = session.open()
+            results = _generate(
+                client_factory,
+                info,
+                items,
+                build,
+                directory,
+                settings,
+                store,
+                verify,
+            )
+        finally:
+            _destroy(session, profile.name)
+    except Exception as ex:  # noqa: BLE001 — one chunk must not cancel the batch
+        error = str(ex)
+        _log_chunk(index, items, info, error, type(ex).__name__)
+        results = ()
+    else:
+        _log_chunk(index, items, info, None, None)
+    return _ChunkOutcome(index=index, items=items, info=info, results=results, error=error)
+
+
+def _generate(
+    client_factory: _ClientFactory,
+    info: ServerInfo,
+    items: Sequence[_PlannedItem],
+    build: Callable[[_PlannedItem, int], dict[str, Any]],
+    directory: Path,
+    settings: GeneratorSettings,
+    store: _Store | None,
+    verify: Callable[[_PlannedItem, Path, int], str | None] | None,
+) -> tuple[_JobResult, ...]:
+    """Run one chunk on a ready server and close its HTTP client."""
+    client = client_factory(info.connection)
+    try:
+        return run_jobs(
+            client,
+            items,
+            build,
+            directory,
+            store=store,
+            verify=verify,
+            safety_frame_attempts=settings.safety_frame_attempts,
+            job_timeout=settings.comfy_job_timeout,
+            health_interval=settings.comfy_health_interval,
+        )
+    finally:
+        client.close()
+
+
+def _merge_chunks(outcomes: Sequence[_ChunkOutcome]) -> _BatchRun:
+    """Merge chunk outcomes and name every video of a failed chunk."""
+    results: list[_JobResult] = []
+    servers: list[ServerInfo] = []
+    for outcome in outcomes:
+        if outcome.info is not None:
+            servers.append(outcome.info)
+        if outcome.error is not None:
+            results.extend(_JobResult(item=item, error=outcome.error) for item in outcome.items)
+        else:
+            results.extend(outcome.results)
+    results.sort(key=lambda result: result.item.seq)
+    return _BatchRun(servers=tuple(servers), results=tuple(results))
+
+
+def _log_chunk(
+    index: int,
+    items: Sequence[_PlannedItem],
+    info: ServerInfo | None,
+    error: str | None,
+    error_type: str | None,
+) -> None:
+    """Log the server, its chunk size and the outcome without secrets."""
+    connection = info.connection if info is not None else None
+    context = logger.bind(
+        contract_id=connection.contract_id if connection is not None else None,
+        gpu=connection.gpu if connection is not None else None,
+        chunk=index + 1,
+        videos=len(items),
+        outcome="failed" if error is not None else "done",
+    )
+    if error is None:
+        context.info("Кусок партии сгенерирован")
+        return
+    context.bind(error=error, error_type=error_type).error("Кусок партии не сгенерирован")
+
+
+def _destroy(session: _ServerSession, label: str) -> None:
+    """Destroy the server without masking an already active exception."""
+    active = sys.exc_info()[0] is not None
+    try:
+        session.destroy()
+    except Exception as ex:  # noqa: BLE001 — teardown must not hide the original error
+        logger.bind(profile=label, error=str(ex), error_type=type(ex).__name__).critical(
+            "Сервер не уничтожен — погасите вручную"
+        )
+        if not active:
+            raise
 
 
 @dataclass(slots=True)

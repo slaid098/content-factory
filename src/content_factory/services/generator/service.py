@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import random
-import sys
-from collections.abc import Callable
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Any
 
 from loguru import logger
 
@@ -25,7 +24,7 @@ from content_factory.schemas.generator.run import (
     RunServer,
     RunStatus,
 )
-from content_factory.schemas.generator.server import ServerConnection, ServerInfo
+from content_factory.schemas.generator.server import ServerInfo
 from content_factory.services.generator import (
     comfy,
     media,
@@ -35,6 +34,12 @@ from content_factory.services.generator import (
     rotation,
     safety,
     texts,
+)
+from content_factory.services.generator.comfy import (
+    _ClientFactory,
+    _ServerSession,
+    _SessionFactory,
+    _Store,
 )
 from content_factory.services.generator.plan import (
     _PlannedItem,
@@ -56,23 +61,6 @@ from content_factory.services.generator.workflow import build_workflow
 
 _SOURCE_DIR = "source"
 _TEXT_DIR = "text"
-
-
-class _ServerSession(Protocol):
-    """Rented server used by one profile batch."""
-
-    def open(self) -> ServerInfo:
-        """Rent the server and return its ready connection."""
-        ...
-
-    def destroy(self) -> None:
-        """Destroy the server and verify it is gone."""
-        ...
-
-
-_SessionFactory = Callable[[_Profile, GeneratorSettings], _ServerSession]
-_ClientFactory = Callable[[ServerConnection], comfy._ComfyTransport]
-_Store = Callable[[Path, bytes], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -315,34 +303,47 @@ def _produce(
     data_root: Path,
 ) -> None:
     """Run the remote phase and then the local post-processing."""
-    session = session_factory(profile, settings)
-    try:
-        info = session.open()
+    prompt_lock = threading.Lock()
+
+    def build(item: _PlannedItem, attempt: int) -> dict[str, Any]:
+        with prompt_lock:
+            prompt = profiles.build_prompt(profile, item.look, rng)
+        return build_workflow(
+            profile,
+            item,
+            prompt,
+            seed=attempt_seed(item.seed, attempt),
+        )
+
+    report.status = RunStatus.GENERATING
+    _write_report(run_dir, report)
+    if comfy.server_count(len(items), settings) > 1:
+        batch = comfy.run_servers(
+            profile,
+            settings,
+            comfy.split_batch(items, settings),
+            session_factory,
+            client_factory,
+            build,
+            run_dir / _SOURCE_DIR,
+            store=store,
+            verify=checker.verify if checker is not None else None,
+        )
+        report.server = _server(profile, batch.servers[0]) if batch.servers else None
+        results = batch.results
+    else:
+        info, results = comfy.run_server(
+            session_factory(profile, settings),
+            client_factory,
+            items,
+            build,
+            run_dir / _SOURCE_DIR,
+            label=profile.name,
+            settings=settings,
+            store=store,
+            verify=checker.verify if checker is not None else None,
+        )
         report.server = _server(profile, info)
-        report.status = RunStatus.GENERATING
-        _write_report(run_dir, report)
-        client = client_factory(info.connection)
-        try:
-            results = comfy.run_jobs(
-                client,
-                items,
-                lambda item, attempt: build_workflow(
-                    profile,
-                    item,
-                    profiles.build_prompt(profile, item.look, rng),
-                    seed=attempt_seed(item.seed, attempt),
-                ),
-                run_dir / _SOURCE_DIR,
-                store=store,
-                verify=checker.verify if checker is not None else None,
-                safety_frame_attempts=settings.safety_frame_attempts,
-                job_timeout=settings.comfy_job_timeout,
-                health_interval=settings.comfy_health_interval,
-            )
-        finally:
-            client.close()
-    finally:
-        _destroy(session, profile.name)
     report.status = RunStatus.POSTPROCESSING
     _write_report(run_dir, report)
     _postprocess(profile, results, run_dir, report, settings, text_writer, rng, data_root)
@@ -430,19 +431,6 @@ def _finish_item(
     publish_stock(profile, final, data_root)
     item.duration = round(info.duration, 2)
     item.status = RunStatus.DONE
-
-
-def _destroy(session: _ServerSession, profile: str) -> None:
-    """Destroy the server without masking an already active exception."""
-    active = sys.exc_info()[0] is not None
-    try:
-        session.destroy()
-    except Exception as ex:  # noqa: BLE001 — teardown must not hide the original error
-        logger.bind(profile=profile, error=str(ex), error_type=type(ex).__name__).critical(
-            "Сервер не уничтожен — погасите вручную"
-        )
-        if not active:
-            raise
 
 
 def _default_session(profile: _Profile, settings: GeneratorSettings) -> _ServerSession:
