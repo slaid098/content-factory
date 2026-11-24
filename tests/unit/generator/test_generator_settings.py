@@ -67,6 +67,58 @@ def test_rent_pool_size_rejects_values_outside_the_pool(monkeypatch, value: str)
         load_generator_settings()
 
 
+def test_split_defaults_to_seven_videos_on_four_servers() -> None:
+    settings = GeneratorSettings()
+
+    assert settings.videos_per_server == 7
+    assert settings.max_servers == 4
+
+
+def test_split_limits_read_the_env(monkeypatch) -> None:
+    monkeypatch.setenv("GENERATOR_VIDEOS_PER_SERVER", "3")
+    monkeypatch.setenv("GENERATOR_MAX_SERVERS", "2")
+
+    settings = GeneratorSettings()
+
+    assert settings.videos_per_server == 3
+    assert settings.max_servers == 2
+
+
+@pytest.mark.parametrize(
+    ("name", "field", "value"),
+    [
+        ("GENERATOR_VIDEOS_PER_SERVER", "videos_per_server", "1"),
+        ("GENERATOR_VIDEOS_PER_SERVER", "videos_per_server", "100"),
+        ("GENERATOR_MAX_SERVERS", "max_servers", "1"),
+        ("GENERATOR_MAX_SERVERS", "max_servers", "10"),
+    ],
+)
+def test_split_limits_accept_the_window_edges(
+    monkeypatch, name: str, field: str, value: str
+) -> None:
+    monkeypatch.setenv(name, value)
+
+    settings = GeneratorSettings()
+
+    assert getattr(settings, field) == int(value)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("GENERATOR_VIDEOS_PER_SERVER", "0"),
+        ("GENERATOR_VIDEOS_PER_SERVER", "101"),
+        ("GENERATOR_MAX_SERVERS", "0"),
+        ("GENERATOR_MAX_SERVERS", "11"),
+    ],
+)
+def test_split_limits_reject_values_outside_the_windows(monkeypatch, name: str, value: str) -> None:
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ConfigError, match=name):
+        load_generator_settings()
+
+
 def test_offer_refresh_defaults_to_sixty() -> None:
     assert GeneratorSettings().offer_refresh_seconds == 60
 

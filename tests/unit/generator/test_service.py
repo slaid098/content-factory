@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+import threading
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,7 +21,7 @@ from content_factory.exceptions.generator import (
     RentError,
     SafetyError,
 )
-from content_factory.services.generator import media, overlay, publish, qa, safety, service
+from content_factory.services.generator import comfy, media, overlay, publish, qa, safety, service
 from content_factory.services.generator.comfy import _OutputFile
 from content_factory.services.generator.plan import attempt_seed
 
@@ -75,6 +76,34 @@ class _Transport:
 
     def close(self) -> None:
         self.closed = True
+
+
+class _ChunkTransport(_Transport):
+    """Transport that reports the server dead when its chunk reaches a marker."""
+
+    def __init__(self, events: list[str] | None = None, *, fail_at: str | None = None) -> None:
+        super().__init__(events)
+        self.fail_at = fail_at
+
+    def history(self, prompt_id: str) -> dict[str, Any]:
+        if self.fail_at is not None and self.fail_at in self.prefixes[prompt_id]:
+            raise ComfyError("сервер перестал отвечать")
+        return super().history(prompt_id)
+
+
+class _Farm:
+    """Factory that rents a fresh fake session for every server."""
+
+    def __init__(self) -> None:
+        self.sessions: list[FakeSession] = []
+        self._lock = threading.Lock()
+
+    def __call__(self, profile: object, settings: object) -> FakeSession:
+        del profile, settings
+        session = FakeSession()
+        with self._lock:
+            self.sessions.append(session)
+        return session
 
 
 class _Writer:
@@ -178,6 +207,46 @@ def _run_batch(
         rng=random.Random(1),
         now=_NOW,
     )
+
+
+def _record_chunks(monkeypatch) -> list[list[int]]:
+    """Record which planned videos every ``run_jobs`` call receives."""
+    chunks: list[list[int]] = []
+    original = comfy.run_jobs
+
+    def spy(client, items, build, directory, **kwargs):
+        chunks.append([item.seq for item in items])
+        return original(client, items, build, directory, **kwargs)
+
+    monkeypatch.setattr(comfy, "run_jobs", spy)
+    return chunks
+
+
+def _run_split(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    count: int,
+    settings: GeneratorSettings | None = None,
+    fail_at: str | None = None,
+) -> tuple[service._BatchResult, list[FakeSession]]:
+    """Run a batch on fake servers and return its sessions."""
+    events: list[str] = []
+    farm = _Farm()
+    _fake_postprocess(monkeypatch, events)
+    result = service.generate_batch(
+        profiles="dating/profile_2",
+        count=count,
+        data_dir=tmp_path,
+        settings=settings or _settings(tmp_path),
+        session_factory=farm,
+        client_factory=lambda connection: _ChunkTransport(events, fail_at=fail_at),
+        text_writer=_Writer(events),
+        store=lambda path, content: path.write_bytes(content),
+        rng=random.Random(1),
+        now=_NOW,
+    )
+    return result, farm.sessions
 
 
 def test_dry_run_writes_report_without_network(tmp_path: Path) -> None:
@@ -496,6 +565,129 @@ def test_one_failed_item_does_not_stop_the_batch(tmp_path: Path, monkeypatch) ->
     assert [item["status"] for item in report["items"]] == ["failed", "done"]
     assert (result.run_dirs[0] / "source").is_dir()
     assert writer.calls == 1
+
+
+def test_seven_videos_use_one_server(tmp_path: Path, monkeypatch) -> None:
+    fixture_profile(tmp_path / "profiles")
+    chunks = _record_chunks(monkeypatch)
+
+    result, sessions = _run_split(tmp_path, monkeypatch, count=7)
+
+    assert result.generated == 7
+    assert result.failed == 0
+    assert len(sessions) == 1
+    assert chunks == [list(range(1, 8))]
+
+
+@pytest.mark.parametrize(
+    ("count", "videos_per_server", "max_servers", "expected"),
+    [
+        (1, 7, 4, 1),
+        (7, 7, 4, 1),
+        (8, 7, 4, 2),
+        (14, 7, 4, 2),
+        (20, 7, 2, 2),
+        (20, 7, 4, 3),
+        (3, 1, 10, 3),
+        (100, 100, 10, 1),
+        (101, 100, 10, 2),
+    ],
+)
+def test_server_count_follows_videos_and_limits(
+    count: int, videos_per_server: int, max_servers: int, expected: int
+) -> None:
+    settings = GeneratorSettings(
+        videos_per_server=videos_per_server,
+        max_servers=max_servers,
+        safety_enabled=False,
+    )
+
+    assert comfy.server_count(count, settings) == expected
+
+
+def test_fourteen_videos_are_split_between_two_servers(tmp_path: Path, monkeypatch) -> None:
+    fixture_profile(tmp_path / "profiles")
+    chunks = _record_chunks(monkeypatch)
+
+    result, sessions = _run_split(tmp_path, monkeypatch, count=14)
+
+    assert result.generated == 14
+    assert result.failed == 0
+    assert len(sessions) == 2
+    assert all(session.opened == 1 and session.destroyed == 1 for session in sessions)
+    assert sorted(chunks) == [list(range(1, 8)), list(range(8, 15))]
+    report = json.loads((result.run_dirs[0] / "run.json").read_text(encoding="utf-8"))
+    assert report["server"]["contract_id"] == "42"
+    assert [item["file"] for item in report["items"]] == [
+        f"dating_profile_2_{_RUN_ID}_{seq:03d}.mp4" for seq in range(1, 15)
+    ]
+    assert [item["status"] for item in report["items"]] == ["done"] * 14
+
+
+def test_max_servers_one_keeps_the_single_server_path(tmp_path: Path, monkeypatch) -> None:
+    fixture_profile(tmp_path / "profiles")
+    chunks = _record_chunks(monkeypatch)
+
+    result, sessions = _run_split(
+        tmp_path,
+        monkeypatch,
+        count=20,
+        settings=_settings(tmp_path, max_servers=1),
+    )
+
+    assert result.generated == 20
+    assert len(sessions) == 1
+    assert chunks == [list(range(1, 21))]
+
+
+def test_max_servers_caps_the_split_and_keeps_chunks_even(tmp_path: Path, monkeypatch) -> None:
+    fixture_profile(tmp_path / "profiles")
+    chunks = _record_chunks(monkeypatch)
+
+    result, sessions = _run_split(
+        tmp_path,
+        monkeypatch,
+        count=20,
+        settings=_settings(tmp_path, max_servers=2),
+    )
+
+    assert result.generated == 20
+    assert len(sessions) == 2
+    assert sorted(chunks) == [list(range(1, 11)), list(range(11, 21))]
+
+
+def test_dead_server_does_not_stop_the_other_chunk(tmp_path: Path, monkeypatch) -> None:
+    fixture_profile(tmp_path / "profiles")
+
+    result, sessions = _run_split(tmp_path, monkeypatch, count=14, fail_at="_001")
+
+    assert result.generated == 7
+    assert result.failed == 7
+    assert len(sessions) == 2
+    assert all(session.opened == 1 and session.destroyed == 1 for session in sessions)
+    report = json.loads((result.run_dirs[0] / "run.json").read_text(encoding="utf-8"))
+    assert [item["file"] for item in report["items"]] == [
+        f"dating_profile_2_{_RUN_ID}_{seq:03d}.mp4" for seq in range(1, 15)
+    ]
+    assert [item["status"] for item in report["items"]] == ["failed"] * 7 + ["done"] * 7
+    assert all(item["error"] == "сервер перестал отвечать" for item in report["items"][:7])
+    cursor = json.loads(_cursor_path(tmp_path).read_text(encoding="utf-8"))
+    assert cursor["last_look_id"] == "c02"
+
+
+def test_all_servers_dead_fail_the_batch_after_teardown(tmp_path: Path, monkeypatch) -> None:
+    fixture_profile(tmp_path / "profiles")
+
+    result, sessions = _run_split(tmp_path, monkeypatch, count=14, fail_at="_")
+
+    assert result.status == "failed"
+    assert result.generated == 0
+    assert result.failed == 14
+    assert len(sessions) == 2
+    assert all(session.opened == 1 and session.destroyed == 1 for session in sessions)
+    report = json.loads((result.run_dirs[0] / "run.json").read_text(encoding="utf-8"))
+    assert report["status"] == "failed"
+    assert [item["status"] for item in report["items"]] == ["failed"] * 14
 
 
 class _DeadTransport:

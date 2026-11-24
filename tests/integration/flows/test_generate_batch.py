@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,8 @@ _ENV_NAMES = (
     "VAST_API_TOKEN",
     "GENERATOR_MODEL",
     "GENERATOR_MAX_COST_PER_HOUR",
+    "GENERATOR_VIDEOS_PER_SERVER",
+    "GENERATOR_MAX_SERVERS",
     "GENERATOR_OUTPUT_DIR",
 )
 
@@ -46,6 +49,24 @@ def test_dry_run_writes_report_without_network(tmp_path: Path) -> None:
     assert len(reports) == 1
     assert '"status": "dry_run"' in reports[0].read_text(encoding="utf-8")
     assert not list((tmp_path / "generated").rglob("rotation.json"))
+
+
+def test_dry_run_keeps_all_split_videos_in_plan_order(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("GENERATOR_VIDEOS_PER_SERVER", "7")
+    monkeypatch.setenv("GENERATOR_MAX_SERVERS", "4")
+    make_profile(tmp_path / "profiles")
+
+    outcome = generate_batch.fn(profiles="dating/profile_2", count=14, dry_run=True)
+
+    assert "status=dry_run" in outcome
+    report_path = next((tmp_path / "generated").rglob("run.json"))
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert [item["file"] for item in report["items"]] == [
+        f"dating_profile_2_{report['run_id']}_{seq:03d}.mp4" for seq in range(1, 15)
+    ]
+    assert [item["status"] for item in report["items"]] == ["dry_run"] * 14
 
 
 def test_second_run_is_rejected_while_lock_is_held(tmp_path: Path) -> None:
