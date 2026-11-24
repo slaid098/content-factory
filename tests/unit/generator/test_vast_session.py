@@ -31,6 +31,8 @@ def _settings(tmp_path: Path, **kwargs: Any) -> GeneratorSettings:
         "vast_api_token": "token",
         "server_ready_timeout": 60,
         "comfy_health_timeout": 10,
+        # Existing cases describe the one-server rental; pool tests raise it.
+        "rent_pool_size": 1,
     }
     values.update(kwargs)
     return GeneratorSettings(**values)
@@ -104,6 +106,36 @@ def _clock_pair() -> tuple[list[float], Any, Any]:
         state[0] += seconds
 
     return state, clock, sleep
+
+
+class _PoolProvider(_Provider):
+    """Rents one contract per offer; only *ready* publishes the ComfyUI port."""
+
+    def __init__(self, offers: list[dict[str, Any]], ready: str, broken: str = "") -> None:
+        super().__init__(offers=offers)
+        self.ready = ready
+        self.broken = broken
+
+    def create_instance(self, config: dict[str, Any]) -> str:
+        offer_id = str(config["offer_id"])
+        if offer_id == self.broken:
+            raise RentError(f"offer {offer_id} is gone")
+        self.created.append(dict(config))
+        contract_id = f"c{offer_id}"
+        ports = {"8188/tcp": [{"HostPort": "40000"}]} if offer_id == self.ready else {}
+        self.instances[contract_id] = {
+            "id": contract_id,
+            "public_ipaddr": f"10.0.0.{offer_id}",
+            "ports": ports,
+            "gpu_name": "L40S",
+            "image_uuid": "img",
+        }
+        return contract_id
+
+
+def _fast_poll(monkeypatch) -> None:
+    """Poll often in real time so a stopped loser leaves the race quickly."""
+    monkeypatch.setattr(vast, "_POLL_SECONDS", 0.001)
 
 
 def test_open_rents_ready_server_and_reports_cost(tmp_path: Path, monkeypatch) -> None:
@@ -305,6 +337,166 @@ def test_teardown_failure_stops_the_rental_loop(tmp_path: Path, monkeypatch) -> 
     assert len(provider.queries) == 1
     assert session._contract_id == "c1"
     assert session._contracts == {"c1"}
+
+
+def test_pool_keeps_the_ready_offer_and_destroys_losers(tmp_path: Path, monkeypatch) -> None:
+    provider = _PoolProvider(
+        offers=[
+            {"id": "1", "public_ipaddr": "10.0.0.1", "dph_total": 0.3},
+            {"id": "2", "public_ipaddr": "10.0.0.2", "dph_total": 0.4},
+            {"id": "3", "public_ipaddr": "10.0.0.3", "dph_total": 0.5},
+        ],
+        ready="2",
+    )
+    _fast_poll(monkeypatch)
+    monkeypatch.setattr(vast, "_healthy", lambda connection: True)
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(tmp_path, rent_pool_size=3),
+        provider=provider,
+    )
+
+    info = session._rent(provider)
+
+    assert info.connection.contract_id == "c2"
+    assert info.cost_per_hour == 0.4
+    assert len(provider.created) == 3
+    assert sorted(provider.destroyed) == ["c1", "c3"]
+    assert set(provider.instances) == {"c2"}
+    assert session._contracts == {"c2"}
+    assert session._contract_id == "c2"
+
+
+def test_pool_without_a_ready_server_destroys_every_candidate(tmp_path: Path) -> None:
+    provider = _PoolProvider(
+        offers=[
+            {"id": "1", "public_ipaddr": "10.0.0.1"},
+            {"id": "2", "public_ipaddr": "10.0.0.2"},
+            {"id": "3", "public_ipaddr": "10.0.0.3"},
+        ],
+        ready="",
+    )
+    _, clock, sleep = _clock_pair()
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(tmp_path, rent_pool_size=3),
+        provider=provider,
+        sleep=sleep,
+        clock=clock,
+    )
+
+    with pytest.raises(RentError, match="годного сервера"):
+        session._rent(provider)
+
+    assert len(provider.created) == 3
+    assert sorted(provider.destroyed) == ["c1", "c2", "c3"]
+    assert provider.instances == {}
+    assert session._contracts == set()
+
+
+def test_pool_of_one_rents_offers_one_by_one(tmp_path: Path, monkeypatch) -> None:
+    provider = _PoolProvider(
+        offers=[
+            {"id": "1", "public_ipaddr": "10.0.0.1"},
+            {"id": "2", "public_ipaddr": "10.0.0.2"},
+        ],
+        ready="2",
+    )
+    _, clock, sleep = _clock_pair()
+    monkeypatch.setattr(vast, "_healthy", lambda connection: True)
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(tmp_path, rent_pool_size=1),
+        provider=provider,
+        sleep=sleep,
+        clock=clock,
+    )
+
+    info = session._rent(provider)
+
+    assert [config["offer_id"] for config in provider.created] == ["1", "2"]
+    assert provider.destroyed == ["c1"]
+    assert info.connection.contract_id == "c2"
+    assert session._contracts == {"c2"}
+
+
+def test_loser_teardown_failure_stops_the_pool(tmp_path: Path, monkeypatch) -> None:
+    provider = _PoolProvider(
+        offers=[
+            {"id": "1", "public_ipaddr": "10.0.0.1"},
+            {"id": "2", "public_ipaddr": "10.0.0.2"},
+            {"id": "3", "public_ipaddr": "10.0.0.3"},
+        ],
+        ready="2",
+    )
+    calls: list[str] = []
+
+    def fake_destroy(provider: _Provider, contract_id: str) -> bool:
+        calls.append(contract_id)
+        if contract_id == "c1":
+            raise RentError("still there")
+        provider.instances.pop(contract_id, None)
+        return True
+
+    _fast_poll(monkeypatch)
+    monkeypatch.setattr(vast, "_healthy", lambda connection: True)
+    monkeypatch.setattr(vast, "destroy_verified", fake_destroy)
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(tmp_path, rent_pool_size=3),
+        provider=provider,
+    )
+
+    with pytest.raises(RentError, match="проигравший сервер c1 не уничтожен"):
+        session._rent(provider)
+
+    assert calls == ["c1", "c3"]
+    assert len(provider.queries) == 1
+    assert session._contracts == {"c1", "c2"}
+
+
+def test_pool_survives_a_candidate_that_fails_to_start(tmp_path: Path, monkeypatch) -> None:
+    provider = _PoolProvider(
+        offers=[
+            {"id": "1", "public_ipaddr": "10.0.0.1"},
+            {"id": "2", "public_ipaddr": "10.0.0.2"},
+        ],
+        ready="2",
+        broken="1",
+    )
+    _fast_poll(monkeypatch)
+    monkeypatch.setattr(vast, "_healthy", lambda connection: True)
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(tmp_path, rent_pool_size=3),
+        provider=provider,
+    )
+
+    info = session._rent(provider)
+
+    assert info.connection.contract_id == "c2"
+    assert provider.destroyed == []
+    assert session._contracts == {"c2"}
+
+
+def test_pool_rents_the_offers_left_when_there_are_fewer_than_the_size(
+    tmp_path: Path, monkeypatch
+) -> None:
+    provider = _Provider(
+        offers=[{"id": "only", "public_ipaddr": "1.2.3.4"}],
+        instances={"c1": _instance()},
+    )
+    monkeypatch.setattr(vast, "_healthy", lambda connection: True)
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(tmp_path, rent_pool_size=3),
+        provider=provider,
+    )
+
+    info = session._rent(provider)
+
+    assert info.connection.contract_id == "c1"
+    assert len(provider.created) == 1
 
 
 def test_connection_is_none_for_broken_ports_and_falls_back_for_metadata() -> None:

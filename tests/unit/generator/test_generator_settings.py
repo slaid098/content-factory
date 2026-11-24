@@ -49,6 +49,24 @@ def test_blank_optional_values_become_none(monkeypatch) -> None:
     assert settings.api_key is None
 
 
+def test_rent_pool_size_defaults_to_three() -> None:
+    assert GeneratorSettings().rent_pool_size == 3
+
+
+def test_rent_pool_size_reads_the_env(monkeypatch) -> None:
+    monkeypatch.setenv("GENERATOR_RENT_POOL_SIZE", "1")
+
+    assert GeneratorSettings().rent_pool_size == 1
+
+
+@pytest.mark.parametrize("value", ["0", "9"])
+def test_rent_pool_size_rejects_values_outside_the_pool(monkeypatch, value: str) -> None:
+    monkeypatch.setenv("GENERATOR_RENT_POOL_SIZE", value)
+
+    with pytest.raises(ConfigError, match="GENERATOR_RENT_POOL_SIZE"):
+        load_generator_settings()
+
+
 def test_bad_openai_base_url_names_the_variable_without_raw_value(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_BASE_URL", "ftp://secret-host")
 

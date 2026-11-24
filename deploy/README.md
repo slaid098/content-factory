@@ -270,6 +270,9 @@ TITLES_MODEL=deepseek-v4.1-flash
 VAST_API_TOKEN=
 GENERATOR_MODEL=deepseek-v4.1-flash
 GENERATOR_MAX_COST_PER_HOUR=
+# Сколько серверов арендовать параллельно: первый ответивший на /system_stats
+# остаётся, остальные уничтожаются. 1 — по одному, как раньше.
+GENERATOR_RENT_POOL_SIZE=3
 EOF
 ```
 
@@ -291,7 +294,15 @@ EOF
 | `VAST_API_TOKEN` | для генерации | — | ключ Vast.ai с правом аренды серверов |
 | `GENERATOR_MODEL` | нет | `deepseek-v4.1-flash` | имя модели для текстов роликов |
 | `GENERATOR_MAX_COST_PER_HOUR` | нет | — | глобальный потолок цены сервера, $/час; пусто — только `profile.max_cost` |
+| `GENERATOR_RENT_POOL_SIZE` | нет | `3` | сколько серверов арендовать параллельно (1–8); первый готовый остаётся, остальные уничтожаются |
 | `CONTENT_FACTORY_LOG_LEVEL` | нет | `INFO` | уровень loguru в API и воркере |
+
+Пул аренды держит до `GENERATOR_RENT_POOL_SIZE` оплачиваемых инстансов, пока
+ни один не ответит `/system_stats`; затем все проигравшие уничтожаются с
+проверкой по списку аккаунта. `GENERATOR_RENT_POOL_SIZE=1` возвращает прежний
+последовательный перебор. С пулом выставьте на сервере
+`GENERATOR_SERVER_READY_TIMEOUT=900`: общий дедлайн гонки в 15 минут дешевле
+часа ожидания одного медленного хоста.
 
 `IMAGE_TAG` в `.env` не задаётся: его экспортирует деплой-скрипт. Значение по
 умолчанию — `latest` (`compose.yaml`). `CONTENT_FACTORY_DATA_DIR=/app/app_data`
