@@ -14,6 +14,7 @@ from tests.unit.generator.helpers import FakeSession, fixture_profile, make_prof
 
 from content_factory.config.settings import GeneratorSettings
 from content_factory.exceptions.generator import (
+    ComfyError,
     GeneratorError,
     ProfileError,
     RentError,
@@ -495,6 +496,66 @@ def test_one_failed_item_does_not_stop_the_batch(tmp_path: Path, monkeypatch) ->
     assert [item["status"] for item in report["items"]] == ["failed", "done"]
     assert (result.run_dirs[0] / "source").is_dir()
     assert writer.calls == 1
+
+
+class _DeadTransport:
+    """ComfyUI transport that reports the server dead on the first poll."""
+
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.submitted = 0
+        self.closed = False
+
+    def submit(self, workflow: dict[str, Any]) -> str:
+        del workflow
+        self.submitted += 1
+        self.events.append("submit")
+        return f"prompt-{self.submitted}"
+
+    def history(self, prompt_id: str) -> dict[str, Any]:
+        del prompt_id
+        raise ComfyError("сервер перестал отвечать")
+
+    def system_stats(self) -> dict[str, Any]:
+        raise AssertionError("health checks belong to run_jobs")
+
+    def download(self, output: _OutputFile) -> bytes:
+        del output
+        raise AssertionError("a dead server has no result to download")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_dead_comfy_server_is_destroyed_and_fails_the_remaining_items(tmp_path: Path) -> None:
+    fixture_profile(tmp_path / "profiles")
+    events: list[str] = []
+    session = FakeSession(events)
+    transport = _DeadTransport(events)
+    settings = _settings(tmp_path)
+
+    with pytest.raises(ComfyError, match="сервер перестал отвечать"):
+        service.generate_batch(
+            profiles="dating/profile_2",
+            count=2,
+            data_dir=tmp_path,
+            settings=settings,
+            session_factory=lambda profile, settings: session,
+            client_factory=lambda connection: transport,
+            text_writer=_Writer(events),
+            store=lambda path, content: path.write_bytes(content),
+            rng=random.Random(1),
+            now=_NOW,
+        )
+
+    assert transport.closed is True
+    assert session.destroyed == 1
+    report_path = settings.output_dir / "ru" / "dating_profile_2" / _RUN_ID / "run.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["status"] == "failed"
+    assert report["finished_at"] is not None
+    assert [item["status"] for item in report["items"]] == ["failed", "failed"]
+    assert [item["error"] for item in report["items"]] == ["сервер перестал отвечать"] * 2
 
 
 def test_server_is_destroyed_when_rent_fails(tmp_path: Path) -> None:
