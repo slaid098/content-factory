@@ -17,6 +17,7 @@ def _info(
     duration: float = 5.0,
     size: int = 20_000,
     has_video: bool = True,
+    has_audio: bool = True,
 ) -> _MediaInfo:
     return _MediaInfo(
         path=path,
@@ -24,7 +25,7 @@ def _info(
         width=512,
         height=896,
         has_video=has_video,
-        has_audio=True,
+        has_audio=has_audio,
         size=size,
     )
 
@@ -62,3 +63,24 @@ def test_duration_tolerance_uses_the_larger_of_ratio_and_minimum(tmp_path: Path)
 
     with pytest.raises(QaError, match="вне допуска"):
         qa._check_media(_info(path, duration=6.0), 5.0)
+
+
+def test_expected_audio_requires_a_track(tmp_path: Path) -> None:
+    path = tmp_path / "video.mp4"
+
+    qa._check_media(_info(path, has_audio=False), 5.0, expect_audio=False)
+    qa._check_media(_info(path), 5.0, expect_audio=True)
+
+    with pytest.raises(QaError, match="нет аудиодорожки"):
+        qa._check_media(_info(path, has_audio=False), 5.0, expect_audio=True)
+
+
+def test_check_video_passes_the_audio_expectation(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "video.mp4"
+    info = _info(path, has_audio=False)
+    monkeypatch.setattr(qa, "probe", lambda path: info)
+
+    qa.check_video(path, 5.0)
+
+    with pytest.raises(QaError, match="нет аудиодорожки"):
+        qa.check_video(path, 5.0, expect_audio=True)

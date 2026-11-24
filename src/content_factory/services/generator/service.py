@@ -24,18 +24,36 @@ from content_factory.schemas.generator.run import (
     RunReport,
     RunServer,
     RunStatus,
-    RunTotals,
 )
 from content_factory.schemas.generator.server import ServerConnection, ServerInfo
-from content_factory.services.generator import comfy, media, overlay, profiles, qa, rotation, texts
-from content_factory.services.generator.plan import _PlannedItem, plan_batch, validate_count
+from content_factory.services.generator import (
+    comfy,
+    media,
+    overlay,
+    profiles,
+    qa,
+    rotation,
+    safety,
+    texts,
+)
+from content_factory.services.generator.plan import (
+    _PlannedItem,
+    attempt_seed,
+    plan_batch,
+    validate_count,
+)
 from content_factory.services.generator.profiles import _Profile, load_profile
+from content_factory.services.generator.report import (
+    _FINAL_DIR,
+    _finalize,
+    _report,
+    _status,
+    _write_report,
+)
 from content_factory.services.generator.vast import VastSession
 from content_factory.services.generator.workflow import build_workflow
 
-_RUN_FILENAME = "run.json"
 _SOURCE_DIR = "source"
-_FINAL_DIR = "final"
 _TEXT_DIR = "text"
 
 
@@ -79,6 +97,7 @@ def generate_batch(
     client_factory: _ClientFactory | None = None,
     text_writer: texts._TextWriter | None = None,
     store: _Store | None = None,
+    safety_checker: safety._Checker | None = None,
     rng: random.Random | None = None,
     now: datetime | None = None,
 ) -> _BatchResult:
@@ -87,7 +106,9 @@ def generate_batch(
     Every profile is validated and every plan is built before the first
     server is rented. The server is destroyed as soon as generation ends,
     before the text, overlay and music steps, and the teardown is verified
-    against the Vast.ai instance list.
+    against the Vast.ai instance list. With safety enabled, one Clef request
+    on a synthetic frame runs before the rent; every downloaded source is
+    then checked frame by frame before the text card is drawn.
 
     Args:
         profiles: Comma-separated profile names, for example
@@ -100,6 +121,7 @@ def generate_batch(
         client_factory: ComfyUI client factory; tests inject a fake client.
         text_writer: Text model port; tests inject a fake writer.
         store: Saver of downloaded bytes; tests avoid calling ffmpeg.
+        safety_checker: Clef frame checker; tests inject a fake one.
         rng: Random source, seeded in tests.
         now: Run start moment, fixed in tests.
 
@@ -107,11 +129,17 @@ def generate_batch(
         Run id, final status, output directories and counters.
 
     Raises:
-        GeneratorError: ``count`` is not positive.
+        GeneratorError: ``count`` is not positive or the Clef preflight
+            fails before any server is rented.
+        SafetyError: Clef cannot check the synthetic preflight frame.
         ProfileError: A profile is missing or malformed, or a batch asks for
             repeats while the profile has only one card.
     """
     config = settings or load_generator_settings()
+    if not config.safety_enabled:
+        logger.bind(stage="safety").warning(
+            "Проверка кадров Clef выключена: GENERATOR_SAFETY_ENABLED=false"
+        )
     root = (data_dir or get_settings().data_dir) / PROFILES_DIR
     names = _parse_names(profiles)
     validate_count(count)
@@ -120,8 +148,62 @@ def generate_batch(
     started = now or datetime.now(UTC)
     run_id = _choose_run_id(config.output_dir, loaded, started)
     prepared = _prepare(config, loaded, count, run_id, randomizer)
-    if not dry_run:
-        media.ensure_free_space(config.output_dir)
+    checker = _prepare_media(config, dry_run, safety_checker)
+    run_dirs, generated, failed = _run_all(
+        prepared,
+        config,
+        run_id,
+        started,
+        count,
+        dry_run,
+        session_factory,
+        client_factory,
+        text_writer,
+        store,
+        checker,
+        randomizer,
+    )
+    return _BatchResult(
+        run_id=run_id,
+        status=RunStatus.DRY_RUN.value if dry_run else _status(generated, failed),
+        run_dirs=tuple(run_dirs),
+        generated=generated,
+        failed=failed,
+        dry_run=dry_run,
+    )
+
+
+def _prepare_media(
+    config: GeneratorSettings,
+    dry_run: bool,
+    injected: safety._Checker | None,
+) -> safety._Checker | None:
+    """Check free space and run the Clef preflight before the first rent."""
+    if dry_run:
+        return None
+    media.ensure_free_space(config.output_dir)
+    if not config.safety_enabled:
+        return None
+    checker = injected or safety.FrameChecker(config)
+    checker.preflight()
+    return checker
+
+
+def _run_all(
+    prepared: list[tuple[_Profile, tuple[_PlannedItem, ...]]],
+    config: GeneratorSettings,
+    run_id: str,
+    started: datetime,
+    count: int,
+    dry_run: bool,
+    session_factory: _SessionFactory | None,
+    client_factory: _ClientFactory | None,
+    text_writer: texts._TextWriter | None,
+    store: _Store | None,
+    checker: safety._Checker | None,
+    randomizer: random.Random,
+) -> tuple[list[Path], int, int]:
+    """Write one report per profile, produce its videos and count the outcomes."""
     run_dirs: list[Path] = []
     generated = 0
     failed = 0
@@ -142,18 +224,12 @@ def generate_batch(
             client_factory or comfy.ComfyClient,
             text_writer,
             store,
+            checker,
             randomizer,
         )
         generated += report.totals.generated
         failed += report.totals.failed
-    return _BatchResult(
-        run_id=run_id,
-        status=RunStatus.DRY_RUN.value if dry_run else _status(generated, failed),
-        run_dirs=tuple(run_dirs),
-        generated=generated,
-        failed=failed,
-        dry_run=dry_run,
-    )
+    return run_dirs, generated, failed
 
 
 def _prepare(
@@ -189,6 +265,7 @@ def _produce_safely(
     client_factory: _ClientFactory,
     text_writer: texts._TextWriter | None,
     store: _Store | None,
+    checker: safety._Checker | None,
     rng: random.Random,
 ) -> None:
     """Run one profile and mark its report failed before re-raising a fatal error."""
@@ -203,6 +280,7 @@ def _produce_safely(
             client_factory,
             text_writer,
             store,
+            checker,
             rng,
         )
     except BaseException:
@@ -222,6 +300,7 @@ def _produce(
     client_factory: _ClientFactory,
     text_writer: texts._TextWriter | None,
     store: _Store | None,
+    checker: safety._Checker | None,
     rng: random.Random,
 ) -> None:
     """Run the remote phase and then the local post-processing."""
@@ -237,10 +316,15 @@ def _produce(
                 client,
                 items,
                 lambda item, attempt: build_workflow(
-                    profile, item, profiles.build_prompt(profile, item.look, rng)
+                    profile,
+                    item,
+                    profiles.build_prompt(profile, item.look, rng),
+                    seed=attempt_seed(item.seed, attempt),
                 ),
                 run_dir / _SOURCE_DIR,
                 store=store,
+                verify=checker.verify if checker is not None else None,
+                safety_frame_attempts=settings.safety_frame_attempts,
             )
         finally:
             client.close()
@@ -324,63 +408,13 @@ def _finish_item(
     audio = rng.choice(profile.audio_tracks) if profile.audio_tracks else None
     final = run_dir / _FINAL_DIR / item.file
     overlay.mix(profile, card, source, final, audio)
-    info = qa.check_video(final, media.video_seconds(item.frames, profile.fps))
+    info = qa.check_video(
+        final,
+        media.video_seconds(item.frames, profile.fps),
+        expect_audio=bool(profile.audio_tracks),
+    )
     item.duration = round(info.duration, 2)
     item.status = RunStatus.DONE
-
-
-def _report(
-    profile: _Profile,
-    items: tuple[_PlannedItem, ...],
-    run_id: str,
-    started: datetime,
-    count: int,
-    dry_run: bool,
-) -> RunReport:
-    """Build the initial ``run.json`` report of one profile."""
-    status = RunStatus.DRY_RUN if dry_run else RunStatus.RUNNING
-    return RunReport(
-        run_id=run_id,
-        started_at=started,
-        status=status,
-        profiles=[profile.name],
-        count=count,
-        items=[
-            RunItem(
-                file=item.filename,
-                profile=profile.name,
-                look_id=item.look.id,
-                seed=item.seed,
-                frames=item.frames,
-                status=status,
-            )
-            for item in items
-        ],
-    )
-
-
-def _finalize(report: RunReport, run_dir: Path, items: tuple[_PlannedItem, ...]) -> None:
-    """Count results and write the final report."""
-    generated = sum(1 for item in report.items if item.status == RunStatus.DONE)
-    failed = sum(1 for item in report.items if item.status == RunStatus.FAILED)
-    size = sum(
-        (run_dir / _FINAL_DIR / item.filename).stat().st_size
-        for item in items
-        if (run_dir / _FINAL_DIR / item.filename).is_file()
-    )
-    report.totals = RunTotals(generated=generated, failed=failed, bytes=size)
-    report.status = RunStatus.DONE if failed == 0 else RunStatus.FAILED
-    report.finished_at = datetime.now(UTC)
-    _write_report(run_dir, report)
-
-
-def _write_report(run_dir: Path, report: RunReport) -> None:
-    """Atomically write ``run.json`` into the run directory."""
-    run_dir.mkdir(parents=True, exist_ok=True)
-    target = run_dir / _RUN_FILENAME
-    temporary = target.with_suffix(".json.tmp")
-    temporary.write_text(report.model_dump_json(indent=2) + "\n", encoding="utf-8")
-    temporary.replace(target)
 
 
 def _destroy(session: _ServerSession, profile: str) -> None:
@@ -436,11 +470,6 @@ def _server(profile: _Profile, info: ServerInfo) -> RunServer:
         image=profile.image,
         cost_per_hour=info.cost_per_hour,
     )
-
-
-def _status(generated: int, failed: int) -> str:
-    """Return the final batch status."""
-    return RunStatus.FAILED.value if failed else RunStatus.DONE.value
 
 
 def _slug(profile: _Profile) -> str:

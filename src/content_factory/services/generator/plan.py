@@ -12,6 +12,10 @@ from content_factory.services.generator.profiles import _Look, _Profile
 
 _JITTER_STRIDE = 4
 _MAX_SEED = 2**48
+_SEED_MASK = 2**64 - 1
+_SEED_STEP = 0x9E3779B97F4A7C15
+_SEED_MIX_A = 0xBF58476D1CE4E5B9
+_SEED_MIX_B = 0x94D049BB133111EB
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +83,29 @@ def plan_batch(
         )
         for index in range(1, count + 1)
     )
+
+
+def attempt_seed(seed: int, attempt: int) -> int:
+    """Return the deterministic seed of one generation attempt.
+
+    The first attempt keeps the planned seed; every later attempt gets a
+    well-mixed value derived from that seed and the attempt number, so a
+    rejected source is regenerated with a different scene.
+
+    Args:
+        seed: Seed of the planned video.
+        attempt: One-based generation attempt.
+
+    Returns:
+        Seed in ``1..2**48 - 1``; the same input always gives the same value.
+    """
+    if attempt <= 1:
+        return seed
+    value = (seed + attempt * _SEED_STEP) & _SEED_MASK
+    value = ((value ^ (value >> 30)) * _SEED_MIX_A) & _SEED_MASK
+    value = ((value ^ (value >> 27)) * _SEED_MIX_B) & _SEED_MASK
+    value ^= value >> 31
+    return value % _MAX_SEED or 1
 
 
 def validate_count(count: int) -> None:

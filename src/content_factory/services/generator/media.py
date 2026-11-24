@@ -53,11 +53,12 @@ def run(command: list[str], *, timeout: float = _DEFAULT_TIMEOUT) -> None:
         raise GeneratorError(f"{command[0]} завершился с кодом {completed.returncode}: {tail}")
 
 
-def probe(path: Path) -> _MediaInfo | None:
+def probe(path: Path, *, timeout: float = _DEFAULT_TIMEOUT) -> _MediaInfo | None:
     """Read duration, size and streams of an mp4; ``None`` means unreadable.
 
     Args:
         path: mp4 file to inspect.
+        timeout: Seconds before ffprobe is killed.
 
     Returns:
         Parsed facts, or ``None`` when ffprobe is missing, the file is gone
@@ -75,7 +76,7 @@ def probe(path: Path) -> _MediaInfo | None:
         "-show_streams",
         str(path),
     ]
-    completed = _capture(command, _DEFAULT_TIMEOUT)
+    completed = _capture(command, timeout)
     if completed is None or completed.returncode != 0:
         return None
     try:
@@ -111,6 +112,47 @@ def strip_audio(source: Path, target: Path) -> None:
             str(target),
         ]
     )
+
+
+def frame_png(source: Path, seconds: float, *, timeout: float = _DEFAULT_TIMEOUT) -> bytes:
+    """Extract one frame of *source* at *seconds* as PNG bytes.
+
+    Args:
+        source: Video file to seek in.
+        seconds: Timestamp of the frame; negative values clamp to the start.
+        timeout: Seconds before ffmpeg is killed.
+
+    Returns:
+        Encoded PNG of the frame.
+
+    Raises:
+        GeneratorError: ffmpeg is missing, hung, returned non-zero or
+            produced no image.
+    """
+    moment = max(0.0, seconds)
+    command = [
+        "ffmpeg",
+        "-ss",
+        f"{moment:.3f}",
+        "-i",
+        str(source),
+        "-frames:v",
+        "1",
+        "-f",
+        "image2pipe",
+        "-vcodec",
+        "png",
+        "-",
+    ]
+    completed = _capture_bytes(command, timeout)
+    if completed is None:
+        raise GeneratorError(f"ffmpeg не запустился или не ответил за {timeout:g} с")
+    if completed.returncode != 0:
+        tail = completed.stderr.decode("utf-8", errors="replace").strip()[-_STDERR_TAIL:]
+        raise GeneratorError(f"ffmpeg завершился с кодом {completed.returncode}: {tail}")
+    if not completed.stdout:
+        raise GeneratorError(f"ffmpeg не вытащил кадр {moment:.3f} с из {source}")
+    return completed.stdout
 
 
 def _free_bytes(path: Path) -> int:
@@ -208,6 +250,19 @@ def _capture(command: list[str], timeout: float) -> subprocess.CompletedProcess[
             command,
             capture_output=True,
             text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _capture_bytes(command: list[str], timeout: float) -> subprocess.CompletedProcess[bytes] | None:
+    """Run a command with binary output, or return ``None`` on start/timeout."""
+    try:
+        return subprocess.run(
+            command,
+            capture_output=True,
             timeout=timeout,
             check=False,
         )

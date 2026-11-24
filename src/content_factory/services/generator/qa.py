@@ -13,41 +13,51 @@ _DURATION_RATIO = 0.15
 _MIN_DURATION_TOLERANCE = 0.75
 
 
-def check_video(path: Path, expected_seconds: float) -> _MediaInfo:
+def check_video(
+    path: Path,
+    expected_seconds: float,
+    expect_audio: bool = False,
+) -> _MediaInfo:
     """Probe a finished mp4 and verify it is a playable video.
 
     Args:
         path: Final mp4 in the ``final/`` directory.
         expected_seconds: Nominal duration of the planned video.
+        expect_audio: The profile has music, so the final needs an audio track.
 
     Returns:
         Parsed facts of the file.
 
     Raises:
-        QaError: The file is missing, empty, unreadable, has no video stream
-            or its duration is outside the tolerance.
+        QaError: The file is missing, empty, unreadable, has no video stream,
+            lacks the expected audio track or its duration is outside the
+            tolerance.
     """
     info = probe(path)
     if info is None:
         raise QaError(f"не удалось прочитать mp4: {path}")
-    _check_media(info, expected_seconds)
+    _check_media(info, expected_seconds, expect_audio)
     return info
 
 
-def _check_media(info: _MediaInfo, expected_seconds: float) -> None:
+def _check_media(info: _MediaInfo, expected_seconds: float, expect_audio: bool = False) -> None:
     """Check already parsed facts of one mp4.
 
     Args:
         info: Facts returned by ``ffprobe``.
         expected_seconds: Nominal duration of the planned video.
+        expect_audio: The profile has music, so the final needs an audio track.
 
     Raises:
-        QaError: The file is too small, has no video or is too short/long.
+        QaError: The file is too small, has no video, no expected audio or is
+            too short/long.
     """
     if info.size < _MIN_BYTES:
         raise QaError(f"файл слишком мал: {info.path} ({info.size} байт)")
     if not info.has_video:
         raise QaError(f"в файле нет видеопотока: {info.path}")
+    if expect_audio and not info.has_audio:
+        raise QaError(f"в файле нет аудиодорожки: {info.path}")
     tolerance = max(_MIN_DURATION_TOLERANCE, expected_seconds * _DURATION_RATIO)
     if abs(info.duration - expected_seconds) > tolerance:
         raise QaError(

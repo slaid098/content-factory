@@ -18,17 +18,24 @@ _SAMPLER_NODE = "11"
 _OUTPUT_NODE = "15"
 
 
-def build_workflow(profile: _Profile, item: _PlannedItem, prompt: str) -> dict[str, Any]:
+def build_workflow(
+    profile: _Profile,
+    item: _PlannedItem,
+    prompt: str,
+    seed: int | None = None,
+) -> dict[str, Any]:
     """Build the graph of one video from the profile template.
 
     Both latent nodes receive the same length: a desynchronized video and
-    audio latent gives a broken file. The sampler receives the planned seed,
-    and the output node receives the file prefix and frame rate.
+    audio latent gives a broken file. The sampler receives *seed* or, when it
+    is absent, the planned seed; the output node receives the file prefix and
+    frame rate.
 
     Args:
         profile: Loaded profile with the graph template.
         item: Planned video with seed, length and file name.
         prompt: Final scene prompt.
+        seed: Seed of this generation attempt; defaults to ``item.seed``.
 
     Returns:
         Fresh graph ready to be posted to ComfyUI.
@@ -52,7 +59,7 @@ def build_workflow(profile: _Profile, item: _PlannedItem, prompt: str) -> dict[s
     negative = profile.negative_prompt
     if negative:
         _update(graph, _NEGATIVE_NODE, {"text": negative})
-    sampler: dict[str, Any] = {"seed": item.seed}
+    sampler: dict[str, Any] = {"seed": item.seed if seed is None else seed}
     if profile.cfg is not None:
         sampler["cfg"] = profile.cfg
     _update(graph, _SAMPLER_NODE, sampler)

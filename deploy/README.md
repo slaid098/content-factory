@@ -275,6 +275,15 @@ GENERATOR_MAX_COST_PER_HOUR=
 GENERATOR_RENT_POOL_SIZE=3
 # Как часто (сек) перепроверять рынок и добирать офферы в свободные слоты.
 GENERATOR_OFFER_REFRESH_SECONDS=60
+# Проверка кадров Clef до плашки: сначала один запрос на синтетическом кадре
+# до аренды, затем 12 кадров каждого исходника. Выключение возвращает прежнее
+# поведение без проверки.
+GENERATOR_SAFETY_ENABLED=true
+GENERATOR_SAFETY_FRAMES=12
+GENERATOR_SAFETY_THRESHOLD=0.5
+GENERATOR_SAFETY_NUDE_THRESHOLD=0.3
+GENERATOR_SAFETY_FRAME_ATTEMPTS=2
+GENERATOR_CLEF_MODEL=clef
 EOF
 ```
 
@@ -298,6 +307,12 @@ EOF
 | `GENERATOR_MAX_COST_PER_HOUR` | нет | — | глобальный потолок цены сервера, $/час; пусто — только `profile.max_cost` |
 | `GENERATOR_RENT_POOL_SIZE` | нет | `3` | сколько серверов арендовать параллельно (1–8); первый готовый остаётся, остальные уничтожаются |
 | `GENERATOR_OFFER_REFRESH_SECONDS` | нет | `60` | как часто пул перепроверяет рынок и добирает новые офферы в свободные слоты, секунд (10–600) |
+| `GENERATOR_SAFETY_ENABLED` | нет | `true` | проверять исходники Clef до плашки и не арендовать сервер, если preflight не прошёл |
+| `GENERATOR_SAFETY_FRAMES` | нет | `12` | сколько кадров каждого исходника проверять, включая последний (3–24) |
+| `GENERATOR_SAFETY_THRESHOLD` | нет | `0.5` | порог вопросов `back`, `short_skirt`, `cleavage`, `all_skin` |
+| `GENERATOR_SAFETY_NUDE_THRESHOLD` | нет | `0.3` | порог вопроса `nude` |
+| `GENERATOR_SAFETY_FRAME_ATTEMPTS` | нет | `2` | сколько раз генерировать ролик при браке кадров (1–3); затем слот `failed` |
+| `GENERATOR_CLEF_MODEL` | нет | `clef` | имя модели Clef в `/systemone` |
 | `CONTENT_FACTORY_LOG_LEVEL` | нет | `INFO` | уровень loguru в API и воркере |
 
 Пул аренды держит до `GENERATOR_RENT_POOL_SIZE` оплачиваемых инстансов, пока
@@ -309,6 +324,15 @@ EOF
 С пулом выставьте на сервере
 `GENERATOR_SERVER_READY_TIMEOUT=900`: общий дедлайн гонки в 15 минут дешевле
 часа ожидания одного медленного хоста.
+
+При `GENERATOR_SAFETY_ENABLED=true` партия сначала делает один запрос Clef на
+синтетическом кадре: если модель или ключ недоступны, сервер не арендуется.
+Каждый скачанный исходник проверяется до плашки по
+`GENERATOR_SAFETY_FRAMES` кадрам, последний — за 0,05 с до конца ролика. Брак
+кадров перегенерируется на том же сервере с новым seed; после
+`GENERATOR_SAFETY_FRAME_ATTEMPTS` попыток слот получает `failed` с причиной в
+`run.json`. Сетевые ошибки и 5xx Clef повторяются один раз и затем тоже
+закрывают ролик как `failed`.
 
 `IMAGE_TAG` в `.env` не задаётся: его экспортирует деплой-скрипт. Значение по
 умолчанию — `latest` (`compose.yaml`). `CONTENT_FACTORY_DATA_DIR=/app/app_data`

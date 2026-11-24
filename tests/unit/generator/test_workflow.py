@@ -67,3 +67,12 @@ def test_shared_workflow_is_loaded_from_shared_dir(tmp_path: Path) -> None:
     loaded = load_profile("dating/profile_2", root)
 
     assert "15" in loaded.workflow
+
+
+def test_attempt_seed_overrides_the_planned_seed(tmp_path: Path) -> None:
+    profile, item = _item(tmp_path)
+
+    graph = build_workflow(profile, item, "prompt", seed=4242)
+
+    assert graph["11"]["inputs"]["seed"] == 4242
+    assert item.seed != 4242

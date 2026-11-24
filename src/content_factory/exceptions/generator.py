@@ -25,6 +25,10 @@ class ComfyError(GeneratorError):
     """Raised when ComfyUI rejects a workflow or stops returning results."""
 
 
+class SafetyError(GeneratorError):
+    """Raised when Clef cannot check the frames of a generated source."""
+
+
 class TextError(GeneratorError):
     """Raised when the text model is unavailable or returns an unusable answer."""
 

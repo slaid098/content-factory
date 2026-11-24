@@ -205,6 +205,12 @@ class GeneratorSettings(_OpenAIEndpointSettings):
     max_cost_per_hour: float | None = Field(default=None, gt=0)
     stale_instance_hours: int = Field(default=6, ge=1)
     output_dir: Path = Path("./app_data/generated")
+    safety_enabled: bool = True
+    safety_frames: int = Field(default=12, ge=3, le=24)
+    safety_threshold: float = Field(default=0.5, gt=0, le=1)
+    safety_nude_threshold: float = Field(default=0.3, gt=0, le=1)
+    safety_frame_attempts: int = Field(default=2, ge=1, le=3)
+    clef_model: str = Field(default="clef", min_length=1)
 
     @field_validator("output_dir")
     @classmethod

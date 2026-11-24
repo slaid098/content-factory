@@ -17,6 +17,7 @@ from loguru import logger
 
 from content_factory.config.settings import GeneratorSettings
 from content_factory.exceptions.generator import TextError
+from content_factory.services.generator.auth import bearer_header
 from content_factory.services.generator.profiles import _Profile, text_prompt
 
 _TEXT_ATTEMPTS = 3
@@ -25,7 +26,6 @@ _REQUEST_TIMEOUT = 120.0
 # Профильный промпт — доверенный текст с жёстким форматом ответа, его нельзя
 # обрезать: хвост содержит правила <result><block>. Лимит только от абсурда.
 _MAX_DATA_LENGTH = 20000
-_PRINTABLE_KEY_RANGE = range(33, 127)
 _RESULT_RE = re.compile(r"<result(?:\s[^>]*)?>\s*(.*?)\s*</result>", re.DOTALL | re.IGNORECASE)
 _BLOCK_RE = re.compile(r"<block(?:\s[^>]*)?>\s*(.*?)\s*</block>", re.DOTALL | re.IGNORECASE)
 _FENCE_RE = re.compile(r"^\s*```[^\n]*$", re.MULTILINE)
@@ -114,9 +114,7 @@ class TextClient:
 
 def _bearer(key: str) -> str:
     """Return the Bearer header value, rejecting non-printable key characters."""
-    if any(ord(char) not in _PRINTABLE_KEY_RANGE for char in key):
-        raise TextError("ключ текстовой модели содержит недопустимые символы")
-    return f"Bearer {key}"
+    return bearer_header(key, TextError, "текстовой модели")
 
 
 def generate_overlay(

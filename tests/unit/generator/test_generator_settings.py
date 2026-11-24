@@ -108,3 +108,74 @@ def test_blank_generator_model_names_the_variable(monkeypatch) -> None:
 
     with pytest.raises(ConfigError, match="настройки генератора: GENERATOR_MODEL:"):
         load_generator_settings()
+
+
+def test_safety_defaults_are_on_with_twelve_frames() -> None:
+    settings = GeneratorSettings()
+
+    assert settings.safety_enabled is True
+    assert settings.safety_frames == 12
+    assert settings.safety_threshold == 0.5
+    assert settings.safety_nude_threshold == 0.3
+    assert settings.safety_frame_attempts == 2
+    assert settings.clef_model == "clef"
+
+
+def test_safety_reads_the_env(monkeypatch) -> None:
+    monkeypatch.setenv("GENERATOR_SAFETY_ENABLED", "false")
+    monkeypatch.setenv("GENERATOR_SAFETY_FRAMES", "24")
+    monkeypatch.setenv("GENERATOR_SAFETY_THRESHOLD", "0.7")
+    monkeypatch.setenv("GENERATOR_SAFETY_NUDE_THRESHOLD", "0.2")
+    monkeypatch.setenv("GENERATOR_SAFETY_FRAME_ATTEMPTS", "3")
+    monkeypatch.setenv("GENERATOR_CLEF_MODEL", "clef-flash")
+
+    settings = GeneratorSettings()
+
+    assert settings.safety_enabled is False
+    assert settings.safety_frames == 24
+    assert settings.safety_threshold == 0.7
+    assert settings.safety_nude_threshold == 0.2
+    assert settings.safety_frame_attempts == 3
+    assert settings.clef_model == "clef-flash"
+
+
+@pytest.mark.parametrize("value", ["3", "24"])
+def test_safety_frames_accepts_the_window_edges(monkeypatch, value: str) -> None:
+    monkeypatch.setenv("GENERATOR_SAFETY_FRAMES", value)
+
+    assert GeneratorSettings().safety_frames == int(value)
+
+
+@pytest.mark.parametrize("value", ["2", "25"])
+def test_safety_frames_rejects_values_outside_the_window(monkeypatch, value: str) -> None:
+    monkeypatch.setenv("GENERATOR_SAFETY_FRAMES", value)
+
+    with pytest.raises(ConfigError, match="GENERATOR_SAFETY_FRAMES"):
+        load_generator_settings()
+
+
+@pytest.mark.parametrize("value", ["1", "3"])
+def test_safety_frame_attempts_accepts_the_window_edges(monkeypatch, value: str) -> None:
+    monkeypatch.setenv("GENERATOR_SAFETY_FRAME_ATTEMPTS", value)
+
+    assert GeneratorSettings().safety_frame_attempts == int(value)
+
+
+@pytest.mark.parametrize("value", ["0", "4"])
+def test_safety_frame_attempts_rejects_values_outside_the_window(monkeypatch, value: str) -> None:
+    monkeypatch.setenv("GENERATOR_SAFETY_FRAME_ATTEMPTS", value)
+
+    with pytest.raises(ConfigError, match="GENERATOR_SAFETY_FRAME_ATTEMPTS"):
+        load_generator_settings()
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["GENERATOR_SAFETY_THRESHOLD", "GENERATOR_SAFETY_NUDE_THRESHOLD"],
+)
+@pytest.mark.parametrize("value", ["0", "1.1"])
+def test_safety_thresholds_stay_inside_probability(monkeypatch, name: str, value: str) -> None:
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ConfigError, match=name):
+        load_generator_settings()
