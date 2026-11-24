@@ -274,7 +274,7 @@ def _produce_safely(
     rng: random.Random,
     data_root: Path,
 ) -> None:
-    """Run one profile and mark its report failed before re-raising a fatal error."""
+    """Run one profile and fail its remaining items before re-raising an error."""
     try:
         _produce(
             profile,
@@ -290,9 +290,12 @@ def _produce_safely(
             rng,
             data_root,
         )
-    except BaseException:
+    except BaseException as ex:
         report.status = RunStatus.FAILED
         report.finished_at = datetime.now(UTC)
+        for item in report.items:
+            if item.status not in (RunStatus.DONE, RunStatus.FAILED):
+                item.status, item.error = RunStatus.FAILED, str(ex)
         _write_report(run_dir, report)
         raise
 
@@ -333,6 +336,8 @@ def _produce(
                 store=store,
                 verify=checker.verify if checker is not None else None,
                 safety_frame_attempts=settings.safety_frame_attempts,
+                job_timeout=settings.comfy_job_timeout,
+                health_interval=settings.comfy_health_interval,
             )
         finally:
             client.close()
@@ -380,8 +385,7 @@ def _postprocess(
         _write_report(run_dir, report)
     for item in report.items:
         if item.status not in (RunStatus.DONE, RunStatus.FAILED):
-            item.status = RunStatus.FAILED
-            item.error = item.error or "результат не получен"
+            item.status, item.error = RunStatus.FAILED, item.error or "результат не получен"
     _write_report(run_dir, report)
 
 

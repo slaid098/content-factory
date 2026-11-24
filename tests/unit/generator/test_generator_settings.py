@@ -196,3 +196,34 @@ def test_safety_thresholds_stay_inside_probability(monkeypatch, name: str, value
 
     with pytest.raises(ConfigError, match=name):
         load_generator_settings()
+
+
+def test_comfy_job_timeout_and_health_interval_defaults() -> None:
+    settings = GeneratorSettings()
+
+    assert settings.comfy_job_timeout == 1800
+    assert settings.comfy_health_interval == 60
+
+
+def test_comfy_job_timeout_and_health_interval_read_the_env(monkeypatch) -> None:
+    monkeypatch.setenv("GENERATOR_COMFY_JOB_TIMEOUT", "900")
+    monkeypatch.setenv("GENERATOR_COMFY_HEALTH_INTERVAL", "30")
+
+    settings = GeneratorSettings()
+
+    assert settings.comfy_job_timeout == 900
+    assert settings.comfy_health_interval == 30
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("GENERATOR_COMFY_JOB_TIMEOUT", "299"),
+        ("GENERATOR_COMFY_HEALTH_INTERVAL", "9"),
+    ],
+)
+def test_comfy_limits_reject_values_below_the_floor(monkeypatch, name: str, value: str) -> None:
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ConfigError, match=name):
+        load_generator_settings()

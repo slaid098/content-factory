@@ -44,6 +44,9 @@ class _Transport:
         self.history_calls += 1
         return {"outputs": {"15": {"gifs": [{"filename": f"{prompt_id}.mp4"}]}}}
 
+    def system_stats(self) -> dict[str, Any]:
+        return {"system": {}}
+
     def download(self, output: _OutputFile) -> bytes:
         del output
         self.downloaded.append(len(self.submitted))
@@ -140,6 +143,9 @@ class _StuckTransport:
         del prompt_id
         return None
 
+    def system_stats(self) -> dict[str, Any]:
+        return {"system": {}}
+
     def download(self, output: _OutputFile) -> bytes:
         del output
         raise AssertionError("no ready prompt should be downloaded")
@@ -148,8 +154,61 @@ class _StuckTransport:
         return None
 
 
-def test_stuck_prompt_is_retried_after_job_timeout(tmp_path: Path) -> None:
+def test_stuck_prompt_raises_after_job_timeout_without_a_retry(tmp_path: Path) -> None:
     transport = _StuckTransport()
+    items = _items(tmp_path, count=1)
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    def sleep(seconds: float) -> None:
+        nonlocal now
+        now += seconds
+
+    with pytest.raises(ComfyError, match="нет результата за 5 с"):
+        run_jobs(
+            transport,
+            items,
+            _build,
+            tmp_path / "source",
+            store=lambda path, content: path.write_bytes(content),
+            attempts=3,
+            poll_interval=10,
+            job_timeout=5,
+            sleep=sleep,
+            clock=clock,
+        )
+
+    assert transport.submitted == 1
+
+
+class _HealthTransport(_Transport):
+    """Transport with controllable health failures and delayed history."""
+
+    def __init__(self, health_failures: int = 0, polls: int = 5) -> None:
+        super().__init__()
+        self.health_left = health_failures
+        self.health_calls = 0
+        self.polls_left = polls
+
+    def history(self, prompt_id: str) -> dict[str, Any] | None:
+        self.history_calls += 1
+        if self.polls_left > 0:
+            self.polls_left -= 1
+            return None
+        return {"outputs": {"15": {"gifs": [{"filename": f"{prompt_id}.mp4"}]}}}
+
+    def system_stats(self) -> dict[str, Any]:
+        self.health_calls += 1
+        if self.health_left > 0:
+            self.health_left -= 1
+            raise ComfyError("connection reset")
+        return {"system": {}}
+
+
+def test_two_health_errors_do_not_stop_generation(tmp_path: Path) -> None:
+    transport = _HealthTransport(health_failures=2)
     items = _items(tmp_path, count=1)
     now = 0.0
 
@@ -166,16 +225,168 @@ def test_stuck_prompt_is_retried_after_job_timeout(tmp_path: Path) -> None:
         _build,
         tmp_path / "source",
         store=lambda path, content: path.write_bytes(content),
-        attempts=1,
         poll_interval=10,
-        job_timeout=5,
+        job_timeout=600,
+        health_interval=10,
         sleep=sleep,
         clock=clock,
     )
 
-    assert transport.submitted == 1
-    assert results[0].path is None
-    assert "нет результата" in (results[0].error or "")
+    assert transport.health_calls >= 3
+    assert results[0].path is not None
+
+
+def test_three_health_errors_stop_the_batch_and_its_retries(tmp_path: Path) -> None:
+    transport = _HealthTransport(health_failures=10, polls=100)
+    items = _items(tmp_path, count=1)
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    def sleep(seconds: float) -> None:
+        nonlocal now
+        now += seconds
+
+    with pytest.raises(ComfyError, match="сервер перестал отвечать"):
+        run_jobs(
+            transport,
+            items,
+            _build,
+            tmp_path / "source",
+            store=lambda path, content: path.write_bytes(content),
+            poll_interval=10,
+            job_timeout=600,
+            health_interval=10,
+            health_fail_limit=3,
+            sleep=sleep,
+            clock=clock,
+        )
+
+    assert transport.health_calls == 3
+    assert len(transport.submitted) == 1
+
+
+class _HealthHttp:
+    """HTTP handler whose health checks fail like a dead server."""
+
+    def __init__(self, health_failures: int) -> None:
+        self.health_failures = health_failures
+        self.health_calls = 0
+        self.history_calls = 0
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/system_stats":
+            self.health_calls += 1
+            if self.health_calls <= self.health_failures:
+                error = httpx.ConnectError if self.health_calls % 2 else httpx.ReadTimeout
+                raise error("server is gone")
+            return httpx.Response(200, json={"system": {}}, request=request)
+        if path == "/prompt":
+            return httpx.Response(200, json={"prompt_id": "p1"}, request=request)
+        if path.startswith("/history/"):
+            self.history_calls += 1
+            if self.history_calls <= 5:
+                return httpx.Response(200, json={}, request=request)
+            return httpx.Response(
+                200,
+                json={"p1": {"outputs": {"15": {"gifs": [{"filename": "p1.mp4"}]}}}},
+                request=request,
+            )
+        if path == "/view":
+            return httpx.Response(200, content=b"video", request=request)
+        raise AssertionError(path)
+
+
+def _run_health_http(
+    tmp_path: Path,
+    handler: _HealthHttp,
+    sleep: Any,
+    clock: Any,
+) -> tuple[comfy._JobResult, ...]:
+    items = _items(tmp_path, count=1)
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+        client = ComfyClient(_connection(), client=http)
+        return run_jobs(
+            client,
+            items,
+            _build,
+            tmp_path / "source",
+            store=lambda path, content: path.write_bytes(content),
+            poll_interval=10,
+            job_timeout=600,
+            health_interval=10,
+            health_fail_limit=3,
+            sleep=sleep,
+            clock=clock,
+        )
+
+
+def test_transport_health_errors_are_counted_and_generation_continues(tmp_path: Path) -> None:
+    handler = _HealthHttp(health_failures=2)
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    def sleep(seconds: float) -> None:
+        nonlocal now
+        now += seconds
+
+    results = _run_health_http(tmp_path, handler, sleep, clock)
+
+    assert handler.health_calls >= 3
+    assert results[0].path is not None
+
+
+def test_three_transport_health_errors_stop_the_batch(tmp_path: Path) -> None:
+    handler = _HealthHttp(health_failures=10)
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    def sleep(seconds: float) -> None:
+        nonlocal now
+        now += seconds
+
+    with pytest.raises(ComfyError, match="сервер перестал отвечать"):
+        _run_health_http(tmp_path, handler, sleep, clock)
+
+    assert handler.health_calls == 3
+
+
+class _BrokenDownload(_Transport):
+    """Transport whose first download fails like a dropped server."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.download_attempts = 0
+
+    def download(self, output: _OutputFile) -> bytes:
+        self.download_attempts += 1
+        if self.download_attempts == 1:
+            raise ComfyError("ComfyUI: ошибка HTTP 502 на этапе «скачивание результата»")
+        return super().download(output)
+
+
+def test_download_error_is_retried_on_the_same_server(tmp_path: Path) -> None:
+    transport = _BrokenDownload()
+    items = _items(tmp_path, count=1)
+
+    results = run_jobs(
+        transport,
+        items,
+        _build,
+        tmp_path / "source",
+        store=lambda path, content: path.write_bytes(content),
+        attempts=3,
+    )
+
+    assert transport.download_attempts == 2
+    assert len(transport.submitted) == 2
+    assert results[0].path is not None
 
 
 def test_missing_output_is_an_error() -> None:
@@ -276,6 +487,50 @@ def test_client_reads_history_and_handles_empty_or_broken_answers() -> None:
 
     with contextlib.closing(_client(broken)) as client, pytest.raises(ComfyError, match="HTTP 502"):
         client.history("p1")
+
+
+def test_client_reads_system_stats_without_leaking_the_body() -> None:
+    seen: dict[str, str] = {}
+
+    def healthy(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        return httpx.Response(200, json={"system": {"os": "posix"}}, request=request)
+
+    with contextlib.closing(_client(healthy)) as client:
+        assert client.system_stats() == {"system": {"os": "posix"}}
+
+    assert seen["path"] == "/system_stats"
+
+    def broken(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="secret body", request=request)
+
+    with (
+        contextlib.closing(_client(broken)) as client,
+        pytest.raises(ComfyError, match="HTTP 500") as raised,
+    ):
+        client.system_stats()
+
+    assert "secret body" not in str(raised.value)
+
+    def not_json(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="plain", request=request)
+
+    with (
+        contextlib.closing(_client(not_json)) as client,
+        pytest.raises(ComfyError, match="не JSON"),
+    ):
+        client.system_stats()
+
+    def disconnected(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    with (
+        contextlib.closing(_client(disconnected)) as client,
+        pytest.raises(ComfyError, match="не ответил") as failed,
+    ):
+        client.system_stats()
+
+    assert isinstance(failed.value.__cause__, httpx.ConnectError)
 
 
 def test_client_downloads_with_filename_params() -> None:

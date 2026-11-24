@@ -54,6 +54,10 @@ class _ComfyTransport(Protocol):
         """Return the finished history item or ``None`` while running."""
         ...
 
+    def system_stats(self) -> dict[str, Any]:
+        """Return the server health payload of ``/system_stats``."""
+        ...
+
     def download(self, output: _OutputFile) -> bytes:
         """Download one produced file."""
         ...
@@ -100,6 +104,27 @@ class ComfyClient:
         _raise_status(response, "история ComfyUI")
         item = _json_body(response, "история ComfyUI").get(prompt_id)
         return item if isinstance(item, dict) else None
+
+    def system_stats(self) -> dict[str, Any]:
+        """Return the health payload of the server without its raw body.
+
+        Returns:
+            JSON object of ``/system_stats``.
+
+        Raises:
+            ComfyError: The request failed, returned an HTTP error or a non-JSON body.
+        """
+        try:
+            response = self._http().get(f"{self._connection.url()}/system_stats")
+        except httpx.HTTPError as ex:
+            raise ComfyError(
+                f"ComfyUI не ответил на этапе «проверка здоровья»: {type(ex).__name__}"
+            ) from ex
+        if not response.is_success:
+            raise ComfyError(
+                f"ComfyUI: ошибка HTTP {response.status_code} на этапе «проверка здоровья»"
+            )
+        return _json_body(response, "проверка здоровья")
 
     def download(self, output: _OutputFile) -> bytes:
         """Download one produced file from the server."""
@@ -170,6 +195,8 @@ def run_jobs(
     safety_frame_attempts: int = 2,
     poll_interval: float = _HISTORY_POLL,
     job_timeout: float = _JOB_TIMEOUT,
+    health_interval: float = 60.0,
+    health_fail_limit: int = 3,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
 ) -> tuple[_JobResult, ...]:
@@ -182,6 +209,11 @@ def run_jobs(
     back into the queue with the next attempt and a new workflow seed; after
     *safety_frame_attempts* rejections the video fails with the reason.
 
+    The server itself is never retried: ``/system_stats`` is checked every
+    *health_interval* seconds, and *health_fail_limit* consecutive errors
+    raise :class:`ComfyError`. A prompt without a result for *job_timeout*
+    raises it too, so the caller can destroy the paid server immediately.
+
     Args:
         client: ComfyUI client.
         items: Planned videos in production order.
@@ -193,11 +225,16 @@ def run_jobs(
         safety_frame_attempts: Safety attempts per video before it fails.
         poll_interval: Seconds between history polls.
         job_timeout: Seconds a prompt may stay without a result.
+        health_interval: Seconds between ``/system_stats`` checks.
+        health_fail_limit: Consecutive health errors that declare the server dead.
         sleep: Pause function; tests replace it to stay fast.
         clock: Monotonic clock; tests replace it to simulate timeouts.
 
     Returns:
         One result per item, ordered by ``seq``.
+
+    Raises:
+        ComfyError: The server stopped answering or a prompt timed out.
     """
     directory.mkdir(parents=True, exist_ok=True)
     saver = store or _store_video
@@ -208,13 +245,15 @@ def run_jobs(
         comfy_failures={},
         safety_rejections={},
     )
+    health = _HealthProbe(client, health_interval, health_fail_limit, clock, clock())
     while state.queue or state.running:
+        health.check(state)
         _fill(client, build, state, attempts, clock)
         if not state.running:
             continue
         ready = _ready(client, state.running)
         if ready is None:
-            _expire(client, build, state, attempts, job_timeout, clock)
+            _expire(state, job_timeout, clock)
             if state.running:
                 sleep(poll_interval)
             continue
@@ -249,6 +288,41 @@ class _BatchState:
     finished: dict[int, _JobResult]
     comfy_failures: dict[int, int]
     safety_rejections: dict[int, int]
+
+
+@dataclass(slots=True)
+class _HealthProbe:
+    """Periodic ``/system_stats`` check with a consecutive failure limit."""
+
+    client: _ComfyTransport
+    interval: float
+    fail_limit: int
+    clock: Callable[[], float]
+    checked_at: float
+    failures: int = 0
+
+    def check(self, state: _BatchState) -> None:
+        """Check the server once *interval* seconds have passed.
+
+        Args:
+            state: Queue whose first running job names the log entry.
+
+        Raises:
+            ComfyError: The server failed *fail_limit* checks in a row.
+        """
+        now = self.clock()
+        if now - self.checked_at < self.interval:
+            return
+        self.checked_at = now
+        try:
+            self.client.system_stats()
+        except ComfyError as ex:
+            self.failures += 1
+            _log_health_failure(state, self.failures, ex)
+            if self.failures >= self.fail_limit:
+                raise ComfyError("сервер перестал отвечать") from ex
+        else:
+            self.failures = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -367,22 +441,39 @@ def _remove_source(path: Path) -> None:
 
 
 def _expire(
-    client: _ComfyTransport,
-    build: Callable[[_PlannedItem, int], dict[str, Any]],
     state: _BatchState,
-    attempts: int,
     job_timeout: float,
     clock: Callable[[], float],
 ) -> None:
-    """Move prompts without a result for *job_timeout* back to the queue."""
+    """Raise when a prompt stays without a result for *job_timeout*.
+
+    A hung server is never retried: the caller destroys it and fails the
+    remaining videos instead of paying for another attempt on the same host.
+    """
     now = clock()
-    for prompt_id, job in list(state.running.items()):
+    for job in state.running.values():
         if now - job.started <= job_timeout:
             continue
-        del state.running[prompt_id]
         error = ComfyError(f"нет результата за {job_timeout:g} с")
-        _retry(job.item, job.attempt, error, state, attempts, "ожидание")
-        _fill(client, build, state, attempts, clock)
+        logger.bind(
+            file=job.item.filename,
+            stage="ожидание",
+            error=str(error),
+            error_type=type(error).__name__,
+        ).error("Задание не отдало результат — сервер считается зависшим")
+        raise error
+
+
+def _log_health_failure(state: _BatchState, failures: int, error: ComfyError) -> None:
+    """Log one failed ``/system_stats`` check with the job awaiting a result."""
+    running = next(iter(state.running.values()), None)
+    logger.bind(
+        file=running.item.filename if running is not None else "",
+        stage="здоровье",
+        failures=failures,
+        error=str(error),
+        error_type=type(error).__name__,
+    ).warning("ComfyUI не ответил на проверку здоровья")
 
 
 def _retry(
