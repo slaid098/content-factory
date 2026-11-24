@@ -289,7 +289,7 @@ def _wrap(
     *,
     break_words: bool = False,
 ) -> tuple[str, ...]:
-    """Wrap card lines by words so they fit the frame width."""
+    """Wrap card lines by words; an overlong word is split by characters."""
     wrapped: list[str] = []
     for line in lines:
         words = line.split()
