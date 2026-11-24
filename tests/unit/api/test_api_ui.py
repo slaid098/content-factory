@@ -47,11 +47,11 @@ def test_root_returns_partner_page(client: TestClient) -> None:
     assert 'id="delivery-form"' in html
 
 
-def test_root_page_has_three_tabs_and_panels(client: TestClient) -> None:
+def test_root_page_has_four_tabs_and_panels(client: TestClient) -> None:
     html = client.get("/").text
 
     assert 'role="tablist"' in html
-    for name in ("delivery", "queries", "settings"):
+    for name in ("delivery", "queries", "settings", "profiles"):
         assert f'id="tab-{name}"' in html
         assert f'id="panel-{name}"' in html
         assert f'aria-controls="panel-{name}"' in html
@@ -65,6 +65,7 @@ def test_delivery_panel_is_open_by_default(client: TestClient) -> None:
     assert not re.search(r'id="panel-delivery"[^>]*hidden', html)
     assert re.search(r'id="panel-queries"[^>]*hidden', html)
     assert re.search(r'id="panel-settings"[^>]*hidden', html)
+    assert re.search(r'id="panel-profiles"[^>]*hidden', html)
 
 
 def test_root_page_does_not_require_token(
@@ -104,7 +105,14 @@ def test_page_references_only_served_assets(client: TestClient) -> None:
     assert client.get("/ui/app.js").status_code == 200
 
     imports = set(_IMPORT.findall(app_script))
-    assert {"archives.js", "jobs.js", "queries.js", "settings.js", "tabs.js"} <= imports
+    assert {
+        "archives.js",
+        "jobs.js",
+        "profiles.js",
+        "queries.js",
+        "settings.js",
+        "tabs.js",
+    } <= imports
     for name in imports:
         assert client.get(f"/ui/{name}").status_code == 200
 
@@ -271,3 +279,68 @@ def test_page_uses_same_origin_api_and_short_read_timeout() -> None:
     assert '"/api/v1/stock"' in app_script
     assert "READ_TIMEOUT_MS = 15000" in api_script
     assert "DELIVERY_TIMEOUT_MS = 300000" in api_script
+
+
+def test_profiles_panel_has_list_message_refresh_and_empty_state(
+    client: TestClient,
+) -> None:
+    html = client.get("/").text
+    panel = html.split('id="panel-profiles"', 1)[1].split("</main>", 1)[0]
+
+    for element in ("profiles-refresh", "profiles-list", "profiles-message", "profiles-empty"):
+        assert f'id="{element}"' in panel
+    assert "Профилей пока нет." in panel
+
+
+def test_profiles_view_loads_on_open_and_refreshes_every_minute() -> None:
+    app_script = _ui_text("app.js")
+    profiles = _ui_text("profiles.js")
+
+    assert 'from "./profiles.js"' in app_script
+    assert "createProfilesView" in app_script
+    assert 'byId("tab-profiles")' in app_script
+    assert 'byId("panel-profiles")' in app_script
+    assert "REFRESH_MS = 60000" in app_script
+    assert 'state.activePanel === "panel-profiles"' in app_script
+    assert "void profiles.load()" in app_script
+    assert '"/api/v1/content/profiles"' in profiles
+
+
+def test_profiles_view_patches_settings_and_rolls_back() -> None:
+    profiles = _ui_text("profiles.js")
+
+    assert 'method: "PATCH"' in profiles
+    assert "refill_enabled" in profiles
+    assert "refill_at" in profiles
+    assert '"target"' in profiles
+    assert "JSON.stringify(payload)" in profiles
+    assert "Профиль не найден" in profiles
+    assert "ERROR_LIMIT = 200" in profiles
+    assert "fillInputs()" in profiles
+
+
+def test_profiles_cards_are_lazy_safe_and_have_no_generation_button(
+    client: TestClient,
+) -> None:
+    html = client.get("/").text
+    profiles = _ui_text("profiles.js")
+    scripts = _all_scripts()
+
+    assert 'id="tab-profiles"' in html
+    assert 'id="panel-profiles"' in html
+    assert 'aria-controls="panel-profiles"' in html
+    assert "innerHTML" not in profiles
+    assert _EXTERNAL_URL.search(profiles) is None
+    assert 'setAttribute("loading", "lazy")' in profiles
+    assert "Превью появится после первого ролика" in profiles
+    for forbidden in ("Сгенерировать", "Запустить"):
+        assert forbidden not in html + scripts
+
+
+def test_profiles_styles_are_a_wrapping_card_grid() -> None:
+    css = _ui_text("app.css")
+
+    for selector in (".profile-list", ".profile-card", ".profile-preview", ".profile-fields"):
+        assert selector in css
+    assert "object-fit: cover" in css
+    assert "grid-template-columns: repeat(auto-fill, minmax(" in css

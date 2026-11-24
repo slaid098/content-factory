@@ -5,6 +5,7 @@ import { createArchivesView } from "./archives.js";
 import { byId, el, setMessage, setText, toggle } from "./dom.js";
 import { formatBytes, formatCount, formatDateTime, languageName } from "./format.js";
 import { createJobsView } from "./jobs.js";
+import { createProfilesView } from "./profiles.js";
 import { createQueriesView } from "./queries.js";
 import { createSettingsView } from "./settings.js";
 import { createTabs } from "./tabs.js";
@@ -52,6 +53,13 @@ const jobs = createJobsView(
   { onFinished: (job) => void refreshAfterJob(job) },
 );
 
+const profiles = createProfilesView({
+  list: byId("profiles-list"),
+  message: byId("profiles-message"),
+  empty: byId("profiles-empty"),
+  refresh: /** @type {HTMLButtonElement} */ (byId("profiles-refresh")),
+});
+
 const queries = createQueriesView({
   language: /** @type {HTMLSelectElement} */ (ui.queriesLanguage),
   search: /** @type {HTMLInputElement} */ (byId("queries-search")),
@@ -90,8 +98,18 @@ const settings = createSettingsView(
 );
 
 const tabs = createTabs({
-  tabs: [byId("tab-delivery"), byId("tab-queries"), byId("tab-settings")],
-  panels: [byId("panel-delivery"), byId("panel-queries"), byId("panel-settings")],
+  tabs: [
+    byId("tab-delivery"),
+    byId("tab-queries"),
+    byId("tab-settings"),
+    byId("tab-profiles"),
+  ],
+  panels: [
+    byId("panel-delivery"),
+    byId("panel-queries"),
+    byId("panel-settings"),
+    byId("panel-profiles"),
+  ],
   onChange: onTabChange,
 });
 
@@ -107,6 +125,8 @@ const state = {
   busy: false,
   refreshing: false,
   queriesLoaded: false,
+  profilesLoaded: false,
+  activePanel: "panel-delivery",
 };
 
 /**
@@ -435,12 +455,17 @@ function applyLimits(settings) {
  * @param {string} panelId
  */
 function onTabChange(panelId) {
+  state.activePanel = panelId;
   if (panelId === "panel-queries" && !state.queriesLoaded && state.language !== null) {
     state.queriesLoaded = true;
     void queries.load(state.language);
   }
   if (panelId === "panel-settings") {
     void settings.load();
+  }
+  if (panelId === "panel-profiles" && !state.profilesLoaded) {
+    state.profilesLoaded = true;
+    void profiles.load();
   }
 }
 
@@ -501,6 +526,9 @@ async function init() {
   await Promise.allSettled([loadTopics(), archives.load(), settings.load()]);
   window.setInterval(() => {
     void refreshAll();
+    if (state.activePanel === "panel-profiles") {
+      void profiles.load();
+    }
   }, REFRESH_MS);
 }
 

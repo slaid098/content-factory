@@ -27,6 +27,11 @@ const STATUS_NAMES = {
   ready_local: "локально",
   empty: "нет видео",
   failed: "ошибка",
+  running: "идёт",
+  generating: "генерация",
+  postprocessing: "постобработка",
+  done: "готово",
+  dry_run: "пробный",
 };
 
 /**
