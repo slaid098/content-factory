@@ -213,11 +213,13 @@ namei -l /root/dockers/content-factory/app_data/content
 ### 4.2 Каталоги языков
 
 Приложение не может писать в root-овый `content`, поэтому каталоги активных
-языков создаются заранее:
+языков создаются заранее. Поставщик пишет в `content/general/<язык>`, а
+финалы генератора — в `content/<ниша>/<язык>`:
 
 ```bash
 sudo install -d -o 10001 -g content-partner -m 2770 \
-  /root/dockers/content-factory/app_data/content/ru
+  /root/dockers/content-factory/app_data/content/general/ru \
+  /root/dockers/content-factory/app_data/content/dating/ru
 ```
 
 `setgid` (`2770`) заставляет новые файлы наследовать группу
@@ -232,8 +234,9 @@ sudo find /root/dockers/content-factory/app_data/content -perm /022 -print
 
 Вывод должен быть пустым.
 
-Если включаете ещё язык, создайте для него такой же каталог и добавьте его в
-`config.yaml`. Выключенные языки каталогов не получают и партнёру не видны.
+Если включаете ещё язык, создайте для него такой же каталог в
+`content/general` и в нише генератора, затем добавьте язык в `config.yaml`.
+Выключенные языки каталогов не получают и партнёру не видны.
 
 ## 5. Переменные окружения
 
@@ -557,6 +560,10 @@ sudo docker image ls ghcr.io/slaid098/content-factory
 - `./app_data` — bind mount с хоста, в образ не попадает. `git reset --hard`
   его не удаляет: каталог в `.gitignore`.
 - Healthcheck API: `curl -f http://127.0.0.1:8000/api/v1/stock`.
+- После деплоя новой раскладки разово перенесите плоский сток:
+  `sudo docker compose exec api python -m content_factory.services.stock.migrate /app/app_data`.
+  Без переноса чтение работает, а повторный запуск пишет в лог
+  `Перенесено файлов стока: 0`.
 
 Снаружи API доступен только через SSH-туннель:
 

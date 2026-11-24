@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -18,12 +19,18 @@ from content_factory.exceptions.generator import (
     RentError,
     SafetyError,
 )
-from content_factory.services.generator import media, overlay, qa, safety, service
+from content_factory.services.generator import media, overlay, publish, qa, safety, service
 from content_factory.services.generator.comfy import _OutputFile
 from content_factory.services.generator.plan import attempt_seed
 
 _NOW = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
 _RUN_ID = "20260101T000000Z"
+
+
+@pytest.fixture(autouse=True)
+def _ignore_host_free_space(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep unit tests independent of the free space of the test host."""
+    monkeypatch.setattr(media, "ensure_free_space", lambda path: None)
 
 
 class _Transport:
@@ -263,6 +270,203 @@ def test_batch_writes_final_files_and_destroys_server_before_text(
     for item in report["items"]:
         assert item["status"] == "done"
         assert (result.run_dirs[0] / "final" / item["file"]).is_file()
+
+
+def test_publish_stock_hardlinks_final_into_profile_niche(tmp_path: Path) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+    final = tmp_path / "generated" / "final.mp4"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"video")
+
+    destination = publish.publish_stock(profile, final, tmp_path)
+
+    assert destination == tmp_path / "content" / "dating" / "ru" / "final.mp4"
+    assert destination.read_bytes() == b"video"
+    assert destination.stat().st_ino == final.stat().st_ino
+    assert final.is_file()
+
+
+def test_publish_stock_copies_when_hardlink_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+    final = tmp_path / "generated" / "final.mp4"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"video")
+
+    def fail_link(*args: object, **kwargs: object) -> None:
+        raise OSError("cross-device link")
+
+    monkeypatch.setattr(publish.os, "link", fail_link)
+
+    destination = publish.publish_stock(profile, final, tmp_path)
+
+    assert destination.read_bytes() == b"video"
+    assert destination.stat().st_ino != final.stat().st_ino
+    assert final.is_file()
+
+
+def test_publish_stock_uses_profile_category_when_niche_is_empty(tmp_path: Path) -> None:
+    profile = fixture_profile(tmp_path / "profiles", extra={"niche": ""})
+    final = tmp_path / "generated" / "final.mp4"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"video")
+
+    destination = publish.publish_stock(profile, final, tmp_path)
+
+    assert destination == tmp_path / "content" / "dating" / "ru" / "final.mp4"
+
+
+def test_publish_stock_never_overwrites_an_existing_file(tmp_path: Path) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+    final = tmp_path / "generated" / "final.mp4"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"new")
+    destination = tmp_path / "content" / "dating" / "ru" / "final.mp4"
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(b"old")
+
+    with pytest.raises(GeneratorError, match="не удалось положить в сток"):
+        publish.publish_stock(profile, final, tmp_path)
+
+    assert destination.read_bytes() == b"old"
+    assert final.read_bytes() == b"new"
+
+
+def test_publish_stock_reports_copy_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+    final = tmp_path / "generated" / "final.mp4"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"video")
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(publish.os, "link", fail)
+    monkeypatch.setattr(publish.shutil, "copy2", fail)
+
+    with pytest.raises(GeneratorError, match="не удалось положить в сток"):
+        publish.publish_stock(profile, final, tmp_path)
+
+    assert final.is_file()
+    assert not (tmp_path / "content" / "dating" / "ru" / "final.mp4").exists()
+
+
+@pytest.mark.parametrize("niche", ["../escape", "Dating", "dating/ru"])
+def test_publish_stock_rejects_an_invalid_niche(tmp_path: Path, niche: str) -> None:
+    profile = replace(fixture_profile(tmp_path / "profiles"), niche=niche)
+    final = tmp_path / "generated" / "final.mp4"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"video")
+
+    with pytest.raises(GeneratorError, match="не удалось положить в сток"):
+        publish.publish_stock(profile, final, tmp_path)
+
+    assert not (tmp_path / "escape").exists()
+    assert not (tmp_path / "content").exists()
+
+
+def test_publish_stock_rejects_an_absolute_niche(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    profile = replace(fixture_profile(tmp_path / "profiles"), niche=str(outside))
+    final = tmp_path / "generated" / "final.mp4"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"video")
+
+    with pytest.raises(GeneratorError, match="не удалось положить в сток"):
+        publish.publish_stock(profile, final, tmp_path)
+
+    assert not outside.exists()
+
+
+@pytest.mark.parametrize("language", ["RU", "ru/../x", "r"])
+def test_publish_stock_rejects_an_invalid_language(tmp_path: Path, language: str) -> None:
+    profile = replace(fixture_profile(tmp_path / "profiles"), language=language)
+    final = tmp_path / "generated" / "final.mp4"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"video")
+
+    with pytest.raises(GeneratorError, match="не удалось положить в сток"):
+        publish.publish_stock(profile, final, tmp_path)
+
+    assert not (tmp_path / "content").exists()
+
+
+def test_publish_stock_refuses_a_niche_symlinked_outside_content(tmp_path: Path) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+    content = tmp_path / "content"
+    content.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (content / "dating").symlink_to(outside, target_is_directory=True)
+    final = tmp_path / "generated" / "final.mp4"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"video")
+
+    with pytest.raises(GeneratorError, match="не удалось положить в сток"):
+        publish.publish_stock(profile, final, tmp_path)
+
+    assert list(outside.rglob("*.mp4")) == []
+
+
+def test_invalid_profile_niche_fails_before_the_rent(tmp_path: Path) -> None:
+    make_profile(tmp_path / "profiles", extra={"niche": "../escape"})
+    events: list[str] = []
+    session = FakeSession(events)
+
+    with pytest.raises(ProfileError, match="ниша"):
+        service.generate_batch(
+            profiles="dating/profile_2",
+            data_dir=tmp_path,
+            settings=_settings(tmp_path),
+            session_factory=lambda profile, settings: session,
+            client_factory=lambda connection: _Transport(events),
+            text_writer=_Writer(events),
+            store=lambda path, content: path.write_bytes(content),
+            rng=random.Random(1),
+            now=_NOW,
+        )
+
+    assert session.opened == 0
+
+
+def test_publication_error_marks_the_video_failed_and_keeps_the_final(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture_profile(tmp_path / "profiles")
+    events: list[str] = []
+    _fake_postprocess(monkeypatch, events)
+
+    def fail_publish(profile: object, final: Path, data_root: Path) -> Path:
+        del profile, data_root
+        raise GeneratorError(f"не удалось положить в сток: {final}")
+
+    monkeypatch.setattr(service, "publish_stock", fail_publish)
+
+    result = service.generate_batch(
+        profiles="dating/profile_2",
+        data_dir=tmp_path,
+        settings=_settings(tmp_path),
+        session_factory=lambda profile, settings: FakeSession(events),
+        client_factory=lambda connection: _Transport(events),
+        text_writer=_Writer(events),
+        store=lambda path, content: path.write_bytes(content),
+        rng=random.Random(1),
+        now=_NOW,
+    )
+
+    assert result.generated == 0
+    assert result.failed == 1
+    report = json.loads((result.run_dirs[0] / "run.json").read_text(encoding="utf-8"))
+    item = report["items"][0]
+    assert item["status"] == "failed"
+    assert "не удалось положить в сток" in item["error"]
+    assert (result.run_dirs[0] / "final" / item["file"]).is_file()
 
 
 def test_one_failed_item_does_not_stop_the_batch(tmp_path: Path, monkeypatch) -> None:

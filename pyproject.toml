@@ -161,3 +161,11 @@ reason = "атомарная запись файла запросов под db.
 check_id = "orm_in_core"
 path = "src/content_factory/services/supplier/downloader.py"
 reason = "финализация скачивания под db.lock (fcntl), не ORM"
+
+# migrate.py — самостоятельный CLI разового переноса плоского стока. Его
+# запускают руками (`python -m ...`), оркестратор капсулы его не вызывает,
+# поэтому недостижимость из service.py ожидаема.
+[[tool.audit.ignore]]
+check_id = "capsule_part_reachable"
+path = "src/content_factory/services/stock/migrate.py"
+reason = "отдельный CLI-вход миграции, не часть графа оркестратора stock"

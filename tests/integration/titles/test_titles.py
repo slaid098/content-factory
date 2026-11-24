@@ -972,6 +972,21 @@ def test_assign_titles_uses_language_directory_and_metadata(
     assert calls[0]["query"] == "курятник"
 
 
+def test_assign_titles_reads_nested_niche_directories(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    _patch_generation(monkeypatch, calls=calls)
+    sha256 = "a" * 64
+    touch_mp4(tmp_path / CONTENT_DIR / "dating" / "ru" / f"{sha256}.mp4")
+
+    result = assign_titles(tmp_path, _settings(), now=_NOW)
+
+    assert result == TitlePassResult(candidates=1, titled=1, skipped=0)
+    assert calls[0]["language"] == "ru"
+
+
 def test_assign_titles_titles_orphan_mp4_without_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

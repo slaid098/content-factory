@@ -36,6 +36,7 @@ from content_factory.services.supplier.repository import Repository
 _SEED_QUERIES_DIR = Path(__file__).parent / "queries"
 _STOP_PLAN = frozenset({StopReason.CAPTCHA, StopReason.DURATION_EXCEEDED})
 _STALE_TMP_SECONDS = 24 * 60 * 60
+_GENERAL_NICHE = "general"
 
 
 def produce(
@@ -123,13 +124,13 @@ def _validate_languages(languages: Mapping[str, int]) -> None:
 
 
 def _prepare_paths(data_dir: Path, languages: Mapping[str, int]) -> tuple[Path, Path, Path]:
-    """Создать каталоги и сиды запросов, вернуть рабочие пути."""
+    """Создать каталоги ниши general и сиды запросов, вернуть рабочие пути."""
     content_dir = data_dir / CONTENT_DIR
     queries_dir = data_dir / QUERIES_DIR
     db_path = data_dir / DB_DIR / DB_FILENAME
     for language in languages:
         _seed_queries(queries_dir, language)
-        language_dir = content_dir / language
+        language_dir = content_dir / _GENERAL_NICHE / language
         _ensure_directory(language_dir)
         _sweep_stale_tmp(language_dir)
     _sweep_stale_tmp(queries_dir)
@@ -162,7 +163,7 @@ def _run_languages(
             supplier_settings,
             runtime,
             db_path=db_path,
-            content_dir=content_dir / language,
+            content_dir=content_dir / _GENERAL_NICHE / language,
             language=language,
         )
         queries = load_language_queries(

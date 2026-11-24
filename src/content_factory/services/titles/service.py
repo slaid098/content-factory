@@ -16,8 +16,8 @@ from content_factory.db.video_meta import load_video_meta
 from content_factory.exceptions.titles import TitleError
 from content_factory.schemas.content.titles import TitlePassResult
 from content_factory.schemas.content.video import VideoMeta
+from content_factory.services.stock import stock_files
 from content_factory.services.titles.client import generate_titles
-from content_factory.services.titles.files import stock_files
 from content_factory.services.titles.frames import extract_frames
 from content_factory.services.titles.text import (
     clean_title,
@@ -41,10 +41,11 @@ def assign_titles(
 ) -> TitlePassResult:
     """Generate titles for stock files that have none yet.
 
-    The language comes from the ``content/<lang>`` directory name. A file
-    without a row in ``downloads``/``videos`` is still titled from its frames,
-    with an empty description and no duration. Errors of one file are logged
-    and skipped; database errors are not swallowed.
+    Both layouts are read: the nested ``content/<niche>/<language>`` and the
+    legacy flat ``content/<language>``. The language comes from the language
+    directory name. A file without a row in ``downloads``/``videos`` is still
+    titled from its frames, with an empty description and no duration. Errors
+    of one file are logged and skipped; database errors are not swallowed.
 
     Args:
         data_dir: Root of the runtime data directory.
@@ -60,18 +61,18 @@ def assign_titles(
     connection = connect(db_path)
     try:
         ensure_schema(connection)
-        stored = load_titles(db_path, [path.stem for _, path in files])
-        pending = [(language, path) for language, path in files if path.stem not in stored]
-        meta = load_video_meta(db_path, [path.stem for _, path in pending])
+        stored = load_titles(db_path, [item.path.stem for item in files])
+        pending = [item for item in files if item.path.stem not in stored]
+        meta = load_video_meta(db_path, [item.path.stem for item in pending])
         recent = list(recent_titles(db_path))
         titled = 0
         skipped = 0
-        for language, path in pending:
+        for item in pending:
             result, recent = _title_one(
                 connection,
-                path,
-                language,
-                meta.get(path.stem, _EMPTY_META),
+                item.path,
+                item.language,
+                meta.get(item.path.stem, _EMPTY_META),
                 recent,
                 settings,
                 moment,

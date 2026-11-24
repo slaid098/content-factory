@@ -263,8 +263,8 @@ def test_languages_run_sequentially_and_profile_opens_once(
     assert mcp.calls[0] == ("open_profile", "profile-1", True)
     assert mcp.calls[-1] == ("close_profile", "profile-1")
     assert (tmp_path / DB_DIR / DB_FILENAME).is_file()
-    assert (tmp_path / CONTENT_DIR / "ru").is_dir()
-    assert (tmp_path / CONTENT_DIR / "en").is_dir()
+    assert (tmp_path / CONTENT_DIR / "general" / "ru").is_dir()
+    assert (tmp_path / CONTENT_DIR / "general" / "en").is_dir()
 
 
 def test_existing_downloads_are_added_to_the_language_target(
@@ -383,7 +383,7 @@ def test_language_without_queries_returns_no_queries(
     assert calls == [("de", [], True)]
     assert result.produced_by_language == {"de": 0}
     assert result.stop_reason is StopReason.NO_QUERIES
-    assert (tmp_path / CONTENT_DIR / "de").is_dir()
+    assert (tmp_path / CONTENT_DIR / "general" / "de").is_dir()
 
 
 def test_invalid_language_is_rejected_before_paths(
@@ -444,7 +444,7 @@ def test_empty_query_file_drains_approved_leftovers(
     sha = hashlib.sha256(payload).hexdigest()
     assert result.produced_by_language == {"de": 1}
     assert result.stop_reason is StopReason.TARGET_REACHED
-    assert (tmp_path / CONTENT_DIR / "de" / f"{sha}.mp4").read_bytes() == payload
+    assert (tmp_path / CONTENT_DIR / "general" / "de" / f"{sha}.mp4").read_bytes() == payload
 
 
 def test_run_budget_is_shared_between_languages(
@@ -489,7 +489,7 @@ def test_stale_tmp_files_are_swept(
         monkeypatch,
         {"ru": LanguageResult(0, StopReason.NO_PROGRESS)},
     )
-    content = tmp_path / CONTENT_DIR / "ru"
+    content = tmp_path / CONTENT_DIR / "general" / "ru"
     content.mkdir(parents=True)
     stale = content / "old.tmp"
     fresh = content / "new.tmp"
@@ -904,7 +904,7 @@ def test_produce_end_to_end_downloads_video(
     )
 
     sha = hashlib.sha256(payload).hexdigest()
-    content = tmp_path / CONTENT_DIR / "ru"
+    content = tmp_path / CONTENT_DIR / "general" / "ru"
     assert result.produced_by_language == {"ru": 1}
     assert result.produced_total == 1
     assert result.stop_reason is StopReason.TARGET_REACHED
@@ -934,8 +934,8 @@ def test_produce_end_to_end_isolates_languages(
 
     ru_sha = hashlib.sha256(ru_payload).hexdigest()
     en_sha = hashlib.sha256(en_payload).hexdigest()
-    ru_dir = tmp_path / CONTENT_DIR / "ru"
-    en_dir = tmp_path / CONTENT_DIR / "en"
+    ru_dir = tmp_path / CONTENT_DIR / "general" / "ru"
+    en_dir = tmp_path / CONTENT_DIR / "general" / "en"
     assert result.produced_by_language == {"ru": 1, "en": 1}
     assert result.produced_total == 2
     assert result.stop_reason is StopReason.TARGET_REACHED
@@ -963,7 +963,7 @@ def test_repeated_search_with_identical_payload_keeps_one_file(
     second = _produce(tmp_path, {"ru": 1})
 
     sha = hashlib.sha256(payload).hexdigest()
-    content = tmp_path / CONTENT_DIR / "ru"
+    content = tmp_path / CONTENT_DIR / "general" / "ru"
     assert first.produced_total == 1
     assert second.produced_total == 0
     assert second.stop_reason is StopReason.QUERIES_EXHAUSTED
@@ -988,7 +988,7 @@ def test_new_video_with_identical_sha_is_rejected(
     second = _produce(tmp_path, {"ru": 1})
 
     sha = hashlib.sha256(payload).hexdigest()
-    content = tmp_path / CONTENT_DIR / "ru"
+    content = tmp_path / CONTENT_DIR / "general" / "ru"
     assert first.produced_total == 1
     assert second.produced_total == 0
     assert [path.name for path in content.glob("*.mp4")] == [f"{sha}.mp4"]
