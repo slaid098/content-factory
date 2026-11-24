@@ -728,19 +728,25 @@ def test_download_archive_with_uppercase_request_id_uses_canonical_name(
     )
 
 
+def test_delivery_rejects_missing_language(data_dir: Path) -> None:
+    response = _post(_client(), language=None)
+
+    assert response.status_code == 422
+
+
 @pytest.mark.parametrize(
-    "overrides",
+    "path",
     [
-        {"language": None},
-        {"profile": "dating/profile_1"},
-        {"language": None, "profile": "dating/profile_1", "query": "курятник"},
+        "/api/v1/content/deliveries",
+        "/api/v1/content/deliveries/link",
     ],
 )
-def test_delivery_rejects_invalid_language_profile_combination(
-    data_dir: Path,
-    overrides: dict[str, object],
-) -> None:
-    response = _post(_client(), **overrides)
+def test_delivery_rejects_query_with_profile(data_dir: Path, path: str) -> None:
+    response = _client().post(
+        path,
+        json=_body(profile="dating/profile_1", query="курятник"),
+        headers=_headers(),
+    )
 
     assert response.status_code == 422
 
@@ -769,7 +775,7 @@ def test_delivery_by_profile_returns_only_its_files(data_dir: Path) -> None:
     add_title(data_dir / "db" / "db.sqlite3", other_hash, "Второе")
     add_title(data_dir / "db" / "db.sqlite3", "a" * 64, "Поставщик")
 
-    response = _post(_client(), language=None, profile="dating/profile_1")
+    response = _post(_client(), profile="dating/profile_1")
 
     assert response.status_code == 200
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
@@ -779,6 +785,33 @@ def test_delivery_by_profile_returns_only_its_files(data_dir: Path) -> None:
     assert not first.exists()
     assert other.is_file()
     assert supplier.is_file()
+
+
+def test_delivery_general_profile_alias_returns_general_stock(data_dir: Path) -> None:
+    add_profile(data_dir, "dating", "profile_1")
+    general_hash = "a" * 64
+    general = touch_mp4(
+        data_dir / CONTENT_DIR / "general" / "ru" / f"{general_hash}.mp4",
+        b"general",
+    )
+    profile = add_profile_video(
+        data_dir,
+        "dating",
+        "profile_1",
+        filename="dating_profile_1_run_001.mp4",
+        data=b"profile",
+    )
+    add_title(data_dir / "db" / "db.sqlite3", general_hash, "Общее")
+    add_title(data_dir / "db" / "db.sqlite3", "dating_profile_1_run_001", "Профильное")
+
+    response = _post(_client(), profile="general")
+
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert archive.namelist() == ["001.mp4", "001.json"]
+        assert archive.read("001.mp4") == b"general"
+    assert not general.exists()
+    assert profile.is_file()
 
 
 def test_delivery_by_profile_without_stock_returns_204(data_dir: Path) -> None:
@@ -791,10 +824,34 @@ def test_delivery_by_profile_without_stock_returns_204(data_dir: Path) -> None:
     )
     add_title(data_dir / "db" / "db.sqlite3", "dating_profile_2_run_001", "Второе")
 
-    response = _post(_client(), language=None, profile="dating/profile_1")
+    response = _post(_client(), profile="dating/profile_1")
 
     assert response.status_code == 204
     assert other.is_file()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/v1/content/deliveries",
+        "/api/v1/content/deliveries/link",
+    ],
+)
+def test_delivery_rejects_profile_of_another_language(
+    data_dir: Path,
+    path: str,
+) -> None:
+    add_profile(data_dir, "dating", "profile_1", language="en")
+
+    response = _client().post(
+        path,
+        json=_body(profile="dating/profile_1"),
+        headers=_headers(),
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "profile language does not match language"}
+    assert not (data_dir / ARCHIVE_DIR).exists()
 
 
 @pytest.mark.parametrize(
@@ -835,7 +892,7 @@ def test_profile_delivery_routes_map_profile_errors(
 ) -> None:
     response = _client().post(
         path,
-        json=_body(language=None, profile=profile),
+        json=_body(profile=profile),
         headers=_headers(),
     )
 
@@ -856,7 +913,7 @@ def test_delivery_by_profile_is_idempotent(data_dir: Path) -> None:
     )
     add_title(data_dir / "db" / "db.sqlite3", first_hash, "Первое")
     client = _client()
-    request = {"language": None, "profile": "dating/profile_1"}
+    request = {"profile": "dating/profile_1"}
 
     assert _post(client, **request).status_code == 200
     second_hash = "dating_profile_1_run_002"

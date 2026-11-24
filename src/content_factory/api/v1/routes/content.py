@@ -26,7 +26,7 @@ from content_factory.services.delivery import (
     resolve_archive,
     start_delivery_job,
 )
-from content_factory.services.profiles import is_safe_profile_id
+from content_factory.services.profiles import get_profile, is_safe_profile_id
 
 content_router = APIRouter()
 
@@ -95,6 +95,27 @@ def profile_error(ex: ProfileError, profile_id: str | None = None) -> HTTPExcept
     )
 
 
+def _check_delivery_profile(settings: Settings, request: DeliveryRequest) -> None:
+    """Reject an unsafe profile or a profile of another language.
+
+    The registry language of a profile must match the request language, so a
+    ``dating/en`` profile cannot be delivered through a ``ru`` address. The
+    client gets a fixed message without paths or registry details.
+    """
+    if request.profile is None:
+        return
+    require_safe_profile_id(request.profile)
+    try:
+        profile = get_profile(settings.data_dir, request.profile)
+    except ProfileError as ex:
+        raise profile_error(ex, request.profile) from ex
+    if profile.language != request.language:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="profile language does not match language",
+        )
+
+
 def _check_delivery_limit(request: DeliveryRequest, settings: Settings) -> None:
     """Reject a count above the runtime ``delivery.max_count`` limit."""
     runtime = load_runtime_config(
@@ -128,8 +149,7 @@ def create_delivery(
 ) -> Response:
     """Return a zip with up to ``count`` videos of one language or profile."""
     _check_delivery_limit(request, settings)
-    if request.profile is not None:
-        require_safe_profile_id(request.profile)
+    _check_delivery_profile(settings, request)
     try:
         archive = deliver(
             settings.data_dir,
@@ -179,8 +199,7 @@ def create_delivery_link(
 ) -> DeliveryJobInfo:
     """Start a background build and Filebin upload for a manual delivery."""
     _check_delivery_limit(request, settings)
-    if request.profile is not None:
-        require_safe_profile_id(request.profile)
+    _check_delivery_profile(settings, request)
     try:
         return start_delivery_job(
             settings.data_dir,

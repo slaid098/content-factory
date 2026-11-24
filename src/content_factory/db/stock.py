@@ -119,24 +119,44 @@ def prune_missing(connection: sqlite3.Connection, existing: set[str]) -> int:
 def list_available(
     connection: sqlite3.Connection,
     language: str,
+    *,
+    profile_id: str | None = None,
+    niche: str | None = None,
+    unassigned_only: bool = False,
 ) -> list[tuple[str, str | None]]:
     """Return undelivered stock paths of one language in path order.
+
+    The filters combine with AND and are all off by default, so a call with
+    only ``language`` keeps returning every row of that language.
 
     Args:
         connection: Open connection to the operational database.
         language: Validated two- or three-letter language code.
+        profile_id: Restrict the rows to this profile id.
+        niche: Restrict the rows to this niche such as ``general``.
+        unassigned_only: Return only rows without a profile id.
 
     Returns:
         ``(relative path, profile id)`` pairs; the profile id is ``None`` when
         the file name does not identify one.
     """
+    conditions = ["language = ?", "delivered_at IS NULL"]
+    params: list[str] = [language]
+    if profile_id is not None:
+        conditions.append("profile_id = ?")
+        params.append(profile_id)
+    if niche is not None:
+        conditions.append("niche = ?")
+        params.append(niche)
+    if unassigned_only:
+        conditions.append("profile_id IS NULL")
     rows = connection.execute(
-        """
+        f"""
         SELECT path, profile_id FROM stock_items
-        WHERE language = ? AND delivered_at IS NULL
+        WHERE {" AND ".join(conditions)}
         ORDER BY path
         """,
-        (language,),
+        params,
     ).fetchall()
     return [(str(row[0]), None if row[1] is None else str(row[1])) for row in rows]
 
