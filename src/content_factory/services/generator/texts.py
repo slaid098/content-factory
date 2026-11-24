@@ -26,9 +26,9 @@ _REQUEST_TIMEOUT = 120.0
 # обрезать: хвост содержит правила <result><block>. Лимит только от абсурда.
 _MAX_DATA_LENGTH = 20000
 _PRINTABLE_KEY_RANGE = range(33, 127)
-_RESULT_RE = re.compile(r"<result>\s*(.*?)\s*</result>", re.DOTALL)
-_BLOCK_RE = re.compile(r"<block>\s*(.*?)\s*</block>", re.DOTALL)
-_MARKUP_RE = re.compile(r"</?(?:result|block)>")
+_RESULT_RE = re.compile(r"<result(?:\s[^>]*)?>\s*(.*?)\s*</result>", re.DOTALL | re.IGNORECASE)
+_BLOCK_RE = re.compile(r"<block(?:\s[^>]*)?>\s*(.*?)\s*</block>", re.DOTALL | re.IGNORECASE)
+_FENCE_RE = re.compile(r"^\s*```[^\n]*$", re.MULTILINE)
 _MIN_TEXT_LEN = 5
 _USER_MESSAGE = "Сгенерируй один текст для одного видео."
 
@@ -181,7 +181,7 @@ def parse_overlays(raw: str) -> tuple[_Overlay, ...]:
         One overlay per ``<result>``; a plain answer without tags becomes a
         single-block overlay. Empty and too short blocks are skipped.
     """
-    text = raw.strip()
+    text = _clean_answer(raw)
     if not text or _foreign_text(text):
         return ()
     results = _RESULT_RE.findall(text)
@@ -221,9 +221,18 @@ def _parse_single(text: str) -> _Overlay | None:
     return None
 
 
+def _clean_answer(raw: str) -> str:
+    """Strip Markdown code fences around the card answer."""
+    return _FENCE_RE.sub("", raw).strip()
+
+
 def _foreign_text(text: str) -> bool:
-    """Return whether the answer holds a letter outside the card markup."""
-    return _foreign_lines(_lines(_MARKUP_RE.sub(" ", text)))
+    """Return whether any extracted card text has a forbidden letter."""
+    parts = list(_BLOCK_RE.findall(text))
+    parts.extend(_BLOCK_RE.sub(" ", part) for part in _RESULT_RE.findall(text))
+    if not parts:
+        parts = [text]
+    return any(_foreign_lines(_lines(part)) for part in parts)
 
 
 def _foreign_lines(lines: tuple[str, ...]) -> bool:

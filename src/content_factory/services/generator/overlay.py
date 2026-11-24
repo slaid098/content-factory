@@ -78,13 +78,17 @@ def block_boxes(profile: _Profile, overlay: _Overlay) -> tuple[_TextBox, ...]:
     boxes: list[_TextBox] = []
     for index, block in enumerate(overlay.blocks):
         number = len(boxes) if style.hug_text else index
-        block_px = int(font_px * style.cta_scale) if number > 0 else font_px
+        is_cta = number > 0
+        block_px = int(font_px * style.cta_scale) if is_cta else font_px
+        line_px = (
+            _cta_line_height(font_px, style.cta_scale) if is_cta else _line_height(style, font_px)
+        )
         font = _load_font(profile.font, block_px)
         lines = _wrap(block.lines, font, max_text_width)
         if not lines:
             continue
         y_pct = style.block1_y if number == 0 else _second_y(style)
-        box = _box(profile, style, number, lines, font, block_px, y_pct)
+        box = _box(profile, style, number, lines, font, block_px, line_px, y_pct)
         if style.hug_text and boxes:
             box = _below(box, boxes[-1], int(style.gap * profile.height))
         boxes.append(box)
@@ -142,11 +146,14 @@ def _merged_card(profile: _Profile, overlay: _Overlay) -> _TextBox | None:
 
 
 def _text_limit(profile: _Profile) -> int:
-    """Return the wrap width of the profile card in pixels."""
+    """Return the wrap width inside the card of the profile."""
     style = profile.style
+    if style.hug_text:
+        return int(profile.width * style.max_text_width)
+    width, _ = _card_geometry(profile)
     if style.card_width is not None:
-        return max(1, int(profile.width * style.card_width) - 2 * _pad_x(profile))
-    return int(profile.width * style.max_text_width)
+        return max(1, width - 2 * _pad_x(profile))
+    return max(1, min(int(profile.width * style.max_text_width), width))
 
 
 def _pad_x(profile: _Profile) -> int:
@@ -180,22 +187,24 @@ def _below(box: _TextBox, previous: _TextBox, gap: int) -> _TextBox:
 
 
 def _fit_stack(boxes: tuple[_TextBox, ...], frame_height: int) -> tuple[_TextBox, ...]:
-    """Move a card stack up so its last card ends inside the frame.
+    """Move a card stack up so every card ends inside the frame.
 
     Raises:
-        OverlayError: The stack is taller than the frame and cannot fit.
+        OverlayError: A card is taller than the frame or the stack cannot move
+            up enough to fit every card.
     """
     if not boxes:
         return boxes
-    bottom = boxes[-1].top + boxes[-1].height
+    bottom = max(box.top + box.height for box in boxes)
     if bottom <= frame_height:
         return boxes
     shift = bottom - frame_height
-    if boxes[0].top < shift:
+    shifted = tuple(replace(box, top=box.top - shift) for box in boxes)
+    if any(box.top < 0 or box.top + box.height > frame_height for box in shifted):
         raise OverlayError(
             f"текст не помещается в кадр: нижняя кромка {bottom} при высоте {frame_height}"
         )
-    return tuple(replace(box, top=box.top - shift) for box in boxes)
+    return shifted
 
 
 def _second_y(style: _OverlayStyle) -> float:
@@ -321,6 +330,7 @@ def _box(
     lines: tuple[str, ...],
     font: ImageFont.FreeTypeFont,
     font_px: int,
+    line_px: int,
     y_pct: float,
 ) -> _TextBox:
     """Build the rectangle and colours of one block.
@@ -339,7 +349,6 @@ def _box(
     else:
         pad_y = font_px // 3
         width, left = _card_geometry(profile)
-    line_px = _line_height(style, font_px)
     height = line_px * len(lines) + 2 * pad_y
     top = int(y_pct * profile.height - height / 2)
     top = max(0, min(top, profile.height - height))

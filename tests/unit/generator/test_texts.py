@@ -120,6 +120,28 @@ def test_foreign_result_rejects_the_whole_answer() -> None:
     assert parse_overlays(raw) == ()
 
 
+def test_fenced_answer_with_attributes_and_preamble_is_accepted() -> None:
+    raw = (
+        "Here is the card:\n"
+        "```xml\n"
+        '<result lang="ru"><block tone="warm">Привет мир</block></result>\n'
+        "```\n"
+    )
+
+    overlays = parse_overlays(raw)
+
+    assert len(overlays) == 1
+    assert overlays[0].blocks[0].lines == ("Привет мир",)
+
+
+def test_fenced_plain_answer_is_accepted() -> None:
+    raw = "```\nПросто текст без тегов\n```"
+
+    overlays = parse_overlays(raw)
+
+    assert overlays[0].blocks[0].lines == ("Просто текст без тегов",)
+
+
 def test_foreign_answer_is_retried_like_an_empty_one(tmp_path: Path) -> None:
     profile = fixture_profile(tmp_path / "profiles")
     writer = _Writer(

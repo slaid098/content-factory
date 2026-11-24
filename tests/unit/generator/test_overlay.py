@@ -456,14 +456,44 @@ def test_long_cta_wraps_above_the_divider(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_cta_scale_enlarges_the_separate_second_card(tmp_path: Path, monkeypatch) -> None:
-    profile = fixture_profile(tmp_path / "profiles", extra={"cta_scale": 1.4})
+    profile = fixture_profile(tmp_path / "profiles", extra={"cta_scale": 1.33})
     _patch_font(monkeypatch)
     card = _Overlay(blocks=(_TextBlock(lines=("Первый",)), _TextBlock(lines=("Второй",))))
 
     boxes = block_boxes(profile, card)
 
     assert boxes[0].font_px == 30
-    assert boxes[1].font_px == 42
+    assert boxes[0].line_px == int(30 * 1.28)
+    assert boxes[1].font_px == 39
+    assert boxes[1].line_px == int(30 * 1.33 * 1.28)
+
+
+def test_full_width_text_pad_x_keeps_lines_inside_the_card(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles", extra={"text_pad_x": 0.10})
+    _patch_font(monkeypatch)
+    card = _Overlay(blocks=(_TextBlock(lines=(" ".join(["а"] * 60),)),))
+
+    boxes = block_boxes(profile, card)
+
+    font = ImageFont.load_default(size=boxes[0].font_px)
+    assert boxes[0].width == profile.width - 2 * int(profile.width * 0.10)
+    assert all(font.getlength(line) <= boxes[0].width for line in boxes[0].lines)
+
+
+def test_card_width_first_card_taller_than_the_frame_is_reported(
+    tmp_path: Path, monkeypatch
+) -> None:
+    profile = fixture_profile(tmp_path / "profiles", extra={"card_width": 0.2})
+    _patch_font(monkeypatch)
+    card = _Overlay(
+        blocks=(
+            _TextBlock(lines=(" ".join(["слово"] * 40),)),
+            _TextBlock(lines=("Второй",)),
+        )
+    )
+
+    with pytest.raises(OverlayError, match="не помещается"):
+        block_boxes(profile, card)
 
 
 def test_card_taller_than_the_frame_is_reported(tmp_path: Path, monkeypatch) -> None:
