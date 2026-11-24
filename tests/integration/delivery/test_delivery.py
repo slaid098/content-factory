@@ -147,7 +147,7 @@ def test_deliver_builds_zip_with_stored_titles_and_removes_sources(
     assert all("Просроченный архив отсутствует" not in record["message"] for record in log_records)
 
 
-def test_deliver_collects_candidates_from_all_niches_in_niche_order(tmp_path: Path) -> None:
+def test_deliver_general_skips_other_niches_and_keeps_their_files(tmp_path: Path) -> None:
     general_hash = "a" * 64
     dating_hash = "b" * 64
     flat_hash = "c" * 64
@@ -164,21 +164,76 @@ def test_deliver_collects_candidates_from_all_niches_in_niche_order(tmp_path: Pa
 
     assert archive is not None
     data = archive.read_bytes()
-    assert sorted(_zip_entries(data)) == [
-        "001.json",
-        "001.mp4",
-        "002.json",
-        "002.mp4",
-        "003.json",
-        "003.mp4",
-    ]
-    assert _zip_bytes(data, "001.mp4") == b"dating"
-    assert _zip_bytes(data, "002.mp4") == b"general"
-    assert _zip_bytes(data, "003.mp4") == b"flat"
-    assert _zip_title(data, "001.json") == "Название генератора"
+    assert sorted(_zip_entries(data)) == ["001.json", "001.mp4", "002.json", "002.mp4"]
+    assert _zip_bytes(data, "001.mp4") == b"general"
+    assert _zip_bytes(data, "002.mp4") == b"flat"
+    assert _zip_title(data) == "Название поставщика"
     assert not general.exists()
-    assert not dating.exists()
+    assert dating.is_file()
     assert not flat.exists()
+
+
+def test_general_delivery_skips_profile_stock_of_same_language(tmp_path: Path) -> None:
+    add_profile(tmp_path, "dating", "profile_1")
+    general_hash = "a" * 64
+    general = touch_mp4(
+        tmp_path / CONTENT_DIR / "general" / "ru" / f"{general_hash}.mp4", b"general"
+    )
+    profile = add_profile_video(
+        tmp_path,
+        "dating",
+        "profile_1",
+        filename="dating_profile_1_run_001.mp4",
+        data=b"profile",
+    )
+    add_title(tmp_path / "db" / "db.sqlite3", general_hash, "Общее название")
+    add_title(tmp_path / "db" / "db.sqlite3", "dating_profile_1_run_001", "Профильное название")
+
+    archive = deliver(tmp_path, "ru", 10, REQUEST_ID, retention_hours=24)
+
+    assert archive is not None
+    data = archive.read_bytes()
+    assert _zip_entries(data) == ["001.mp4", "001.json"]
+    assert _zip_bytes(data, "001.mp4") == b"general"
+    assert _zip_title(data) == "Общее название"
+    assert not general.exists()
+    assert profile.is_file()
+    assert _stock_delivery(tmp_path, profile.relative_to(tmp_path).as_posix()) == (None, None)
+
+
+def test_profile_delivery_skips_general_stock_of_same_language(tmp_path: Path) -> None:
+    add_profile(tmp_path, "dating", "profile_1")
+    general_hash = "a" * 64
+    general = touch_mp4(
+        tmp_path / CONTENT_DIR / "general" / "ru" / f"{general_hash}.mp4", b"general"
+    )
+    profile = add_profile_video(
+        tmp_path,
+        "dating",
+        "profile_1",
+        filename="dating_profile_1_run_001.mp4",
+        data=b"profile",
+    )
+    add_title(tmp_path / "db" / "db.sqlite3", general_hash, "Общее название")
+    add_title(tmp_path / "db" / "db.sqlite3", "dating_profile_1_run_001", "Профильное название")
+
+    archive = deliver(
+        tmp_path,
+        "ru",
+        10,
+        REQUEST_ID,
+        profile="dating/profile_1",
+        retention_hours=24,
+    )
+
+    assert archive is not None
+    data = archive.read_bytes()
+    assert _zip_entries(data) == ["001.mp4", "001.json"]
+    assert _zip_bytes(data, "001.mp4") == b"profile"
+    assert _zip_title(data) == "Профильное название"
+    assert not profile.exists()
+    assert general.is_file()
+    assert _stock_delivery(tmp_path, general.relative_to(tmp_path).as_posix()) == (None, None)
 
 
 def test_deliver_returns_none_for_untitled_stock_and_keeps_file(tmp_path: Path) -> None:
@@ -1116,7 +1171,7 @@ def test_deliver_by_profile_returns_only_its_stock(tmp_path: Path) -> None:
 
     archive = deliver(
         tmp_path,
-        None,
+        "ru",
         10,
         REQUEST_ID,
         profile="dating/profile_1",
@@ -1133,14 +1188,14 @@ def test_deliver_by_profile_returns_only_its_stock(tmp_path: Path) -> None:
     assert supplier.is_file()
 
 
-def test_deliver_by_profile_uses_registry_language(tmp_path: Path) -> None:
+def test_deliver_by_profile_uses_request_language(tmp_path: Path) -> None:
     add_profile(tmp_path, "dating", "profile_1", language="en")
     source = add_profile_video(tmp_path, "dating", "profile_1", language="en", data=b"english")
     add_title(tmp_path / "db" / "db.sqlite3", "dating_profile_1_run_001", "English title")
 
     archive = deliver(
         tmp_path,
-        "ru",
+        "en",
         1,
         REQUEST_ID,
         profile="dating/profile_1",
@@ -1150,6 +1205,27 @@ def test_deliver_by_profile_uses_registry_language(tmp_path: Path) -> None:
     assert archive == tmp_path / ARCHIVE_DIR / "en" / f"{REQUEST_ID}.zip"
     assert not source.exists()
     assert not (tmp_path / ARCHIVE_DIR / "ru").exists()
+
+
+def test_deliver_by_profile_of_another_language_raises_delivery_error(
+    tmp_path: Path,
+) -> None:
+    add_profile(tmp_path, "dating", "profile_1", language="en")
+    source = add_profile_video(tmp_path, "dating", "profile_1", language="en", data=b"english")
+    add_title(tmp_path / "db" / "db.sqlite3", "dating_profile_1_run_001", "English title")
+
+    with pytest.raises(DeliveryError, match="язык профиля"):
+        deliver(
+            tmp_path,
+            "ru",
+            1,
+            REQUEST_ID,
+            profile="dating/profile_1",
+            retention_hours=24,
+        )
+
+    assert source.is_file()
+    assert not (tmp_path / ARCHIVE_DIR).exists()
 
 
 def test_deliver_by_profile_without_matching_stock_returns_none(tmp_path: Path) -> None:
@@ -1165,7 +1241,7 @@ def test_deliver_by_profile_without_matching_stock_returns_none(tmp_path: Path) 
     assert (
         deliver(
             tmp_path,
-            None,
+            "ru",
             1,
             REQUEST_ID,
             profile="dating/profile_1",
@@ -1181,14 +1257,9 @@ def test_deliver_by_profile_missing_raises_profile_error(tmp_path: Path) -> None
     with pytest.raises(ProfileError, match="профиль не найден"):
         deliver(
             tmp_path,
-            None,
+            "ru",
             1,
             REQUEST_ID,
             profile="dating/missing",
             retention_hours=24,
         )
-
-
-def test_deliver_without_language_or_profile_raises_delivery_error(tmp_path: Path) -> None:
-    with pytest.raises(DeliveryError, match="язык или профиль"):
-        deliver(tmp_path, None, 1, REQUEST_ID, retention_hours=24)

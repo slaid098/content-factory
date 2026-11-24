@@ -40,7 +40,6 @@ from content_factory.services.delivery.sidecars import (
     load_job,
     save_job,
 )
-from content_factory.services.profiles import get_profile
 
 from content_factory.services.delivery.upload import (  # isort: skip  # один импорт модуля
     MAX_ARCHIVE_BYTES,
@@ -55,7 +54,7 @@ _INTERRUPTED_ERROR = "сборка прервана перезапуском API
 
 def deliver(
     data_dir: Path,
-    language: str | None,
+    language: str,
     count: int,
     request_id: UUID,
     query: str | None = None,
@@ -111,34 +110,12 @@ def start_delivery_job(
         DeliveryError: The sidecar cannot be written or the worker cannot start.
     """
     moment = now or datetime.now(UTC)
-    resolved = request.model_copy(update={"language": _profile_language(data_dir, request)})
     try:
         start_lock = lock_path(data_dir / DB_DIR, DELIVERY_START_LOCK)
         with locked(start_lock):
-            return _start_under_lock(data_dir, resolved, moment, retention_hours)
+            return _start_under_lock(data_dir, request, moment, retention_hours)
     except LockError as ex:
         raise DeliveryError("не удалось заблокировать запуск сборки выдачи") from ex
-
-
-def _profile_language(data_dir: Path, request: DeliveryRequest) -> str:
-    """Resolve the concrete job language before the slot is taken.
-
-    Raises:
-        ProfileError: The profile is unsafe, missing or malformed.
-        DeliveryError: The request has neither a language nor a profile.
-    """
-    if request.language is not None:
-        return request.language
-    if request.profile is None:
-        raise DeliveryError("не указан язык или профиль")
-    return get_profile(data_dir, request.profile).language
-
-
-def _request_language(request: DeliveryRequest) -> str:
-    """Return the concrete language of an already resolved request."""
-    if request.language is None:
-        raise DeliveryError("не указан язык или профиль")
-    return request.language
 
 
 def _start_under_lock(
@@ -148,7 +125,7 @@ def _start_under_lock(
     retention_hours: int,
 ) -> DeliveryJobInfo:
     """Decide the start under the short-lived start lock, then hand off the slot."""
-    language = _request_language(request)
+    language = request.language
     slot = _acquire_slot(data_dir)
     if slot is None:
         return _busy_or_existing(data_dir, request, language, moment)
@@ -391,7 +368,7 @@ def _build_archive(
     """Build one archive for the request through the delivery capsule."""
     return deliver(
         data_dir,
-        _request_language(request),
+        request.language,
         request.count,
         request.request_id,
         query=request.query,
@@ -496,7 +473,7 @@ def _job_state(
     """Build a sidecar value with a TTL counted from the start moment."""
     return DeliveryJobInfo(
         request_id=request.request_id,
-        language=_request_language(request),
+        language=request.language,
         status=status,
         created_at=created_at,
         expires_at=created_at + timedelta(hours=retention_hours),

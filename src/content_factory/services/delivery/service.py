@@ -20,6 +20,7 @@ from content_factory.db.stock import list_available, mark_delivered
 from content_factory.db.titles import load_titles
 from content_factory.db.video_meta import load_video_meta as load_video_meta
 from content_factory.exceptions.errors import DeliveryError, LockError
+from content_factory.schemas.content.delivery import GENERAL_PROFILE
 from content_factory.schemas.content.video import VideoMeta
 from content_factory.services.delivery.archives import is_archive_expired
 from content_factory.services.delivery.sidecars import read_job_file
@@ -28,11 +29,12 @@ from content_factory.services.stock import sync_stock
 
 _ZIP_SUFFIX = ".zip"
 _TMP_SUFFIX = ".tmp"
+_GENERAL_NICHE = "general"
 
 
 def deliver(
     data_dir: Path,
-    language: str | None,
+    language: str,
     count: int,
     request_id: UUID,
     query: str | None = None,
@@ -50,13 +52,12 @@ def deliver(
 
     Args:
         data_dir: Root of the runtime data directory.
-        language: Validated two- or three-letter language code; ignored when
-            ``profile`` is given.
+        language: Validated two- or three-letter language code of the address.
         count: Maximum number of videos to deliver.
         request_id: Client request identifier, also the archive file name.
         query: Exact ``videos.query`` topic; ``None`` selects every topic.
-        profile: Profile identifier; restricts the candidates to its stock
-            rows and resolves the language from the registry.
+        profile: Profile identifier that narrows the address to its stock rows
+            of the same language; ``general`` is the same as no profile.
         retention_hours: How long the archive stays idempotent before expiry.
         now: Moment used to test archive freshness; defaults to UTC now.
 
@@ -64,11 +65,12 @@ def deliver(
         Path to the stored archive, or ``None`` when no titled mp4 matches.
 
     Raises:
-        DeliveryError: The archive directory or zip cannot be written, or
-            neither a language nor a profile is given.
+        DeliveryError: The archive directory or zip cannot be written, or the
+            profile belongs to another language.
         ProfileError: The profile is unsafe, missing or malformed.
     """
-    resolved = _language_for(data_dir, language, profile)
+    profile_id = None if profile == GENERAL_PROFILE else profile
+    resolved = _checked_language(data_dir, language, profile_id)
     moment = now or datetime.now(UTC)
     try:
         with locked(lock_path(data_dir / DB_DIR, DELIVERY_LOCK)):
@@ -78,7 +80,7 @@ def deliver(
                 count,
                 request_id,
                 query,
-                profile_id=profile,
+                profile_id=profile_id,
                 retention_hours=retention_hours,
                 now=moment,
             )
@@ -86,16 +88,19 @@ def deliver(
         raise DeliveryError(f"не удалось заблокировать выдачу {request_id}") from ex
 
 
-def _language_for(
+def _checked_language(
     data_dir: Path,
-    language: str | None,
-    profile: str | None,
+    language: str,
+    profile_id: str | None,
 ) -> str:
-    """Resolve the delivery language of a request."""
-    if profile is not None:
-        return get_profile(data_dir, profile).language
-    if language is None:
-        raise DeliveryError("не указан язык или профиль")
+    """Return the request language after checking it matches the profile.
+
+    Raises:
+        DeliveryError: The profile belongs to another language.
+        ProfileError: The profile is unsafe, missing or malformed.
+    """
+    if profile_id is not None and get_profile(data_dir, profile_id).language != language:
+        raise DeliveryError("язык профиля не совпадает с языком запроса")
     return language
 
 
@@ -347,13 +352,15 @@ def _available_sources(
     """Synchronize the index and return existing undelivered files of a language.
 
     A database failure is logged and yields no candidates: delivery must not
-    hand out stock it cannot record as delivered.
+    hand out stock it cannot record as delivered. With a profile the candidates
+    are the rows of that profile id; without one they are the general niche
+    rows that have no profile, so the two delivery modes never mix.
 
     Args:
         data_dir: Root of the runtime data directory.
         language: Validated two- or three-letter language code.
-        profile_id: Restrict candidates to this profile; ``None`` keeps every
-            stock row of the language.
+        profile_id: Restrict candidates to this profile; ``None`` returns the
+            general stock without a profile.
 
     Returns:
         Absolute paths of files that still exist on disk, in path order.
@@ -369,13 +376,17 @@ def _available_sources(
         return []
     connection = connect_readonly(data_dir / DB_DIR / DB_FILENAME)
     try:
-        rows = list_available(connection, language)
+        rows = list_available(
+            connection,
+            language,
+            profile_id=profile_id,
+            niche=_GENERAL_NICHE if profile_id is None else None,
+            unassigned_only=profile_id is None,
+        )
     finally:
         connection.close()
     sources: list[Path] = []
-    for relative, row_profile in rows:
-        if profile_id is not None and row_profile != profile_id:
-            continue
+    for relative, _profile in rows:
         path = data_dir / relative
         if not path.is_file():
             logger.bind(path=relative, language=language).warning(

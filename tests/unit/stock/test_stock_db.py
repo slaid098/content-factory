@@ -160,6 +160,79 @@ def test_list_available_filters_language_and_delivered_rows_in_path_order() -> N
         connection.close()
 
 
+def test_list_available_filters_by_profile_id() -> None:
+    connection = _connection()
+    try:
+        rows = [
+            (_item("content/dating/ru/a.mp4"), 1, _NOW),
+            (_item("content/dating/ru/b.mp4", profile_id="dating/profile_2"), 1, _NOW),
+            (_item("content/dating/ru/c.mp4", profile_id=None), 1, _NOW),
+        ]
+        upsert_items(connection, rows)
+
+        assert list_available(connection, "ru", profile_id="dating/profile_1") == [
+            ("content/dating/ru/a.mp4", "dating/profile_1"),
+        ]
+        assert list_available(connection, "ru", profile_id="dating/missing") == []
+    finally:
+        connection.close()
+
+
+def test_list_available_filters_by_niche() -> None:
+    connection = _connection()
+    try:
+        rows = [
+            (_item("content/general/ru/a.mp4", niche="general", profile_id=None), 1, _NOW),
+            (_item("content/dating/ru/b.mp4"), 1, _NOW),
+            (_item("content/auto-parts/ru/c.mp4", niche="auto-parts", profile_id=None), 1, _NOW),
+        ]
+        upsert_items(connection, rows)
+
+        assert list_available(connection, "ru", niche="general") == [
+            ("content/general/ru/a.mp4", None),
+        ]
+        assert list_available(connection, "ru", niche="auto-parts") == [
+            ("content/auto-parts/ru/c.mp4", None),
+        ]
+    finally:
+        connection.close()
+
+
+def test_list_available_unassigned_only_skips_profile_rows() -> None:
+    connection = _connection()
+    try:
+        rows = [
+            (_item("content/general/ru/a.mp4", niche="general", profile_id=None), 1, _NOW),
+            (_item("content/general/ru/b.mp4", niche="general"), 1, _NOW),
+            (_item("content/dating/ru/c.mp4", profile_id=None), 1, _NOW),
+        ]
+        upsert_items(connection, rows)
+
+        assert list_available(connection, "ru", unassigned_only=True) == [
+            ("content/dating/ru/c.mp4", None),
+            ("content/general/ru/a.mp4", None),
+        ]
+    finally:
+        connection.close()
+
+
+def test_list_available_combines_niche_and_unassigned_filters() -> None:
+    connection = _connection()
+    try:
+        rows = [
+            (_item("content/general/ru/a.mp4", niche="general", profile_id=None), 1, _NOW),
+            (_item("content/general/ru/b.mp4", niche="general"), 1, _NOW),
+            (_item("content/dating/ru/c.mp4", profile_id=None), 1, _NOW),
+        ]
+        upsert_items(connection, rows)
+
+        assert list_available(connection, "ru", niche="general", unassigned_only=True) == [
+            ("content/general/ru/a.mp4", None),
+        ]
+    finally:
+        connection.close()
+
+
 def test_count_by_profile_counts_only_available_rows() -> None:
     connection = _connection()
     try:

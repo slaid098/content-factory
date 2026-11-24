@@ -26,7 +26,7 @@ from content_factory.exceptions import (
     UploadError,
 )
 from content_factory.schemas.content.delivery import DeliveryJobInfo, DeliveryRequest
-from content_factory.services.delivery.jobs import _request_language, start_delivery_job
+from content_factory.services.delivery.jobs import start_delivery_job
 from content_factory.services.delivery.sidecars import save_job
 
 _TOKEN = "delivery-secret"
@@ -517,7 +517,7 @@ def test_startup_marks_building_as_failed_and_repeat_rebuilds(
     assert final["url"] == url
 
 
-def test_link_by_profile_resolves_and_stores_registry_language(
+def test_link_by_profile_uses_request_language(
     data_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -537,7 +537,7 @@ def test_link_by_profile_resolves_and_stores_registry_language(
     )
     client = _client()
 
-    response = _post(client, language=None, profile="dating/profile_1")
+    response = _post(client, language="en", profile="dating/profile_1")
 
     assert response.status_code == 202
     body = response.json()
@@ -559,20 +559,9 @@ def test_link_by_profile_without_stock_returns_empty(data_dir: Path) -> None:
     add_title(data_dir / "db" / "db.sqlite3", "dating_profile_2_run_001", "Другой профиль")
     client = _client()
 
-    assert _post(client, language=None, profile="dating/profile_1").status_code == 202
+    assert _post(client, language="en", profile="dating/profile_1").status_code == 202
     final = _wait(client, REQUEST_ID_TEXT, "empty", language="en")
 
     assert final["language"] == "en"
     assert final["files"] == 0
     assert other.is_file()
-
-
-def test_request_language_rejects_unresolved_request() -> None:
-    request = DeliveryRequest(
-        profile="dating/profile_1",
-        count=1,
-        request_id=REQUEST_ID,
-    )
-
-    with pytest.raises(DeliveryError, match="язык или профиль"):
-        _request_language(request)
