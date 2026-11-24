@@ -319,6 +319,16 @@ def test_profiles_view_patches_settings_and_rolls_back() -> None:
     assert "fillInputs()" in profiles
 
 
+def test_profiles_patch_is_serialized_by_profile_id() -> None:
+    profiles = _ui_text("profiles.js")
+
+    assert "const pending = new Set()" in profiles
+    assert "pending.has(id)" in profiles
+    assert "pending.size > 0" in profiles
+    assert "stateVersion" in profiles
+    assert "cards.get(id)" in profiles
+
+
 def test_profiles_cards_are_lazy_safe_and_have_no_generation_button(
     client: TestClient,
 ) -> None:

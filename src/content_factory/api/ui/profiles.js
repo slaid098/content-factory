@@ -43,37 +43,59 @@ const REFILL_MIN = 0;
  */
 
 /**
+ * @typedef {Object} CardController
+ * @property {HTMLElement} node
+ * @property {(profile: Profile) => void} apply
+ * @property {(value: boolean) => void} setBusy
+ * @property {(text: string, isError: boolean) => void} setStatus
+ */
+
+/**
  * Build the profiles panel.
  * @param {{list: HTMLElement, message: HTMLElement, empty: HTMLElement, refresh: HTMLButtonElement}} elements
  */
 export function createProfilesView(elements) {
   /** @type {Profile[]} */
   let profiles = [];
+  /** @type {Map<string, CardController>} */
+  const cards = new Map();
+  // Ids with an in-flight PATCH: they stay locked and block a concurrent refresh.
+  /** @type {Set<string>} */
+  const pending = new Set();
   let snapshot = "";
-  let requestSeq = 0;
+  // Every PATCH start invalidates a list read that began earlier and may be stale.
+  let stateVersion = 0;
+  let loading = false;
 
-  /** Reload every profile and redraw the cards. */
+  function updateRefresh() {
+    elements.refresh.disabled = loading || pending.size > 0;
+  }
+
+  /** Reload every profile unless one is being saved right now. */
   async function load() {
-    const seq = ++requestSeq;
-    elements.refresh.disabled = true;
+    if (loading || pending.size > 0) {
+      return;
+    }
+    loading = true;
+    updateRefresh();
     elements.list.setAttribute("aria-busy", "true");
     setMessage(elements.message, "");
+    const version = stateVersion;
     try {
       const response = await requestJson(PROFILES_URL);
-      if (seq !== requestSeq) {
+      if (version !== stateVersion || pending.size > 0) {
         return;
       }
       profiles = normalizeProfiles(response);
       render();
     } catch (error) {
-      if (seq === requestSeq) {
+      if (version === stateVersion) {
         setMessage(elements.message, error.message);
       }
     } finally {
-      if (seq === requestSeq) {
-        elements.refresh.disabled = false;
-        elements.list.removeAttribute("aria-busy");
-      }
+      loading = false;
+      elements.list.removeAttribute("aria-busy");
+      updateRefresh();
     }
   }
 
@@ -83,20 +105,86 @@ export function createProfilesView(elements) {
       return;
     }
     snapshot = next;
-    const cards = profiles.map((profile) => buildCard(profile));
-    elements.list.replaceChildren(...cards);
-    toggle(elements.list, cards.length !== 0);
-    toggle(elements.empty, cards.length === 0);
+    cards.clear();
+    const nodes = profiles.map((profile) => {
+      const controller = buildCard(profile);
+      cards.set(profile.id, controller);
+      return controller.node;
+    });
+    elements.list.replaceChildren(...nodes);
+    toggle(elements.list, nodes.length !== 0);
+    toggle(elements.empty, nodes.length === 0);
     setText(elements.empty, EMPTY_TEXT);
   }
 
   /**
+   * Apply one PATCH result to the live card and keep the snapshot in step.
+   * @param {string} id
+   * @param {Profile} profile
+   * @param {string} text
+   * @param {boolean} isError
+   */
+  function applyResult(id, profile, text, isError) {
+    const live = cards.get(id);
+    if (live) {
+      live.apply(profile);
+      live.setStatus(text, isError);
+      snapshot = JSON.stringify(profiles);
+      return;
+    }
+    snapshot = "";
+    render();
+    cards.get(id)?.setStatus(text, isError);
+  }
+
+  /**
+   * Send one partial update; a pending id blocks a second request.
+   * @param {string} id
+   * @param {Record<string, unknown>} payload
+   */
+  async function saveProfile(id, payload) {
+    const controller = cards.get(id);
+    const current = profiles.find((item) => item.id === id);
+    if (!controller || !current || pending.has(id)) {
+      return;
+    }
+    pending.add(id);
+    stateVersion += 1;
+    controller.setBusy(true);
+    controller.setStatus("Сохраняем…", false);
+    updateRefresh();
+    try {
+      const response = await requestJson(profileUrl(current), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const updated = normalizeProfile(response, current);
+      const position = profiles.findIndex((item) => item.id === id);
+      if (position >= 0) {
+        profiles[position] = updated;
+      }
+      applyResult(id, updated, "Сохранено.", false);
+    } catch (error) {
+      const latest = profiles.find((item) => item.id === id) ?? current;
+      applyResult(id, latest, patchMessage(error), true);
+    } finally {
+      pending.delete(id);
+      const live = cards.get(id);
+      if (live) {
+        live.setBusy(false);
+      }
+      updateRefresh();
+    }
+  }
+
+  /**
    * @param {Profile} initial
-   * @returns {HTMLElement}
+   * @returns {CardController}
    */
   function buildCard(initial) {
+    const id = initial.id;
     let profile = initial;
-    let busy = false;
     const card = el("li", "profile-card");
     const media = el("div", "profile-media");
     const image = /** @type {HTMLImageElement} */ (el("img", "profile-preview"));
@@ -195,9 +283,17 @@ export function createProfilesView(elements) {
     }
 
     /**
+     * @param {Profile} next
+     */
+    function apply(next) {
+      profile = next;
+      fill();
+    }
+
+    /**
      * @param {boolean} value
      */
-    function setControlsDisabled(value) {
+    function setBusy(value) {
       enabled.disabled = value;
       targetInput.disabled = value;
       refillInput.disabled = value;
@@ -214,48 +310,18 @@ export function createProfilesView(elements) {
     }
 
     /**
-     * @param {Record<string, unknown>} payload
-     */
-    async function save(payload) {
-      if (busy) {
-        return;
-      }
-      busy = true;
-      setControlsDisabled(true);
-      setStatus("Сохраняем…", false);
-      try {
-        const response = await requestJson(profileUrl(profile), {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        profile = normalizeProfile(response, profile);
-        const position = profiles.findIndex((item) => item.id === profile.id);
-        if (position >= 0) {
-          profiles[position] = profile;
-          snapshot = JSON.stringify(profiles);
-        }
-        fill();
-        setStatus("Сохранено.", false);
-      } catch (error) {
-        fill();
-        setStatus(patchMessage(error), true);
-      } finally {
-        busy = false;
-        setControlsDisabled(false);
-      }
-    }
-
-    /**
      * @param {string} field
      * @param {HTMLInputElement} input
      * @param {number} min
      * @param {number} max
      */
     function saveNumber(field, input, min, max) {
+      if (pending.has(id)) {
+        return;
+      }
       const raw = input.value.trim();
       if (raw === "") {
-        void save({ [field]: null });
+        void saveProfile(id, { [field]: null });
         return;
       }
       const value = Number(raw);
@@ -264,11 +330,11 @@ export function createProfilesView(elements) {
         setStatus(`Введите целое число от ${min} до ${max}.`, true);
         return;
       }
-      void save({ [field]: value });
+      void saveProfile(id, { [field]: value });
     }
 
     enabled.addEventListener("change", () => {
-      void save({ refill_enabled: enabled.checked });
+      void saveProfile(id, { refill_enabled: enabled.checked });
     });
     targetInput.addEventListener("change", () => {
       saveNumber("target", targetInput, TARGET_MIN, TARGET_MAX);
@@ -278,7 +344,8 @@ export function createProfilesView(elements) {
     });
 
     fill();
-    return card;
+    setBusy(pending.has(id));
+    return { node: card, apply, setBusy, setStatus };
   }
 
   elements.refresh.addEventListener("click", () => {
