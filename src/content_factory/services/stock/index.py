@@ -48,7 +48,7 @@ def sync_stock(data_dir: Path) -> int:
 def _scan(data_dir: Path) -> list[_ScanRow]:
     """Read the stock directory and build one upsert row per readable file."""
     rows: list[_ScanRow] = []
-    for item in stock_files(data_dir / CONTENT_DIR):
+    for item in stock_files(data_dir / CONTENT_DIR, content_type=None):
         try:
             stat = item.path.stat()
         except OSError as ex:
@@ -65,6 +65,7 @@ def _scan(data_dir: Path) -> list[_ScanRow]:
                     language=item.language,
                     path=item.path.relative_to(data_dir),
                     profile_id=item.profile_id,
+                    content_type=item.content_type,
                 ),
                 stat.st_size,
                 _created_at(stat.st_mtime),

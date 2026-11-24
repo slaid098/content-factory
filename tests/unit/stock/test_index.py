@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from tests.unit.common.delivery_helpers import touch_mp4
+from tests.unit.common.delivery_helpers import touch_mp4, touch_photo
 
 from content_factory.constants import CONTENT_DIR
 from content_factory.services.stock import sync_stock
@@ -34,6 +34,14 @@ def _stock_rows(data_dir: Path) -> list[tuple[str, str, str, int, str, str | Non
         )
         for row in rows
     ]
+
+
+def _stock_types(data_dir: Path) -> list[tuple[str, str]]:
+    with sqlite3.connect(data_dir / "db" / "db.sqlite3") as connection:
+        rows = connection.execute(
+            "SELECT path, content_type FROM stock_items ORDER BY path"
+        ).fetchall()
+    return [(str(row[0]), str(row[1])) for row in rows]
 
 
 def test_sync_stock_stores_relative_paths_and_is_idempotent(tmp_path: Path) -> None:
@@ -118,3 +126,38 @@ def test_sync_stock_without_content_creates_an_empty_index(tmp_path: Path) -> No
 
     assert (tmp_path / "db" / "db.sqlite3").is_file()
     assert _stock_rows(tmp_path) == []
+
+
+def test_sync_stock_indexes_videos_and_photos(tmp_path: Path) -> None:
+    touch_mp4(tmp_path / CONTENT_DIR / "general" / "ru" / "a.mp4", b"video")
+    touch_photo(
+        tmp_path / CONTENT_DIR / "dating" / "ru" / "dating_profile_1_post_001.jpg",
+        b"photo",
+        text="Текст поста",
+    )
+
+    assert sync_stock(tmp_path) == 2
+
+    assert _stock_types(tmp_path) == [
+        ("content/dating/ru/dating_profile_1_post_001.jpg", "photo"),
+        ("content/general/ru/a.mp4", "video"),
+    ]
+
+
+def test_sync_stock_skips_a_photo_with_a_broken_sidecar(
+    tmp_path: Path,
+    log_records: list[dict[str, Any]],
+) -> None:
+    directory = tmp_path / CONTENT_DIR / "general" / "ru"
+    touch_photo(directory / "broken.jpg")
+    sidecar = directory / "broken.json"
+    sidecar.write_text("{not json", encoding="utf-8")
+    touch_photo(directory / "good.png", text="Текст")
+
+    assert sync_stock(tmp_path) == 1
+
+    assert _stock_types(tmp_path) == [("content/general/ru/good.png", "photo")]
+    records = [record for record in log_records if record["function"] == "_sidecar_is_readable"]
+    assert [record["level"].name for record in records] == ["WARNING"]
+    assert records[0]["extra"]["path"] == str(sidecar)
+    assert "{not json" not in records[0]["message"]

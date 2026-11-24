@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import zipfile
 from collections.abc import Mapping, Sequence
@@ -20,15 +19,22 @@ from content_factory.db.stock import list_available, mark_delivered
 from content_factory.db.titles import load_titles
 from content_factory.db.video_meta import load_video_meta as load_video_meta
 from content_factory.exceptions.errors import DeliveryError, LockError
-from content_factory.schemas.content.delivery import GENERAL_PROFILE
+from content_factory.schemas.content.delivery import GENERAL_PROFILE, ContentType
 from content_factory.schemas.content.video import VideoMeta
 from content_factory.services.delivery.archives import is_archive_expired
+from content_factory.services.delivery.packing import (
+    build_archive as _build_archive,
+)
+from content_factory.services.delivery.packing import (
+    count_archive_files as count_archive_files,
+)
+from content_factory.services.delivery.packing import discard_tmp as _discard_tmp
+from content_factory.services.delivery.packing import remove_sources as _remove_sources
 from content_factory.services.delivery.sidecars import read_job_file
 from content_factory.services.profiles import get_profile
 from content_factory.services.stock import sync_stock
 
 _ZIP_SUFFIX = ".zip"
-_TMP_SUFFIX = ".tmp"
 _GENERAL_NICHE = "general"
 
 
@@ -40,29 +46,32 @@ def deliver(
     query: str | None = None,
     *,
     profile: str | None = None,
+    content_type: ContentType = ContentType.VIDEO,
     retention_hours: int,
     now: datetime | None = None,
 ) -> Path | None:
-    """Deliver up to ``count`` stock videos of one language as a zip archive.
+    """Deliver up to ``count`` stock files of one language as a zip archive.
 
-    The delivered ``.mp4`` files are removed only after the archive is written.
-    A repeated ``request_id`` within the retention window returns the existing
-    archive without touching the stock. The lock serializes deliveries so the
-    same file is never handed out twice.
+    The delivered media and photo sidecars are removed only after the archive
+    is written. A repeated ``request_id`` within the retention window returns
+    the existing archive without touching the stock. The lock serializes
+    deliveries so the same file is never handed out twice.
 
     Args:
         data_dir: Root of the runtime data directory.
         language: Validated two- or three-letter language code of the address.
-        count: Maximum number of videos to deliver.
+        count: Maximum number of files to deliver.
         request_id: Client request identifier, also the archive file name.
         query: Exact ``videos.query`` topic; ``None`` selects every topic.
         profile: Profile identifier that narrows the address to its stock rows
             of the same language; ``general`` is the same as no profile.
+        content_type: Media type of the archive; photos exist only in a
+            profile, because General is video by language.
         retention_hours: How long the archive stays idempotent before expiry.
         now: Moment used to test archive freshness; defaults to UTC now.
 
     Returns:
-        Path to the stored archive, or ``None`` when no titled mp4 matches.
+        Path to the stored archive, or ``None`` when no matching file exists.
 
     Raises:
         DeliveryError: The archive directory or zip cannot be written, or the
@@ -81,6 +90,7 @@ def deliver(
                 request_id,
                 query,
                 profile_id=profile_id,
+                content_type=content_type,
                 retention_hours=retention_hours,
                 now=moment,
             )
@@ -112,6 +122,7 @@ def _deliver_locked(
     query: str | None,
     *,
     profile_id: str | None,
+    content_type: ContentType,
     retention_hours: int,
     now: datetime,
 ) -> Path | None:
@@ -124,19 +135,29 @@ def _deliver_locked(
             "Выдача {} уже собрана", request_id
         )
         return archive_path
+    if content_type is ContentType.PHOTO and profile_id is None:
+        return None
 
     try:
         _remove_stale(archive_path)
         sources, titles = _select_sources(
-            _available_sources(data_dir, language, profile_id),
+            _available_sources(data_dir, language, profile_id, content_type),
             count,
             db_path=data_dir / DB_DIR / DB_FILENAME,
+            content_type=content_type,
             query=query,
         )
-        if not sources or not titles:
+        if not sources:
             return None
         archive_dir.mkdir(parents=True, exist_ok=True)
-        _build_archive(archive_path, sources, titles)
+        _build_archive(
+            archive_path,
+            sources,
+            titles,
+            content_type=content_type,
+            language=language,
+            profile_id=profile_id,
+        )
     except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as ex:
         _discard_tmp(archive_path)
         raise DeliveryError(f"не удалось собрать архив {request_id}") from ex
@@ -145,7 +166,7 @@ def _deliver_locked(
         _mark_delivered(data_dir, sources, request_id, now)
     except (OSError, sqlite3.Error) as ex:
         raise DeliveryError(f"не удалось отметить выдачу {request_id}") from ex
-    _remove_sources(sources)
+    _remove_sources(sources, content_type)
     logger.bind(
         request_id=str(request_id),
         language=language,
@@ -153,23 +174,6 @@ def _deliver_locked(
         path=str(archive_path),
     ).info("Собрана выдача {}: {} файлов", request_id, len(sources))
     return archive_path
-
-
-def count_archive_files(archive_path: Path) -> int:
-    """Return the number of ``NNN.mp4`` entries in a built delivery archive.
-
-    Args:
-        archive_path: Path to a zip archive written by :func:`deliver`.
-
-    Returns:
-        Number of video entries, one per delivered video.
-
-    Raises:
-        OSError: The archive cannot be read.
-        zipfile.BadZipFile: The file is not a valid zip archive.
-    """
-    with zipfile.ZipFile(archive_path) as archive:
-        return sum(1 for name in archive.namelist() if name.endswith(".mp4"))
 
 
 def cleanup_expired_archives(
@@ -348,19 +352,22 @@ def _available_sources(
     data_dir: Path,
     language: str,
     profile_id: str | None = None,
+    content_type: ContentType = ContentType.VIDEO,
 ) -> list[Path]:
     """Synchronize the index and return existing undelivered files of a language.
 
     A database failure is logged and yields no candidates: delivery must not
     hand out stock it cannot record as delivered. With a profile the candidates
     are the rows of that profile id; without one they are the general niche
-    rows that have no profile, so the two delivery modes never mix.
+    rows that have no profile, so the two delivery modes never mix. The type
+    narrows the candidates to videos or to photos.
 
     Args:
         data_dir: Root of the runtime data directory.
         language: Validated two- or three-letter language code.
         profile_id: Restrict candidates to this profile; ``None`` returns the
             general stock without a profile.
+        content_type: Media type of the requested rows.
 
     Returns:
         Absolute paths of files that still exist on disk, in path order.
@@ -379,6 +386,7 @@ def _available_sources(
         rows = list_available(
             connection,
             language,
+            content_type=content_type,
             profile_id=profile_id,
             niche=_GENERAL_NICHE if profile_id is None else None,
             unassigned_only=profile_id is None,
@@ -402,13 +410,17 @@ def _select_sources(
     count: int,
     *,
     db_path: Path,
+    content_type: ContentType = ContentType.VIDEO,
     query: str | None = None,
 ) -> tuple[list[Path], dict[str, str]]:
-    """Pick up to ``count`` titled candidates and their titles.
+    """Pick up to ``count`` candidates and the titles of selected videos.
 
-    A title made only of whitespace counts as absent, so such a file is never
-    selected. A stored title is returned unchanged and is not trimmed.
+    A video is selected only with a non-empty stored title; a title made only
+    of whitespace counts as absent, and a stored title is returned unchanged.
+    A photo needs no title, because its text comes from the sidecar.
     """
+    if content_type is ContentType.PHOTO:
+        return list(candidates[:count]), {}
     stored = load_titles(db_path, [path.stem for path in candidates])
     titled = [path for path in candidates if stored.get(path.stem, "").strip()]
     if query is not None:
@@ -438,60 +450,3 @@ def _matches_query(meta: Mapping[str, VideoMeta], sha256: str, query: str) -> bo
     """Return whether a stock file belongs to the requested topic."""
     item = meta.get(sha256)
     return item is not None and item.query == query
-
-
-def _build_archive(
-    archive_path: Path,
-    sources: Sequence[Path],
-    titles: Mapping[str, str],
-) -> None:
-    """Write the archive next to its final name and atomically replace it.
-
-    Any failure removes the staging file before the exception is re-raised, so
-    a failed build never leaves ``.tmp`` next to the archive.
-    """
-    tmp_path = _tmp_path(archive_path)
-    replaced = False
-    try:
-        tmp_path.unlink(missing_ok=True)
-        with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for index, source in enumerate(sources, start=1):
-                prefix = f"{index:03d}"
-                archive.write(source, arcname=f"{prefix}.mp4")
-                archive.writestr(
-                    f"{prefix}.json",
-                    json.dumps({"title": titles[source.stem]}, ensure_ascii=False),
-                )
-        tmp_path.replace(archive_path)
-        replaced = True
-    finally:
-        if not replaced:
-            _discard_tmp(archive_path)
-
-
-def _tmp_path(archive_path: Path) -> Path:
-    """Return the staging path of an archive."""
-    return archive_path.with_suffix(_TMP_SUFFIX)
-
-
-def _discard_tmp(archive_path: Path) -> None:
-    """Remove the staging file after a failed build, logging a failed unlink."""
-    try:
-        _tmp_path(archive_path).unlink(missing_ok=True)
-    except OSError as ex:
-        logger.bind(error=ex, error_type=type(ex).__name__).warning(
-            "Не удалось удалить временный архив {}",
-            archive_path.name,
-        )
-
-
-def _remove_sources(sources: Sequence[Path]) -> None:
-    """Delete delivered source files; a failed unlink does not fail the request."""
-    for source in sources:
-        try:
-            source.unlink()
-        except OSError as ex:
-            logger.bind(path=str(source), error=ex, error_type=type(ex).__name__).warning(
-                "Не удалось удалить выданный файл {}",
-                source.name,
-            )

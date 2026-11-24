@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from uuid import UUID
@@ -19,6 +20,22 @@ def touch_mp4(path: Path, data: bytes = b"video") -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     return path
+
+
+def touch_photo(path: Path, data: bytes = b"photo", *, text: str | None = None) -> Path:
+    """Create a photo file and, when given, its text sidecar."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    if text is not None:
+        write_photo_sidecar(path, text)
+    return path
+
+
+def write_photo_sidecar(path: Path, text: str) -> Path:
+    """Write the text sidecar of a photo next to it."""
+    sidecar = path.with_suffix(".json")
+    sidecar.write_text(json.dumps({"text": text}, ensure_ascii=False), encoding="utf-8")
+    return sidecar
 
 
 def add_downloaded_video(

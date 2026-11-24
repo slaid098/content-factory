@@ -27,6 +27,7 @@ from content_factory.exceptions.errors import (
     UploadError,
 )
 from content_factory.schemas.content.delivery import (
+    ContentType,
     DeliveryJobInfo,
     DeliveryRequest,
     DeliveryStatus,
@@ -60,6 +61,7 @@ def deliver(
     query: str | None = None,
     *,
     profile: str | None = None,
+    content_type: ContentType = ContentType.VIDEO,
     retention_hours: int,
     now: datetime | None = None,
 ) -> Path | None:
@@ -71,6 +73,7 @@ def deliver(
         request_id,
         query,
         profile=profile,
+        content_type=content_type,
         retention_hours=retention_hours,
         now=now,
     )
@@ -373,6 +376,7 @@ def _build_archive(
         request.request_id,
         query=request.query,
         profile=request.profile,
+        content_type=request.type,
         retention_hours=retention_hours,
         now=created_at,
     )

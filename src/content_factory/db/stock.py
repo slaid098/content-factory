@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterable, Sequence
 
+from content_factory.schemas.content.delivery import ContentType
 from content_factory.schemas.stock.layout import StockFile
 
 _SCHEMA = """
@@ -12,6 +13,7 @@ CREATE TABLE IF NOT EXISTS stock_items (
     path TEXT PRIMARY KEY,
     language TEXT NOT NULL,
     niche TEXT NOT NULL,
+    content_type TEXT NOT NULL DEFAULT 'video',
     profile_id TEXT,
     size INTEGER NOT NULL,
     created_at TEXT NOT NULL,
@@ -20,9 +22,13 @@ CREATE TABLE IF NOT EXISTS stock_items (
 )
 """
 
+_ADD_CONTENT_TYPE = "ALTER TABLE stock_items ADD COLUMN content_type TEXT NOT NULL DEFAULT 'video'"
+
+_LEGACY_LANGUAGE_INDEX_DROP = "DROP INDEX IF EXISTS idx_stock_items_language_delivered"
+
 _LANGUAGE_INDEX = """
-CREATE INDEX IF NOT EXISTS idx_stock_items_language_delivered
-ON stock_items(language, delivered_at)
+CREATE INDEX IF NOT EXISTS idx_stock_items_language_type_delivered
+ON stock_items(language, content_type, delivered_at)
 """
 
 _PROFILE_INDEX = """
@@ -32,11 +38,12 @@ ON stock_items(profile_id, delivered_at)
 
 _UPSERT = """
 INSERT INTO stock_items (
-    path, language, niche, profile_id, size, created_at, delivered_at, request_id
-) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)
+    path, language, niche, content_type, profile_id, size, created_at, delivered_at, request_id
+) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)
 ON CONFLICT(path) DO UPDATE SET
     language = excluded.language,
     niche = excluded.niche,
+    content_type = excluded.content_type,
     size = excluded.size,
     profile_id = COALESCE(excluded.profile_id, stock_items.profile_id)
 """
@@ -45,15 +52,28 @@ _BATCH_SIZE = 500
 
 
 def ensure_schema(connection: sqlite3.Connection) -> None:
-    """Create the stock table and its lookup indexes when missing.
+    """Create the stock table, migrate its columns and create lookup indexes.
+
+    A database created before content types existed gets the ``content_type``
+    column with every existing row marked as ``video``, so video delivery
+    keeps working without a reindex.
 
     Args:
         connection: Open connection to the operational database.
     """
     connection.execute(_SCHEMA)
+    _ensure_content_type_column(connection)
+    connection.execute(_LEGACY_LANGUAGE_INDEX_DROP)
     connection.execute(_LANGUAGE_INDEX)
     connection.execute(_PROFILE_INDEX)
     connection.commit()
+
+
+def _ensure_content_type_column(connection: sqlite3.Connection) -> None:
+    """Add the content type column to a database that does not have it."""
+    columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(stock_items)")}
+    if "content_type" not in columns:
+        connection.execute(_ADD_CONTENT_TYPE)
 
 
 def upsert_item(
@@ -120,18 +140,21 @@ def list_available(
     connection: sqlite3.Connection,
     language: str,
     *,
+    content_type: ContentType = ContentType.VIDEO,
     profile_id: str | None = None,
     niche: str | None = None,
     unassigned_only: bool = False,
 ) -> list[tuple[str, str | None]]:
-    """Return undelivered stock paths of one language in path order.
+    """Return undelivered stock paths of one language and type in path order.
 
-    The filters combine with AND and are all off by default, so a call with
-    only ``language`` keeps returning every row of that language.
+    The filters combine with AND; the type defaults to video, and the other
+    filters are off by default, so a call with only ``language`` returns every
+    available video row of that language.
 
     Args:
         connection: Open connection to the operational database.
         language: Validated two- or three-letter language code.
+        content_type: Restrict the rows to this media type.
         profile_id: Restrict the rows to this profile id.
         niche: Restrict the rows to this niche such as ``general``.
         unassigned_only: Return only rows without a profile id.
@@ -140,8 +163,8 @@ def list_available(
         ``(relative path, profile id)`` pairs; the profile id is ``None`` when
         the file name does not identify one.
     """
-    conditions = ["language = ?", "delivered_at IS NULL"]
-    params: list[str] = [language]
+    conditions = ["language = ?", "content_type = ?", "delivered_at IS NULL"]
+    params: list[str] = [language, content_type.value]
     if profile_id is not None:
         conditions.append("profile_id = ?")
         params.append(profile_id)
@@ -185,12 +208,19 @@ def mark_delivered(
     )
 
 
-def count_by_profile(connection: sqlite3.Connection, profile_id: str) -> int:
-    """Count the undelivered stock files of one profile.
+def count_by_profile(
+    connection: sqlite3.Connection,
+    profile_id: str,
+    *,
+    content_type: ContentType = ContentType.VIDEO,
+) -> int:
+    """Count the undelivered stock files of one profile and type.
 
     Args:
         connection: Open connection to the operational database.
         profile_id: Profile identifier such as ``dating/profile_1``.
+        content_type: Media type to count; video by default, so photos do not
+            change the profile refill decision.
 
     Returns:
         Number of available files attributed to the profile.
@@ -198,15 +228,23 @@ def count_by_profile(connection: sqlite3.Connection, profile_id: str) -> int:
     row = connection.execute(
         """
         SELECT COUNT(*) FROM stock_items
-        WHERE profile_id = ? AND delivered_at IS NULL
+        WHERE profile_id = ? AND content_type = ? AND delivered_at IS NULL
         """,
-        (profile_id,),
+        (profile_id, content_type.value),
     ).fetchone()
     return 0 if row is None else int(row[0])
 
 
 def _params(
     item: StockFile, size: int, created_at: str
-) -> tuple[str, str, str, str | None, int, str]:
+) -> tuple[str, str, str, str, str | None, int, str]:
     """Build the bound parameters of one upsert."""
-    return (item.path.as_posix(), item.language, item.niche, item.profile_id, size, created_at)
+    return (
+        item.path.as_posix(),
+        item.language,
+        item.niche,
+        item.content_type.value,
+        item.profile_id,
+        size,
+        created_at,
+    )

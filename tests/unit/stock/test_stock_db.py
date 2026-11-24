@@ -14,10 +14,24 @@ from content_factory.db.stock import (
     upsert_item,
     upsert_items,
 )
+from content_factory.schemas.content.delivery import ContentType
 from content_factory.schemas.stock.layout import StockFile
 
 _NOW = "2026-05-01T12:00:00+00:00"
 _DELIVERED_AT = "2026-05-02T12:00:00+00:00"
+
+_LEGACY_SCHEMA = """
+CREATE TABLE stock_items (
+    path TEXT PRIMARY KEY,
+    language TEXT NOT NULL,
+    niche TEXT NOT NULL,
+    profile_id TEXT,
+    size INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT,
+    request_id TEXT
+)
+"""
 
 
 def _connection() -> sqlite3.Connection:
@@ -32,8 +46,9 @@ def _item(
     language: str = "ru",
     niche: str = "dating",
     profile_id: str | None = "dating/profile_1",
+    content_type: ContentType = ContentType.VIDEO,
 ) -> StockFile:
-    return StockFile(niche, language, Path(path), profile_id)
+    return StockFile(niche, language, Path(path), profile_id, content_type)
 
 
 def _row(connection: sqlite3.Connection, path: str) -> tuple[object, ...]:
@@ -256,6 +271,25 @@ def test_count_by_profile_counts_only_available_rows() -> None:
         connection.close()
 
 
+def test_count_by_profile_ignores_photos_by_default() -> None:
+    connection = _connection()
+    try:
+        rows = [
+            (_item("content/dating/ru/a.mp4"), 1, _NOW),
+            (
+                _item("content/dating/ru/b.jpg", content_type=ContentType.PHOTO),
+                1,
+                _NOW,
+            ),
+        ]
+        upsert_items(connection, rows)
+
+        assert count_by_profile(connection, "dating/profile_1") == 1
+        assert count_by_profile(connection, "dating/profile_1", content_type=ContentType.PHOTO) == 1
+    finally:
+        connection.close()
+
+
 def test_mark_delivered_records_the_request_of_every_path() -> None:
     connection = _connection()
     try:
@@ -274,5 +308,90 @@ def test_mark_delivered_records_the_request_of_every_path() -> None:
 
         for path in ("content/general/ru/a.mp4", "content/general/ru/b.mp4"):
             assert _row(connection, path)[5:] == (_DELIVERED_AT, "request-2")
+    finally:
+        connection.close()
+
+
+def test_upsert_item_stores_the_content_type() -> None:
+    connection = _connection()
+    try:
+        upsert_item(
+            connection,
+            _item("content/dating/ru/a.jpg", content_type=ContentType.PHOTO),
+            42,
+            _NOW,
+        )
+
+        row = connection.execute(
+            "SELECT content_type FROM stock_items WHERE path = ?",
+            ("content/dating/ru/a.jpg",),
+        ).fetchone()
+        assert row == ("photo",)
+    finally:
+        connection.close()
+
+
+def test_list_available_filters_by_content_type() -> None:
+    connection = _connection()
+    try:
+        rows = [
+            (_item("content/dating/ru/a.mp4"), 1, _NOW),
+            (
+                _item("content/dating/ru/b.jpg", content_type=ContentType.PHOTO),
+                1,
+                _NOW,
+            ),
+        ]
+        upsert_items(connection, rows)
+
+        assert list_available(connection, "ru") == [
+            ("content/dating/ru/a.mp4", "dating/profile_1"),
+        ]
+        assert list_available(connection, "ru", content_type=ContentType.PHOTO) == [
+            ("content/dating/ru/b.jpg", "dating/profile_1"),
+        ]
+    finally:
+        connection.close()
+
+
+def test_ensure_schema_adds_content_type_to_a_legacy_table() -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.execute(_LEGACY_SCHEMA)
+        connection.execute(
+            """
+            INSERT INTO stock_items (path, language, niche, profile_id, size, created_at)
+            VALUES (?, ?, ?, NULL, 1, ?)
+            """,
+            ("content/general/ru/a.mp4", "ru", "general", _NOW),
+        )
+        connection.commit()
+
+        ensure_schema(connection)
+
+        row = connection.execute(
+            "SELECT content_type FROM stock_items WHERE path = ?",
+            ("content/general/ru/a.mp4",),
+        ).fetchone()
+        assert row == ("video",)
+    finally:
+        connection.close()
+
+
+def test_ensure_schema_indexes_language_and_content_type() -> None:
+    connection = _connection()
+    try:
+        names = {
+            str(row[0])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
+        }
+        sql_row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE name = ?",
+            ("idx_stock_items_language_type_delivered",),
+        ).fetchone()
+
+        assert "idx_stock_items_language_delivered" not in names
+        assert sql_row is not None
+        assert "content_type" in str(sql_row[0])
     finally:
         connection.close()

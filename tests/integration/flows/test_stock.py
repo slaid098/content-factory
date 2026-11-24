@@ -321,6 +321,27 @@ def test_collect_stock_does_not_count_whitespace_only_titles(tmp_path: Path) -> 
     assert row.video_bytes == 3
 
 
+def test_stock_counts_only_videos_and_ignores_photos(tmp_path: Path) -> None:
+    _touch(tmp_path / "content" / "ru" / "a.mp4", b"12345")
+    _touch(tmp_path / "content" / "ru" / "b.jpg", b"photo-bytes")
+    _touch(tmp_path / "content" / "dating" / "ru" / "c.png", b"more-photo")
+    add_title(tmp_path / "db" / "db.sqlite3", "a", "Название видео")
+
+    assert count_stock(tmp_path / "content", ["ru"]) == {"ru": 1}
+
+    snapshot, _ = collect_stock(
+        tmp_path,
+        {"ru": LanguageConfig(enabled=True, stock_target=10)},
+        now=_MOMENT,
+    )
+
+    row = snapshot.languages[0]
+    assert row.stock == 1
+    assert row.titled == 1
+    assert row.untitled == 0
+    assert row.video_bytes == 5
+
+
 def test_collect_stock_treats_unreadable_database_path_as_untitled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

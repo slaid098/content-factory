@@ -16,13 +16,14 @@ from tests.unit.common.delivery_helpers import (
     add_downloaded_video,
     add_title,
     touch_mp4,
+    touch_photo,
 )
 from tests.unit.common.profile_helpers import add_profile, add_profile_video
 
 from content_factory.constants import ARCHIVE_DIR, CONTENT_DIR
 from content_factory.db.video_meta import load_video_meta
 from content_factory.exceptions import DeliveryError, ProfileError
-from content_factory.schemas.content.delivery import DeliveryJobInfo
+from content_factory.schemas.content.delivery import ContentType, DeliveryJobInfo
 from content_factory.schemas.content.video import VideoMeta
 from content_factory.services.delivery import service as delivery_service
 from content_factory.services.delivery.archives import (
@@ -97,6 +98,11 @@ def _sidecar(
 def _zip_title(data: bytes, entry: str = "001.json") -> str:
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         return str(json.loads(archive.read(entry))["title"])
+
+
+def _zip_sidecar(data: bytes, entry: str = "001.json") -> dict[str, object]:
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        return dict(json.loads(archive.read(entry)))
 
 
 def _zip_bytes(data: bytes, entry: str) -> bytes:
@@ -482,7 +488,14 @@ def test_build_archive_discards_tmp_when_title_is_missing(tmp_path: Path) -> Non
     archive_path.parent.mkdir(parents=True, exist_ok=True)
 
     with pytest.raises(KeyError):
-        _build_archive(archive_path, [source], {})
+        _build_archive(
+            archive_path,
+            [source],
+            {},
+            content_type=ContentType.VIDEO,
+            language="ru",
+            profile_id=None,
+        )
 
     assert source.is_file()
     assert not archive_path.exists()
@@ -1263,3 +1276,201 @@ def test_deliver_by_profile_missing_raises_profile_error(tmp_path: Path) -> None
             profile="dating/missing",
             retention_hours=24,
         )
+
+
+def test_general_delivery_keeps_photos_out_of_the_archive(tmp_path: Path) -> None:
+    video_hash = "a" * 64
+    video = touch_mp4(
+        tmp_path / CONTENT_DIR / "general" / "ru" / f"{video_hash}.mp4",
+        b"video",
+    )
+    photo = touch_photo(
+        tmp_path / CONTENT_DIR / "general" / "ru" / "post.jpg",
+        b"photo",
+        text="Текст поста",
+    )
+    add_title(tmp_path / "db" / "db.sqlite3", video_hash, "Общее видео")
+
+    archive = deliver(tmp_path, "ru", 10, REQUEST_ID, retention_hours=24)
+
+    assert archive is not None
+    data = archive.read_bytes()
+    assert _zip_entries(data) == ["001.mp4", "001.json"]
+    assert _zip_sidecar(data) == {
+        "type": "video",
+        "language": "ru",
+        "profile_id": None,
+        "title": "Общее видео",
+    }
+    assert not video.exists()
+    assert photo.is_file()
+    assert photo.with_suffix(".json").is_file()
+
+
+def test_photo_delivery_without_a_profile_returns_none(tmp_path: Path) -> None:
+    photo = touch_photo(
+        tmp_path / CONTENT_DIR / "general" / "ru" / "post.jpg",
+        text="Текст поста",
+    )
+
+    assert (
+        deliver(
+            tmp_path,
+            "ru",
+            1,
+            REQUEST_ID,
+            content_type=ContentType.PHOTO,
+            retention_hours=24,
+        )
+        is None
+    )
+    assert photo.is_file()
+    assert not _archive_path(tmp_path).exists()
+
+
+def test_profile_delivery_of_photos_builds_a_photo_archive(tmp_path: Path) -> None:
+    add_profile(tmp_path, "dating", "profile_1")
+    video = add_profile_video(
+        tmp_path,
+        "dating",
+        "profile_1",
+        filename="dating_profile_1_run_001.mp4",
+        data=b"video",
+    )
+    photo = touch_photo(
+        tmp_path / CONTENT_DIR / "dating" / "ru" / "dating_profile_1_post_001.jpg",
+        b"photo",
+        text="Текст поста",
+    )
+    add_title(tmp_path / "db" / "db.sqlite3", "dating_profile_1_run_001", "Профильное видео")
+
+    archive = deliver(
+        tmp_path,
+        "ru",
+        10,
+        REQUEST_ID,
+        profile="dating/profile_1",
+        content_type=ContentType.PHOTO,
+        retention_hours=24,
+    )
+
+    assert archive is not None
+    data = archive.read_bytes()
+    assert _zip_entries(data) == ["001.jpg", "001.json"]
+    assert _zip_bytes(data, "001.jpg") == b"photo"
+    assert _zip_sidecar(data) == {
+        "type": "photo",
+        "language": "ru",
+        "profile_id": "dating/profile_1",
+        "text": "Текст поста",
+    }
+    assert not photo.exists()
+    assert not photo.with_suffix(".json").exists()
+    assert video.is_file()
+
+
+def test_profile_delivery_of_videos_keeps_photos(tmp_path: Path) -> None:
+    add_profile(tmp_path, "dating", "profile_1")
+    video = add_profile_video(
+        tmp_path,
+        "dating",
+        "profile_1",
+        filename="dating_profile_1_run_001.mp4",
+        data=b"video",
+    )
+    photo = touch_photo(
+        tmp_path / CONTENT_DIR / "dating" / "ru" / "dating_profile_1_post_001.jpg",
+        text="Текст поста",
+    )
+    add_title(tmp_path / "db" / "db.sqlite3", "dating_profile_1_run_001", "Профильное видео")
+
+    archive = deliver(
+        tmp_path,
+        "ru",
+        10,
+        REQUEST_ID,
+        profile="dating/profile_1",
+        retention_hours=24,
+    )
+
+    assert archive is not None
+    data = archive.read_bytes()
+    assert _zip_entries(data) == ["001.mp4", "001.json"]
+    assert _zip_sidecar(data) == {
+        "type": "video",
+        "language": "ru",
+        "profile_id": "dating/profile_1",
+        "title": "Профильное видео",
+    }
+    assert not video.exists()
+    assert photo.is_file()
+    assert photo.with_suffix(".json").is_file()
+
+
+@pytest.mark.parametrize("sidecar", [None, "{}"])
+def test_photo_without_text_is_delivered_with_empty_text(
+    tmp_path: Path,
+    sidecar: str | None,
+) -> None:
+    add_profile(tmp_path, "dating", "profile_1")
+    photo = touch_photo(
+        tmp_path / CONTENT_DIR / "dating" / "ru" / "dating_profile_1_post_001.png",
+        b"photo",
+    )
+    if sidecar is not None:
+        photo.with_suffix(".json").write_text(sidecar, encoding="utf-8")
+
+    archive = deliver(
+        tmp_path,
+        "ru",
+        1,
+        REQUEST_ID,
+        profile="dating/profile_1",
+        content_type=ContentType.PHOTO,
+        retention_hours=24,
+    )
+
+    assert archive is not None
+    data = archive.read_bytes()
+    assert _zip_entries(data) == ["001.png", "001.json"]
+    assert _zip_sidecar(data)["text"] == ""
+    assert not photo.exists()
+
+
+def test_photo_with_broken_sidecar_is_delivered_without_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    log_records: list[dict[str, Any]],
+) -> None:
+    add_profile(tmp_path, "dating", "profile_1")
+    photo = touch_photo(
+        tmp_path / CONTENT_DIR / "dating" / "ru" / "dating_profile_1_post_001.jpg",
+        b"photo",
+        text="Текст поста",
+    )
+    sidecar = photo.with_suffix(".json")
+    original_sync = delivery_service.sync_stock
+
+    def _sync_then_break(sync_dir: Path) -> int:
+        count = original_sync(sync_dir)
+        sidecar.write_text("{broken after sync", encoding="utf-8")
+        return count
+
+    monkeypatch.setattr(delivery_service, "sync_stock", _sync_then_break)
+
+    archive = deliver(
+        tmp_path,
+        "ru",
+        1,
+        REQUEST_ID,
+        profile="dating/profile_1",
+        content_type=ContentType.PHOTO,
+        retention_hours=24,
+    )
+
+    assert archive is not None
+    assert _zip_sidecar(archive.read_bytes())["text"] == ""
+    records = [record for record in log_records if record["function"] == "_photo_text"]
+    assert [record["level"].name for record in records] == ["WARNING"]
+    assert records[0]["extra"]["path"] == str(sidecar)
+    assert "{broken after sync" not in records[0]["message"]
