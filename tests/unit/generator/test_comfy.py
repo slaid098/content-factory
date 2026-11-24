@@ -267,6 +267,96 @@ def test_three_health_errors_stop_the_batch_and_its_retries(tmp_path: Path) -> N
     assert len(transport.submitted) == 1
 
 
+class _HealthHttp:
+    """HTTP handler whose health checks fail like a dead server."""
+
+    def __init__(self, health_failures: int) -> None:
+        self.health_failures = health_failures
+        self.health_calls = 0
+        self.history_calls = 0
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/system_stats":
+            self.health_calls += 1
+            if self.health_calls <= self.health_failures:
+                error = httpx.ConnectError if self.health_calls % 2 else httpx.ReadTimeout
+                raise error("server is gone")
+            return httpx.Response(200, json={"system": {}}, request=request)
+        if path == "/prompt":
+            return httpx.Response(200, json={"prompt_id": "p1"}, request=request)
+        if path.startswith("/history/"):
+            self.history_calls += 1
+            if self.history_calls <= 5:
+                return httpx.Response(200, json={}, request=request)
+            return httpx.Response(
+                200,
+                json={"p1": {"outputs": {"15": {"gifs": [{"filename": "p1.mp4"}]}}}},
+                request=request,
+            )
+        if path == "/view":
+            return httpx.Response(200, content=b"video", request=request)
+        raise AssertionError(path)
+
+
+def _run_health_http(
+    tmp_path: Path,
+    handler: _HealthHttp,
+    sleep: Any,
+    clock: Any,
+) -> tuple[comfy._JobResult, ...]:
+    items = _items(tmp_path, count=1)
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+        client = ComfyClient(_connection(), client=http)
+        return run_jobs(
+            client,
+            items,
+            _build,
+            tmp_path / "source",
+            store=lambda path, content: path.write_bytes(content),
+            poll_interval=10,
+            job_timeout=600,
+            health_interval=10,
+            health_fail_limit=3,
+            sleep=sleep,
+            clock=clock,
+        )
+
+
+def test_transport_health_errors_are_counted_and_generation_continues(tmp_path: Path) -> None:
+    handler = _HealthHttp(health_failures=2)
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    def sleep(seconds: float) -> None:
+        nonlocal now
+        now += seconds
+
+    results = _run_health_http(tmp_path, handler, sleep, clock)
+
+    assert handler.health_calls >= 3
+    assert results[0].path is not None
+
+
+def test_three_transport_health_errors_stop_the_batch(tmp_path: Path) -> None:
+    handler = _HealthHttp(health_failures=10)
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    def sleep(seconds: float) -> None:
+        nonlocal now
+        now += seconds
+
+    with pytest.raises(ComfyError, match="сервер перестал отвечать"):
+        _run_health_http(tmp_path, handler, sleep, clock)
+
+    assert handler.health_calls == 3
+
+
 class _BrokenDownload(_Transport):
     """Transport whose first download fails like a dropped server."""
 
@@ -430,6 +520,17 @@ def test_client_reads_system_stats_without_leaking_the_body() -> None:
         pytest.raises(ComfyError, match="не JSON"),
     ):
         client.system_stats()
+
+    def disconnected(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    with (
+        contextlib.closing(_client(disconnected)) as client,
+        pytest.raises(ComfyError, match="не ответил") as failed,
+    ):
+        client.system_stats()
+
+    assert isinstance(failed.value.__cause__, httpx.ConnectError)
 
 
 def test_client_downloads_with_filename_params() -> None:

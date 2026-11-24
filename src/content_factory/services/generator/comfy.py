@@ -112,9 +112,14 @@ class ComfyClient:
             JSON object of ``/system_stats``.
 
         Raises:
-            ComfyError: The server returned an HTTP error or a non-JSON body.
+            ComfyError: The request failed, returned an HTTP error or a non-JSON body.
         """
-        response = self._http().get(f"{self._connection.url()}/system_stats")
+        try:
+            response = self._http().get(f"{self._connection.url()}/system_stats")
+        except httpx.HTTPError as ex:
+            raise ComfyError(
+                f"ComfyUI не ответил на этапе «проверка здоровья»: {type(ex).__name__}"
+            ) from ex
         if not response.is_success:
             raise ComfyError(
                 f"ComfyUI: ошибка HTTP {response.status_code} на этапе «проверка здоровья»"
