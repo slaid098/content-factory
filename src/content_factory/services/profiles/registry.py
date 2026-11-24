@@ -117,6 +117,8 @@ def _read_yaml(path: Path) -> Mapping[str, Any]:
     """Read ``profile.yaml`` as a mapping."""
     try:
         payload: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError as ex:
+        raise ProfileError(f"не удалось прочитать {path}: файл не в UTF-8") from ex
     except OSError as ex:
         raise ProfileError(f"не удалось прочитать {path}: {ex}") from ex
     except yaml.YAMLError as ex:

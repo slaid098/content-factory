@@ -100,6 +100,26 @@ def test_broken_yaml_skips_only_that_profile(
     )
 
 
+def test_non_utf8_yaml_skips_only_that_profile(
+    tmp_path: Path,
+    log_records: list[dict[str, Any]],
+) -> None:
+    _make_profile(tmp_path, "dating", "profile_1")
+    broken = tmp_path / "profiles" / "dating" / "profile_2"
+    broken.mkdir(parents=True)
+    (broken / "profile.yaml").write_bytes(b"width: \xff\n")
+
+    profiles = list_profiles(tmp_path)
+
+    assert [profile.id for profile in profiles] == ["dating/profile_1"]
+    assert any(
+        record["level"].name == "WARNING" and "dating/profile_2" in record["message"]
+        for record in log_records
+    )
+    with pytest.raises(ProfileError, match="UTF-8"):
+        get_profile(tmp_path, "dating/profile_2")
+
+
 def test_invalid_profile_field_skips_only_that_profile(tmp_path: Path) -> None:
     _make_profile(tmp_path, "dating", "profile_1")
     _make_profile(tmp_path, "dating", "profile_2", width=0)
