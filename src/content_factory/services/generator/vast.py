@@ -16,7 +16,12 @@ from content_factory.config.settings import GeneratorSettings
 from content_factory.exceptions.generator import RentError
 from content_factory.schemas.generator.server import ServerConnection, ServerInfo
 from content_factory.services.generator.profiles import _Profile
-from content_factory.services.generator.vast_cli import VastProvider, _VastTransient
+from content_factory.services.generator.vast_cli import (
+    VastProvider,
+    _already_gone,
+    _VastFatal,
+    _VastTransient,
+)
 
 _LABEL = "content-factory-generator"
 _COMFY_PORT = 8188
@@ -26,6 +31,7 @@ _DESTROY_ATTEMPTS = 3
 _DESTROY_PAUSE = 5.0
 _POLL_SECONDS = 5.0
 _POOL_TICK_SECONDS = 0.05
+_GONE_GRACE_SECONDS = 60.0
 HEALTH_TIMEOUT = 10.0
 _VERIFIED_PASSES: tuple[bool | None, ...] = (True, False, None)
 
@@ -40,9 +46,8 @@ class _RentCancelled(RentError):
 
 @dataclass
 class _PoolState:
-    """Threads, deadline and outcomes shared by one floating rent pool."""
+    """Threads and outcomes shared by one floating rent pool."""
 
-    deadline: float
     stop: threading.Event = field(default_factory=threading.Event)
     outcomes: queue.Queue[ServerInfo | RentError] = field(default_factory=queue.Queue)
     workers: list[threading.Thread] = field(default_factory=list)
@@ -104,7 +109,7 @@ class VastSession:
                 errors.append(str(ex))
                 continue
             self._untrack(contract_id)
-            logger.bind(contract_id=contract_id).info("Сервер уничтожен и проверен")
+            logger.bind(contract_id=contract_id).info(f"Сервер {contract_id} уничтожен и проверен")
         if errors:
             raise RentError("; ".join(errors))
 
@@ -112,7 +117,7 @@ class VastSession:
         """Race offers of every verified pass until one server is ready."""
         used_offers: set[str] = set()
         used_ips: set[str] = set()
-        last: Exception | None = None
+        reasons: list[str] = []
         for verified in _VERIFIED_PASSES:
             try:
                 if self._settings.rent_pool_size > 1:
@@ -120,12 +125,15 @@ class VastSession:
                 return self._rent_sequential(provider, verified, used_offers, used_ips)
             except _TeardownError:
                 raise
+            except _VastFatal:
+                raise
             except RentError as ex:
-                last = ex
+                reasons.append(str(ex))
                 logger.bind(error=str(ex), error_type=type(ex).__name__).warning(
-                    "Пул офферов не подошёл — следующие"
+                    f"Пул офферов не подошёл — следующие: {ex}"
                 )
-        raise RentError(f"годного сервера Vast.ai нет: {last}")
+        detail = "; ".join(reasons) or "причины не записаны"
+        raise RentError(f"годного сервера Vast.ai нет: {detail}")
 
     def _candidates(
         self,
@@ -170,10 +178,12 @@ class VastSession:
                 return self._rent_offer(provider, offer)
             except _TeardownError:
                 raise
+            except _VastFatal:
+                raise
             except RentError as ex:
                 last = ex
                 logger.bind(error=str(ex), error_type=type(ex).__name__).warning(
-                    "Оффер не подошёл — следующий"
+                    f"Оффер не подошёл — следующий: {ex}"
                 )
         raise last or RentError("рынок Vast.ai не дал офферов под фильтры профиля")
 
@@ -187,21 +197,28 @@ class VastSession:
         """Keep a floating pool of one verified pass full until a server is ready.
 
         New offers are searched at most once per ``offer_refresh_seconds`` and
-        fill free slots only. Every member shares one ``server_ready_timeout``
-        deadline; the first ready server wins and every other member is
-        destroyed before the pool returns.
+        fill free slots only. Every attempt waits its own
+        ``server_ready_timeout`` from the moment it starts; the first ready
+        server wins and every other member is destroyed before the pool returns.
 
         Raises:
             _TeardownError: A loser is still listed after ``destroy_verified``.
-            RentError: No member became ready and no fresh offer appeared.
+            RentError: The market ran dry before any member became ready.
         """
-        state = _PoolState(deadline=self._clock() + self._settings.server_ready_timeout)
+        state = _PoolState()
         try:
-            result = self._pool_loop(provider, verified, used_offers, used_ips, state)
-        finally:
-            state.stop.set()
-            for worker in state.workers:
-                worker.join()
+            try:
+                result = self._pool_loop(provider, verified, used_offers, used_ips, state)
+            finally:
+                state.stop.set()
+                for worker in state.workers:
+                    worker.join()
+        except Exception as error:
+            try:
+                self._destroy_losers(provider)
+            except _TeardownError as teardown:
+                raise teardown from error
+            raise
         if isinstance(result, ServerInfo):
             self._destroy_losers(provider, result)
             self._set_current(result.connection.contract_id)
@@ -234,14 +251,10 @@ class VastSession:
                 return result
             now = self._clock()
             active = self._active(state)
-            expired = now >= state.deadline
-            if expired and active == 0:
-                return self._final_result(
-                    state, last, "дедлайн пула аренды истёк, готового сервера нет"
-                )
+            if state.stop.is_set() and active == 0:
+                return self._final_result(state, last, "пул остановлен без готового сервера")
             if (
-                not expired
-                and active < size
+                active < size
                 and not state.stop.is_set()
                 and now >= last_search + self._settings.offer_refresh_seconds
             ):
@@ -252,7 +265,7 @@ class VastSession:
                 result, last = self._pool_outcomes(state, last)
                 if result is not None:
                     return result
-                if state.stop.is_set() or self._clock() >= state.deadline:
+                if state.stop.is_set():
                     continue
                 added = self._start_attempts(provider, fresh, state)
                 active = self._active(state)
@@ -271,7 +284,7 @@ class VastSession:
         active: int,
         now: float,
         last_search: float,
-    ) -> tuple[ServerInfo | _TeardownError | None, RentError | None]:
+    ) -> tuple[ServerInfo | _TeardownError | _VastFatal | None, RentError | None]:
         """Return a late outcome, otherwise sleep until the next pool check."""
         if active == 0 or state.stop.is_set():
             result, last = self._pool_outcomes(state, last)
@@ -282,7 +295,6 @@ class VastSession:
             now,
             last_search,
             self._settings.offer_refresh_seconds,
-            state.deadline,
         )
         if state.stop.is_set():
             pause = min(pause, _POOL_TICK_SECONDS)
@@ -297,24 +309,28 @@ class VastSession:
         self,
         state: _PoolState,
         last: RentError | None,
-    ) -> tuple[ServerInfo | _TeardownError | None, RentError | None]:
-        """Drain ready outcomes; stop only for a winner or a teardown error."""
+    ) -> tuple[ServerInfo | _TeardownError | _VastFatal | None, RentError | None]:
+        """Drain ready outcomes; stop only for a winner, a fatal error or teardown."""
         while True:
             outcome = _poll_outcome(state.outcomes)
             if outcome is None:
                 return None, last
-            if isinstance(outcome, ServerInfo | _TeardownError):
+            if isinstance(outcome, ServerInfo | _TeardownError | _VastFatal):
                 return outcome, last
             last = _note_pool_failure(outcome)
 
     def _final_result(
         self, state: _PoolState, last: RentError | None, empty_error: str
     ) -> ServerInfo | RentError:
-        """Read outcomes once more after every worker has finished."""
+        """Read outcomes once more and return the last failure reason."""
         result, last = self._pool_outcomes(state, last)
         if result is not None:
             return result
-        return last or RentError(empty_error)
+        reason = last or RentError(empty_error)
+        logger.bind(error=str(reason), error_type=type(reason).__name__).warning(
+            f"Пул аренды завершён без готового сервера: {reason}"
+        )
+        return reason
 
     def _start_attempts(
         self,
@@ -329,7 +345,7 @@ class VastSession:
                 break
             worker = threading.Thread(
                 target=self._attempt,
-                args=(provider, offer, state.deadline, state.stop, state.outcomes),
+                args=(provider, offer, state.stop, state.outcomes),
                 name=f"vast-rent-{offer.get('id')}",
                 daemon=True,
             )
@@ -342,34 +358,41 @@ class VastSession:
         self,
         provider: VastProvider,
         offer: Mapping[str, Any],
-        deadline: float,
         stop: threading.Event,
         outcomes: queue.Queue[ServerInfo | RentError],
     ) -> None:
         """Rent one pool candidate and report its ready server or failure."""
-        if stop.is_set() or self._clock() >= deadline:
+        if stop.is_set():
             return
         contract_id: str | None = None
+        started = self._clock()
+        timeout = self._settings.server_ready_timeout
+        health_timeout = self._settings.comfy_health_timeout
         try:
             contract_id = self._create(provider, offer)
-            connection = self._wait_ready(provider, contract_id, deadline=deadline, stop=stop)
+            started = self._clock()
+            connection = self._wait_ready(
+                provider, contract_id, deadline=started + timeout, stop=stop
+            )
         except _RentCancelled:
             return
+        except _VastFatal as ex:
+            _log_attempt_failure(contract_id, timeout, health_timeout, self._clock() - started, ex)
+            stop.set()
+            self._failed_candidate(provider, contract_id, ex)
+            outcomes.put(ex)
         except RentError as ex:
+            _log_attempt_failure(contract_id, timeout, health_timeout, self._clock() - started, ex)
             outcomes.put(self._failed_candidate(provider, contract_id, ex))
         except Exception as ex:  # noqa: BLE001 — a provider bug must not stall the pool
-            outcomes.put(
-                self._failed_candidate(
-                    provider,
-                    contract_id,
-                    RentError(f"{type(ex).__name__}: {ex}"),
-                )
+            error = RentError(f"{type(ex).__name__}: {ex}")
+            _log_attempt_failure(
+                contract_id, timeout, health_timeout, self._clock() - started, error
             )
+            outcomes.put(self._failed_candidate(provider, contract_id, error))
         else:
             stop.set()
-            logger.bind(contract_id=contract_id, gpu=connection.gpu, ip=connection.ip).info(
-                "Сервер ComfyUI готов"
-            )
+            _log_ready(connection)
             outcomes.put(
                 ServerInfo(
                     connection=connection,
@@ -407,22 +430,26 @@ class VastSession:
                 errors.append(f"проигравший сервер {contract_id} не уничтожен: {ex}")
                 continue
             self._untrack(contract_id)
-            logger.bind(contract_id=contract_id).info("Проигравший сервер уничтожен")
+            logger.bind(contract_id=contract_id).info(f"Проигравший сервер {contract_id} уничтожен")
         if errors:
             raise _TeardownError("; ".join(errors))
 
     def _rent_offer(self, provider: VastProvider, offer: Mapping[str, Any]) -> ServerInfo:
         """Create one instance and wait for its ComfyUI."""
         contract_id = self._create(provider, offer)
+        started = self._clock()
+        port_timeout = self._settings.server_ready_timeout
+        health_timeout = self._settings.comfy_health_timeout
         self._set_current(contract_id)
         try:
-            connection = self._wait_ready(provider, contract_id)
-        except RentError:
+            connection = self._wait_ready(provider, contract_id, deadline=started + port_timeout)
+        except RentError as ex:
+            _log_attempt_failure(
+                contract_id, port_timeout, health_timeout, self._clock() - started, ex
+            )
             self._destroy_after_failure(provider, contract_id)
             raise
-        logger.bind(contract_id=contract_id, gpu=connection.gpu, ip=connection.ip).info(
-            "Сервер ComfyUI готов"
-        )
+        _log_ready(connection)
         return ServerInfo(
             connection=connection,
             cost_per_hour=_float_or_none(offer.get("dph_total")),
@@ -481,7 +508,8 @@ class VastSession:
             destroy_verified(provider, contract_id)
         except RentError as ex:
             logger.bind(contract_id=contract_id, error=str(ex)).error(
-                "Сервер не уничтожился после сбоя аренды — повтор в финальном finally"
+                f"Сервер {contract_id} не уничтожился после сбоя аренды — "
+                f"повтор в финальном finally: {ex}"
             )
             raise _TeardownError(
                 f"сервер {contract_id} не уничтожен после сбоя аренды: {ex}"
@@ -501,22 +529,47 @@ class VastSession:
         Args:
             provider: Vast.ai CLI provider.
             contract_id: Rented instance.
-            deadline: Shared pool deadline; defaults to one ready timeout.
+            deadline: Deadline of this attempt; defaults to one ready timeout.
             stop: Set when another pool member won; the wait is abandoned and
                 the contract stays tracked for the main thread to destroy.
 
         Raises:
-            RentError: The host did not publish a port in time.
+            _VastFatal: The token or the account itself is unusable; retrying
+                another offer cannot help.
+            RentError: The host did not publish a port in time, or an
+                instance already seen in the account was reported missing
+                past the gone grace.
             _RentCancelled: Another pool member won first.
         """
         if deadline is None:
             deadline = self._clock() + self._settings.server_ready_timeout
+        seen = False
+        gone_since: float | None = None
+        gone_error: RentError | None = None
         while self._clock() < deadline:
             _raise_if_cancelled(stop)
             try:
                 instance = provider.show_instance(contract_id)
-            except RentError:
+            except _VastFatal:
+                raise
+            except _VastTransient:
                 instance = None
+            except RentError as ex:
+                instance = None
+                if _already_gone(str(ex)) and str(contract_id) in str(ex):
+                    now = self._clock()
+                    gone_error = ex
+                    if seen:
+                        if gone_since is None:
+                            gone_since = now
+                        if now - gone_since >= _GONE_GRACE_SECONDS:
+                            raise RentError(
+                                f"инстанс {contract_id} исчез из аккаунта: {gone_error}"
+                            ) from ex
+            else:
+                seen = True
+                gone_since = None
+                gone_error = None
             if instance is not None:
                 connection = connection_from_instance(contract_id, instance)
                 if connection is not None:
@@ -592,7 +645,7 @@ def reap_stale(
         instances = provider.list_instances()
     except RentError as ex:
         logger.bind(error=str(ex), error_type=type(ex).__name__).warning(
-            "Список инстансов недоступен — stale-чистка пропущена"
+            f"Список инстансов недоступен — stale-чистка пропущена: {ex}"
         )
         return killed
     for instance in instances:
@@ -600,18 +653,28 @@ def reap_stale(
             continue
         started = _float_or_none(instance.get("start_date"))
         contract_id = str(instance.get("id") or "")
-        if not contract_id or started is None or moment - started < limit:
+        if not contract_id:
+            continue
+        if started is None or started <= 0:
+            logger.bind(contract_id=contract_id, start_date=started).warning(
+                f"Stale-чистка: инстанс {contract_id} пропущен — нет корректного "
+                f"start_date ({started}), проверьте вручную"
+            )
+            continue
+        if moment - started < limit:
             continue
         try:
             destroy_verified(provider, contract_id)
         except RentError as ex:
             logger.bind(contract_id=contract_id, error=str(ex)).error(
-                "Stale-инстанс не уничтожился — погасите вручную"
+                f"Stale-инстанс {contract_id} не уничтожился — погасите вручную: {ex}"
             )
             continue
         killed.append(contract_id)
     if killed:
-        logger.bind(killed=killed).info("Stale-инстансы генератора уничтожены")
+        logger.bind(killed=killed).info(
+            f"Stale-инстансы генератора уничтожены: {', '.join(killed)}"
+        )
     return killed
 
 
@@ -644,7 +707,7 @@ def destroy_verified(
             provider.destroy_instance(contract_id)
         except RentError as ex:
             logger.bind(contract_id=contract_id, attempt=attempt).warning(
-                f"Уничтожение вернуло ошибку: {ex}"
+                f"Уничтожение {contract_id} вернуло ошибку: {ex}"
             )
         try:
             provider.show_instance(contract_id)
@@ -652,11 +715,11 @@ def destroy_verified(
             if str(contract_id) in str(ex) and "not found" in str(ex).lower():
                 return True
             logger.bind(contract_id=contract_id, attempt=attempt).warning(
-                f"Список инстансов недоступен: {ex}"
+                f"Список инстансов недоступен при уничтожении {contract_id}: {ex}"
             )
         else:
             logger.bind(contract_id=contract_id, attempt=attempt).error(
-                "Сервер всё ещё в списке — повторяем уничтожение"
+                f"Сервер {contract_id} всё ещё в списке — повторяем уничтожение"
             )
         if attempt < attempts:
             sleep(pause * attempt)
@@ -680,23 +743,46 @@ def _pool_pause(
     now: float,
     last_search: float,
     refresh: int,
-    deadline: float,
 ) -> float:
     """Return how long the coordinator naps before its next pool check."""
     if active:
         return _POOL_TICK_SECONDS
-    return max(0.0, min(last_search + refresh - now, deadline - now))
+    return max(0.0, last_search + refresh - now)
+
+
+def _log_attempt_failure(
+    contract_id: str | None,
+    port_timeout: int,
+    health_timeout: int,
+    elapsed: float,
+    error: RentError,
+) -> None:
+    """Log a failed attempt with its contract, phase budgets and reason."""
+    contract = contract_id or "без контракта"
+    logger.bind(contract_id=contract_id, error=str(error), error_type=type(error).__name__).warning(
+        f"Попытка аренды {contract} не дала сервер за {elapsed:.0f} с: "
+        f"ожидание порта до {port_timeout} с, health до {health_timeout} с; {error}"
+    )
+
+
+def _log_ready(connection: ServerConnection) -> None:
+    """Log a ready ComfyUI server by contract and address."""
+    logger.bind(
+        contract_id=connection.contract_id,
+        gpu=connection.gpu,
+        ip=connection.ip,
+    ).info(f"Сервер ComfyUI готов: контракт {connection.contract_id}, {connection.ip}")
 
 
 def _log_pool(added: int, active: int) -> None:
     """Log new offers of a pool search and the attempts now running."""
-    logger.bind(added=added, active=active).info("Пул аренды: новые офферы и активные попытки")
+    logger.bind(added=added, active=active).info(f"Пул аренды: +{added} офферов, активных {active}")
 
 
 def _note_pool_failure(outcome: RentError) -> RentError:
     """Log one failed pool candidate and return its error for the pass."""
     logger.bind(error=str(outcome), error_type=type(outcome).__name__).warning(
-        "Кандидат пула не подошёл — ждём остальных"
+        f"Кандидат пула не подошёл — ждём остальных: {outcome}"
     )
     return outcome
 
@@ -742,7 +828,7 @@ def _offers(
     try:
         return provider.search_offers(query)
     except _VastTransient as ex:
-        logger.bind(error=str(ex)).warning("Поиск офферов временно недоступен")
+        logger.bind(error=str(ex)).warning(f"Поиск офферов временно недоступен: {ex}")
         return []
 
 
