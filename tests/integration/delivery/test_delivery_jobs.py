@@ -14,6 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 from loguru import logger
 from tests.unit.common.delivery_helpers import REQUEST_ID, REQUEST_ID_TEXT, add_title, touch_mp4
+from tests.unit.common.profile_helpers import add_profile, add_profile_video
 
 from content_factory.api.app import create_app
 from content_factory.constants import ARCHIVE_DIR, CONTENT_DIR, DB_DIR
@@ -25,7 +26,7 @@ from content_factory.exceptions import (
     UploadError,
 )
 from content_factory.schemas.content.delivery import DeliveryJobInfo, DeliveryRequest
-from content_factory.services.delivery.jobs import start_delivery_job
+from content_factory.services.delivery.jobs import _request_language, start_delivery_job
 from content_factory.services.delivery.sidecars import save_job
 
 _TOKEN = "delivery-secret"
@@ -70,12 +71,17 @@ def _post(
 
 
 def _wait(
-    client: TestClient, request_id: str, status: str, timeout: float = 10.0
+    client: TestClient,
+    request_id: str,
+    status: str,
+    timeout: float = 10.0,
+    *,
+    language: str = "ru",
 ) -> dict[str, object]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         response = client.get(
-            f"/api/v1/content/deliveries/ru/{request_id}",
+            f"/api/v1/content/deliveries/{language}/{request_id}",
             headers={"Authorization": f"Bearer {_TOKEN}"},
         )
         assert response.status_code == 200
@@ -509,3 +515,64 @@ def test_startup_marks_building_as_failed_and_repeat_rebuilds(
         final = _wait(client, REQUEST_ID_TEXT, "ready")
 
     assert final["url"] == url
+
+
+def test_link_by_profile_resolves_and_stores_registry_language(
+    data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_profile(data_dir, "dating", "profile_1", language="en")
+    source = add_profile_video(
+        data_dir,
+        "dating",
+        "profile_1",
+        language="en",
+        data=b"english",
+    )
+    add_title(data_dir / "db" / "db.sqlite3", "dating_profile_1_run_001", "English title")
+    url = "https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip"
+    monkeypatch.setattr(
+        "content_factory.services.delivery.jobs.upload_archive",
+        lambda _archive: url,
+    )
+    client = _client()
+
+    response = _post(client, language=None, profile="dating/profile_1")
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["language"] == "en"
+    assert body["status"] == "building"
+    final = _wait(client, REQUEST_ID_TEXT, "ready", language="en")
+
+    assert final["url"] == url
+    assert final["files"] == 1
+    assert not source.exists()
+    sidecar = data_dir / ARCHIVE_DIR / "en" / f"{REQUEST_ID}.json"
+    assert sidecar.is_file()
+    assert not (data_dir / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.json").exists()
+
+
+def test_link_by_profile_without_stock_returns_empty(data_dir: Path) -> None:
+    add_profile(data_dir, "dating", "profile_1", language="en")
+    other = add_profile_video(data_dir, "dating", "profile_2", language="en", data=b"other")
+    add_title(data_dir / "db" / "db.sqlite3", "dating_profile_2_run_001", "Другой профиль")
+    client = _client()
+
+    assert _post(client, language=None, profile="dating/profile_1").status_code == 202
+    final = _wait(client, REQUEST_ID_TEXT, "empty", language="en")
+
+    assert final["language"] == "en"
+    assert final["files"] == 0
+    assert other.is_file()
+
+
+def test_request_language_rejects_unresolved_request() -> None:
+    request = DeliveryRequest(
+        profile="dating/profile_1",
+        count=1,
+        request_id=REQUEST_ID,
+    )
+
+    with pytest.raises(DeliveryError, match="язык или профиль"):
+        _request_language(request)

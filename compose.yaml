@@ -39,9 +39,9 @@ services:
     command:
       - |
         set -eu
-        mkdir -p /app/app_data/config /app/app_data/db /app/app_data/queries /app/app_data/archive /app/app_data/generated
-        chown -R 10001:10001 /app/app_data/config /app/app_data/db /app/app_data/queries /app/app_data/archive /app/app_data/generated
-        chmod 0750 /app/app_data/config /app/app_data/db /app/app_data/queries /app/app_data/archive /app/app_data/generated
+        mkdir -p /app/app_data/config /app/app_data/db /app/app_data/queries /app/app_data/archive /app/app_data/generated /app/app_data/preview
+        chown -R 10001:10001 /app/app_data/config /app/app_data/db /app/app_data/queries /app/app_data/archive /app/app_data/generated /app/app_data/preview
+        chmod 0750 /app/app_data/config /app/app_data/db /app/app_data/queries /app/app_data/archive /app/app_data/generated /app/app_data/preview
         mkdir -p /app/app_data/content
         chown root:root /app/app_data /app/app_data/content
         chmod 0755 /app/app_data /app/app_data/content

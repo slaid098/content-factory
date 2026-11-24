@@ -16,6 +16,7 @@ from content_factory.constants import (
     CONTENT_DIR,
     DB_DIR,
     GENERATED_DIR,
+    PREVIEW_DIR,
     QUERIES_DIR,
 )
 from content_factory.exceptions.errors import ConfigError
@@ -224,7 +225,15 @@ class GeneratorSettings(_OpenAIEndpointSettings):
 
 
 def _ensure_directories(data_dir: Path) -> None:
-    for name in (CONFIG_DIR, DB_DIR, CONTENT_DIR, ARCHIVE_DIR, QUERIES_DIR, GENERATED_DIR):
+    for name in (
+        CONFIG_DIR,
+        DB_DIR,
+        CONTENT_DIR,
+        ARCHIVE_DIR,
+        QUERIES_DIR,
+        GENERATED_DIR,
+        PREVIEW_DIR,
+    ):
         path = data_dir / name
         try:
             path.mkdir(parents=True, exist_ok=True)

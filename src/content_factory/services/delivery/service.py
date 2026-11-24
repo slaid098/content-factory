@@ -23,6 +23,7 @@ from content_factory.exceptions.errors import DeliveryError, LockError
 from content_factory.schemas.content.video import VideoMeta
 from content_factory.services.delivery.archives import is_archive_expired
 from content_factory.services.delivery.sidecars import read_job_file
+from content_factory.services.profiles import get_profile
 from content_factory.services.stock import sync_stock
 
 _ZIP_SUFFIX = ".zip"
@@ -31,11 +32,12 @@ _TMP_SUFFIX = ".tmp"
 
 def deliver(
     data_dir: Path,
-    language: str,
+    language: str | None,
     count: int,
     request_id: UUID,
     query: str | None = None,
     *,
+    profile: str | None = None,
     retention_hours: int,
     now: datetime | None = None,
 ) -> Path | None:
@@ -48,10 +50,13 @@ def deliver(
 
     Args:
         data_dir: Root of the runtime data directory.
-        language: Validated two- or three-letter language code.
+        language: Validated two- or three-letter language code; ignored when
+            ``profile`` is given.
         count: Maximum number of videos to deliver.
         request_id: Client request identifier, also the archive file name.
         query: Exact ``videos.query`` topic; ``None`` selects every topic.
+        profile: Profile identifier; restricts the candidates to its stock
+            rows and resolves the language from the registry.
         retention_hours: How long the archive stays idempotent before expiry.
         now: Moment used to test archive freshness; defaults to UTC now.
 
@@ -59,22 +64,39 @@ def deliver(
         Path to the stored archive, or ``None`` when no titled mp4 matches.
 
     Raises:
-        DeliveryError: The archive directory or zip cannot be written.
+        DeliveryError: The archive directory or zip cannot be written, or
+            neither a language nor a profile is given.
+        ProfileError: The profile is unsafe, missing or malformed.
     """
+    resolved = _language_for(data_dir, language, profile)
     moment = now or datetime.now(UTC)
     try:
         with locked(lock_path(data_dir / DB_DIR, DELIVERY_LOCK)):
             return _deliver_locked(
                 data_dir,
-                language,
+                resolved,
                 count,
                 request_id,
                 query,
+                profile_id=profile,
                 retention_hours=retention_hours,
                 now=moment,
             )
     except LockError as ex:
         raise DeliveryError(f"не удалось заблокировать выдачу {request_id}") from ex
+
+
+def _language_for(
+    data_dir: Path,
+    language: str | None,
+    profile: str | None,
+) -> str:
+    """Resolve the delivery language of a request."""
+    if profile is not None:
+        return get_profile(data_dir, profile).language
+    if language is None:
+        raise DeliveryError("не указан язык или профиль")
+    return language
 
 
 def _deliver_locked(
@@ -84,6 +106,7 @@ def _deliver_locked(
     request_id: UUID,
     query: str | None,
     *,
+    profile_id: str | None,
     retention_hours: int,
     now: datetime,
 ) -> Path | None:
@@ -100,7 +123,7 @@ def _deliver_locked(
     try:
         _remove_stale(archive_path)
         sources, titles = _select_sources(
-            _available_sources(data_dir, language),
+            _available_sources(data_dir, language, profile_id),
             count,
             db_path=data_dir / DB_DIR / DB_FILENAME,
             query=query,
@@ -316,7 +339,11 @@ def _remove_stale(path: Path) -> None:
     path.unlink(missing_ok=True)
 
 
-def _available_sources(data_dir: Path, language: str) -> list[Path]:
+def _available_sources(
+    data_dir: Path,
+    language: str,
+    profile_id: str | None = None,
+) -> list[Path]:
     """Synchronize the index and return existing undelivered files of a language.
 
     A database failure is logged and yields no candidates: delivery must not
@@ -325,6 +352,8 @@ def _available_sources(data_dir: Path, language: str) -> list[Path]:
     Args:
         data_dir: Root of the runtime data directory.
         language: Validated two- or three-letter language code.
+        profile_id: Restrict candidates to this profile; ``None`` keeps every
+            stock row of the language.
 
     Returns:
         Absolute paths of files that still exist on disk, in path order.
@@ -344,7 +373,9 @@ def _available_sources(data_dir: Path, language: str) -> list[Path]:
     finally:
         connection.close()
     sources: list[Path] = []
-    for relative, _profile_id in rows:
+    for relative, row_profile in rows:
+        if profile_id is not None and row_profile != profile_id:
+            continue
         path = data_dir / relative
         if not path.is_file():
             logger.bind(path=relative, language=language).warning(

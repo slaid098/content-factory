@@ -18,6 +18,7 @@ from tests.unit.common.delivery_helpers import (
     add_title,
     touch_mp4,
 )
+from tests.unit.common.profile_helpers import add_profile, add_profile_video
 
 from content_factory.api.app import create_app
 from content_factory.constants import ARCHIVE_DIR, CONFIG_DIR, CONTENT_DIR
@@ -725,3 +726,152 @@ def test_download_archive_with_uppercase_request_id_uses_canonical_name(
     assert response.headers["Content-Disposition"] == (
         f'attachment; filename="delivery-{REQUEST_ID}.zip"'
     )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"language": None},
+        {"profile": "dating/profile_1"},
+        {"language": None, "profile": "dating/profile_1", "query": "курятник"},
+    ],
+)
+def test_delivery_rejects_invalid_language_profile_combination(
+    data_dir: Path,
+    overrides: dict[str, object],
+) -> None:
+    response = _post(_client(), **overrides)
+
+    assert response.status_code == 422
+
+
+def test_delivery_by_profile_returns_only_its_files(data_dir: Path) -> None:
+    add_profile(data_dir, "dating", "profile_1")
+    add_profile(data_dir, "dating", "profile_2")
+    first_hash = "dating_profile_1_run_001"
+    other_hash = "dating_profile_2_run_001"
+    first = add_profile_video(
+        data_dir,
+        "dating",
+        "profile_1",
+        filename=f"{first_hash}.mp4",
+        data=b"first",
+    )
+    other = add_profile_video(
+        data_dir,
+        "dating",
+        "profile_2",
+        filename=f"{other_hash}.mp4",
+        data=b"other",
+    )
+    supplier = touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"))
+    add_title(data_dir / "db" / "db.sqlite3", first_hash, "Первое")
+    add_title(data_dir / "db" / "db.sqlite3", other_hash, "Второе")
+    add_title(data_dir / "db" / "db.sqlite3", "a" * 64, "Поставщик")
+
+    response = _post(_client(), language=None, profile="dating/profile_1")
+
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert archive.namelist() == ["001.mp4", "001.json"]
+        assert archive.read("001.mp4") == b"first"
+        assert json.loads(archive.read("001.json")) == {"title": "Первое"}
+    assert not first.exists()
+    assert other.is_file()
+    assert supplier.is_file()
+
+
+def test_delivery_by_profile_without_stock_returns_204(data_dir: Path) -> None:
+    add_profile(data_dir, "dating", "profile_1")
+    other = add_profile_video(
+        data_dir,
+        "dating",
+        "profile_2",
+        filename="dating_profile_2_run_001.mp4",
+    )
+    add_title(data_dir / "db" / "db.sqlite3", "dating_profile_2_run_001", "Второе")
+
+    response = _post(_client(), language=None, profile="dating/profile_1")
+
+    assert response.status_code == 204
+    assert other.is_file()
+
+
+@pytest.mark.parametrize(
+    ("path", "profile", "status_code", "detail"),
+    [
+        (
+            "/api/v1/content/deliveries",
+            "dating/missing",
+            404,
+            "профиль не найден: dating/missing",
+        ),
+        (
+            "/api/v1/content/deliveries/link",
+            "dating/missing",
+            404,
+            "профиль не найден: dating/missing",
+        ),
+        (
+            "/api/v1/content/deliveries",
+            "../profile",
+            422,
+            "unsafe profile id",
+        ),
+        (
+            "/api/v1/content/deliveries/link",
+            "../profile",
+            422,
+            "unsafe profile id",
+        ),
+    ],
+)
+def test_profile_delivery_routes_map_profile_errors(
+    data_dir: Path,
+    path: str,
+    profile: str,
+    status_code: int,
+    detail: str,
+) -> None:
+    response = _client().post(
+        path,
+        json=_body(language=None, profile=profile),
+        headers=_headers(),
+    )
+
+    assert response.status_code == status_code
+    assert response.json() == {"detail": detail}
+    assert not (data_dir / ARCHIVE_DIR).exists()
+
+
+def test_delivery_by_profile_is_idempotent(data_dir: Path) -> None:
+    add_profile(data_dir, "dating", "profile_1")
+    first_hash = "dating_profile_1_run_001"
+    first = add_profile_video(
+        data_dir,
+        "dating",
+        "profile_1",
+        filename=f"{first_hash}.mp4",
+        data=b"first",
+    )
+    add_title(data_dir / "db" / "db.sqlite3", first_hash, "Первое")
+    client = _client()
+    request = {"language": None, "profile": "dating/profile_1"}
+
+    assert _post(client, **request).status_code == 200
+    second_hash = "dating_profile_1_run_002"
+    second = add_profile_video(
+        data_dir,
+        "dating",
+        "profile_1",
+        filename=f"{second_hash}.mp4",
+        data=b"second",
+    )
+    add_title(data_dir / "db" / "db.sqlite3", second_hash, "Второе")
+    repeated = _post(client, **request)
+
+    assert repeated.status_code == 200
+    assert not first.exists()
+    assert second.is_file()
+    with zipfile.ZipFile(io.BytesIO(repeated.content)) as archive:
+        assert archive.namelist() == ["001.mp4", "001.json"]
