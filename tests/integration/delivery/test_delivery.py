@@ -17,10 +17,11 @@ from tests.unit.common.delivery_helpers import (
     add_title,
     touch_mp4,
 )
+from tests.unit.common.profile_helpers import add_profile, add_profile_video
 
 from content_factory.constants import ARCHIVE_DIR, CONTENT_DIR
 from content_factory.db.video_meta import load_video_meta
-from content_factory.exceptions import DeliveryError
+from content_factory.exceptions import DeliveryError, ProfileError
 from content_factory.schemas.content.delivery import DeliveryJobInfo
 from content_factory.schemas.content.video import VideoMeta
 from content_factory.services.delivery import service as delivery_service
@@ -1089,3 +1090,105 @@ def test_cleanup_keeps_fresh_sidecar(tmp_path: Path) -> None:
     cleanup_expired_archives(tmp_path, 24, now=_MOMENT)
 
     assert (tmp_path / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.json").is_file()
+
+
+def test_deliver_by_profile_returns_only_its_stock(tmp_path: Path) -> None:
+    add_profile(tmp_path, "dating", "profile_1")
+    add_profile(tmp_path, "dating", "profile_2")
+    first = add_profile_video(
+        tmp_path,
+        "dating",
+        "profile_1",
+        filename="dating_profile_1_run_001.mp4",
+        data=b"first",
+    )
+    other = add_profile_video(
+        tmp_path,
+        "dating",
+        "profile_2",
+        filename="dating_profile_2_run_001.mp4",
+        data=b"other",
+    )
+    supplier = touch_mp4(tmp_path / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"), b"supplier")
+    add_title(tmp_path / "db" / "db.sqlite3", "dating_profile_1_run_001", "Первое")
+    add_title(tmp_path / "db" / "db.sqlite3", "dating_profile_2_run_001", "Второе")
+    add_title(tmp_path / "db" / "db.sqlite3", "a" * 64, "Поставщик")
+
+    archive = deliver(
+        tmp_path,
+        None,
+        10,
+        REQUEST_ID,
+        profile="dating/profile_1",
+        retention_hours=24,
+    )
+
+    assert archive is not None
+    data = archive.read_bytes()
+    assert _zip_entries(data) == ["001.mp4", "001.json"]
+    assert _zip_bytes(data, "001.mp4") == b"first"
+    assert _zip_title(data) == "Первое"
+    assert not first.exists()
+    assert other.is_file()
+    assert supplier.is_file()
+
+
+def test_deliver_by_profile_uses_registry_language(tmp_path: Path) -> None:
+    add_profile(tmp_path, "dating", "profile_1", language="en")
+    source = add_profile_video(tmp_path, "dating", "profile_1", language="en", data=b"english")
+    add_title(tmp_path / "db" / "db.sqlite3", "dating_profile_1_run_001", "English title")
+
+    archive = deliver(
+        tmp_path,
+        "ru",
+        1,
+        REQUEST_ID,
+        profile="dating/profile_1",
+        retention_hours=24,
+    )
+
+    assert archive == tmp_path / ARCHIVE_DIR / "en" / f"{REQUEST_ID}.zip"
+    assert not source.exists()
+    assert not (tmp_path / ARCHIVE_DIR / "ru").exists()
+
+
+def test_deliver_by_profile_without_matching_stock_returns_none(tmp_path: Path) -> None:
+    add_profile(tmp_path, "dating", "profile_1")
+    other = add_profile_video(
+        tmp_path,
+        "dating",
+        "profile_2",
+        filename="dating_profile_2_run_001.mp4",
+    )
+    add_title(tmp_path / "db" / "db.sqlite3", "dating_profile_2_run_001", "Чужое")
+
+    assert (
+        deliver(
+            tmp_path,
+            None,
+            1,
+            REQUEST_ID,
+            profile="dating/profile_1",
+            retention_hours=24,
+        )
+        is None
+    )
+    assert other.is_file()
+    assert not _archive_path(tmp_path).exists()
+
+
+def test_deliver_by_profile_missing_raises_profile_error(tmp_path: Path) -> None:
+    with pytest.raises(ProfileError, match="профиль не найден"):
+        deliver(
+            tmp_path,
+            None,
+            1,
+            REQUEST_ID,
+            profile="dating/missing",
+            retention_hours=24,
+        )
+
+
+def test_deliver_without_language_or_profile_raises_delivery_error(tmp_path: Path) -> None:
+    with pytest.raises(DeliveryError, match="язык или профиль"):
+        deliver(tmp_path, None, 1, REQUEST_ID, retention_hours=24)

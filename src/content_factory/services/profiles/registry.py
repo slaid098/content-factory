@@ -81,18 +81,45 @@ def get_profile(data_dir: Path, profile_id: str) -> ProfileInfo:
     """
     category, name = _split_id(profile_id)
     directory = data_dir / PROFILES_DIR / category / name
-    if not directory.is_dir():
+    if (
+        category == _SHARED_DIR
+        or not directory.is_dir()
+        or not (directory / _PROFILE_FILENAME).is_file()
+    ):
         raise ProfileError(f"профиль не найден: {profile_id}")
-    return _read_info(directory, category, name)
+    try:
+        return _read_info(directory, category, name)
+    except ProfileError as ex:
+        raise ProfileError(f"профиль не найден: {profile_id}") from ex
+
+
+def is_safe_profile_id(profile_id: str) -> bool:
+    """Return whether an id is a safe ``<category>/<name>`` pair.
+
+    Args:
+        profile_id: Profile identifier such as ``dating/profile_2``.
+
+    Returns:
+        ``True`` for exactly two non-empty segments without path escapes.
+    """
+    return _safe_parts(profile_id) is not None
 
 
 def _split_id(profile_id: str) -> tuple[str, str]:
     """Split a profile id and reject path escapes and absolute paths."""
-    if Path(profile_id).is_absolute() or "\\" in profile_id:
+    parts = _safe_parts(profile_id)
+    if parts is None:
         raise ProfileError(f"небезопасный id профиля: {profile_id!r}")
+    return parts
+
+
+def _safe_parts(profile_id: str) -> tuple[str, str] | None:
+    """Return the two id segments, or ``None`` for an unsafe id."""
+    if Path(profile_id).is_absolute() or "\\" in profile_id:
+        return None
     parts = profile_id.split("/")
     if len(parts) != 2 or any(part in {"", ".", ".."} for part in parts):
-        raise ProfileError(f"id профиля должен быть вида <category>/<name>: {profile_id!r}")
+        return None
     return parts[0], parts[1]
 
 
@@ -128,4 +155,4 @@ def _read_yaml(path: Path) -> Mapping[str, Any]:
     return payload
 
 
-__all__ = ["ProfileInfo", "get_profile", "list_profiles"]
+__all__ = ["ProfileInfo", "get_profile", "is_safe_profile_id", "list_profiles"]

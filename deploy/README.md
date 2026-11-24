@@ -205,8 +205,9 @@ namei -l /root/dockers/content-factory/app_data/content
 отсутствие права записи для group/other. `/root` при этом остаётся
 `drwx------`.
 
-`app_data/config`, `app_data/db`, `app_data/queries`, `app_data/archive` и
-`app_data/generated` принадлежат `10001` (пользователь `app` в контейнере) и закрыты от остальных
+`app_data/config`, `app_data/db`, `app_data/queries`, `app_data/archive`,
+`app_data/generated` и `app_data/preview` принадлежат `10001` (пользователь
+`app` в контейнере) и закрыты от остальных
 (`0750`); это делает одноразовый сервис `init` при каждом `docker compose up`.
 `archive` лежит вне SFTP-chroot `content/` и партнёру не виден.
 
@@ -554,7 +555,7 @@ sudo docker image ls ghcr.io/slaid098/content-factory
 
 - API слушает `0.0.0.0:8000` внутри контейнера, наружу порт опубликован
   только как `127.0.0.1:8000:8000`; новых публичных портов нет.
-- Одноразовый сервис `init` создаёт `app_data/{config,db,queries,archive}`,
+- Одноразовый сервис `init` создаёт `app_data/{config,db,queries,archive,preview}`,
   выставляет им владельца `10001` и фиксирует `root:root 0755` на `app_data`
   и `content`. Каталог `ru` он не трогает.
 - `./app_data` — bind mount с хоста, в образ не попадает. `git reset --hard`

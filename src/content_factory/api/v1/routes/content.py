@@ -14,6 +14,7 @@ from content_factory.config.runtime import load_runtime_config
 from content_factory.config.settings import Settings, get_settings
 from content_factory.constants import CONFIG_DIR, CONFIG_FILENAME, LANGUAGE_CODE_RE
 from content_factory.exceptions.errors import DeliveryBusyError, DeliveryError
+from content_factory.exceptions.generator import ProfileError
 from content_factory.schemas.content.archives import ArchiveInfo
 from content_factory.schemas.content.delivery import DeliveryJobInfo, DeliveryRequest
 from content_factory.schemas.content.topics import TopicsResponse
@@ -25,6 +26,7 @@ from content_factory.services.delivery import (
     resolve_archive,
     start_delivery_job,
 )
+from content_factory.services.profiles import is_safe_profile_id
 
 content_router = APIRouter()
 
@@ -67,6 +69,32 @@ def _bearer_token(header: str | None) -> str | None:
     return token
 
 
+def require_safe_profile_id(profile_id: str) -> None:
+    """Reject a profile id that could escape the registry directory."""
+    if not is_safe_profile_id(profile_id):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="unsafe profile id",
+        )
+
+
+def profile_error(ex: ProfileError, profile_id: str | None = None) -> HTTPException:
+    """Map a missing or malformed profile to 404 without exposing details.
+
+    The exception may carry absolute paths or YAML fragments, so it is only
+    written to the server log. The client always gets a fixed message.
+    """
+    logger.bind(
+        profile_id=profile_id,
+        error=ex,
+        error_type=type(ex).__name__,
+    ).warning("Профиль недоступен")
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="profile not found",
+    )
+
+
 def _check_delivery_limit(request: DeliveryRequest, settings: Settings) -> None:
     """Reject a count above the runtime ``delivery.max_count`` limit."""
     runtime = load_runtime_config(
@@ -98,8 +126,10 @@ def create_delivery(
     request: DeliveryRequest,
     settings: Annotated[Settings, Depends(require_delivery_token)],
 ) -> Response:
-    """Return a zip with up to ``count`` videos of one language."""
+    """Return a zip with up to ``count`` videos of one language or profile."""
     _check_delivery_limit(request, settings)
+    if request.profile is not None:
+        require_safe_profile_id(request.profile)
     try:
         archive = deliver(
             settings.data_dir,
@@ -107,8 +137,11 @@ def create_delivery(
             request.count,
             request.request_id,
             query=request.query,
+            profile=request.profile,
             retention_hours=settings.delivery_retention_hours,
         )
+    except ProfileError as ex:
+        raise profile_error(ex, request.profile) from ex
     except DeliveryError as ex:
         logger.bind(
             request_id=str(request.request_id),
@@ -146,12 +179,16 @@ def create_delivery_link(
 ) -> DeliveryJobInfo:
     """Start a background build and Filebin upload for a manual delivery."""
     _check_delivery_limit(request, settings)
+    if request.profile is not None:
+        require_safe_profile_id(request.profile)
     try:
         return start_delivery_job(
             settings.data_dir,
             request,
             retention_hours=settings.delivery_retention_hours,
         )
+    except ProfileError as ex:
+        raise profile_error(ex, request.profile) from ex
     except DeliveryBusyError as ex:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

@@ -49,3 +49,15 @@ class UploadError(DeliveryError):
 
 class ArchiveTooLargeError(UploadError):
     """Raised when an archive exceeds the 1 GiB upload limit."""
+
+
+class ProfileValidationError(ContentFactoryError):
+    """Raised when per-profile refill settings violate a range rule."""
+
+
+class ProfileStorageError(ContentFactoryError):
+    """Raised when per-profile settings cannot be read or written."""
+
+
+class ProfilePreviewError(ContentFactoryError):
+    """Raised when a profile preview frame cannot be extracted."""

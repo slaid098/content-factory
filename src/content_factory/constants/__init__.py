@@ -9,6 +9,7 @@ from content_factory.constants.paths import (
     DB_DIR,
     DB_FILENAME,
     GENERATED_DIR,
+    PREVIEW_DIR,
     PROFILES_DIR,
     QUERIES_DIR,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "GENERATED_DIR",
     "LANGUAGE_CODE_RE",
     "NICHE_CODE_RE",
+    "PREVIEW_DIR",
     "PROFILES_DIR",
     "QUERIES_DIR",
 ]
