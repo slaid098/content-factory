@@ -65,8 +65,9 @@ def block_boxes(profile: _Profile, overlay: _Overlay) -> tuple[_TextBox, ...]:
         lines = _wrap(block.lines, font, max_text_width, break_words=style.hug_text)
         if not lines:
             continue
-        y_pct = style.block1_y if index == 0 else _second_y(style)
-        box = _box(profile, style, index, lines, font, font_px, y_pct)
+        number = len(boxes) if style.hug_text else index
+        y_pct = style.block1_y if number == 0 else _second_y(style)
+        box = _box(profile, style, number, lines, font, font_px, y_pct)
         if style.hug_text and boxes:
             box = _below(box, boxes[-1], int(style.gap * profile.height))
         boxes.append(box)

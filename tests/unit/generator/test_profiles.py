@@ -173,6 +173,9 @@ def test_missing_required_keys_are_reported(tmp_path: Path) -> None:
         ("inet_up_cost", -0.1, "отрицательным"),
         ("cfg", "high", "должен быть числом"),
         ("block2_y", "top", "ожидалось число"),
+        ("block2_y", float("inf"), "конечное число"),
+        ("size", float("nan"), "конечным числом"),
+        ("block2_alpha", "wide", "целое число"),
         ("text_bg_alpha", "opaque", "непрозрачность"),
     ],
 )
@@ -300,6 +303,15 @@ def test_optional_profile_values_are_normalized(tmp_path: Path) -> None:
 
     with pytest.raises(ProfileError, match="size должен быть числом"):
         _float_or("wide", 0.06, "size")
+
+    with pytest.raises(ProfileError, match="size должен быть конечным"):
+        _float_or(float("nan"), 0.06, "size")
+
+    with pytest.raises(ProfileError, match="конечное число"):
+        _optional_number(float("inf"))
+
+    with pytest.raises(ProfileError, match="целое число"):
+        _optional_int("wide")
 
     with pytest.raises(ProfileError, match="hug_text"):
         _bool_or("false", False, "hug_text")

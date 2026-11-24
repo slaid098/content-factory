@@ -269,6 +269,18 @@ def test_hug_text_blocks_stack_with_profile_gap(tmp_path: Path, monkeypatch) -> 
     assert boxes[1].top == boxes[0].top + boxes[0].height + gap
 
 
+def test_hug_text_ignores_an_empty_first_block(tmp_path: Path, monkeypatch) -> None:
+    profile = fixture_profile(tmp_path / "profiles", hug_text=True)
+    _patch_font(monkeypatch)
+    card = _Overlay(blocks=(_TextBlock(lines=("   ",)), _TextBlock(lines=("Второй",))))
+
+    boxes = block_boxes(profile, card)
+
+    assert len(boxes) == 1
+    assert abs(boxes[0].top + boxes[0].height / 2 - profile.style.block1_y * profile.height) <= 1
+    assert boxes[0].background == (255, 241, 220, 215)
+
+
 def test_hug_text_stack_moves_up_to_fit_the_frame(tmp_path: Path, monkeypatch) -> None:
     profile = fixture_profile(tmp_path / "profiles", hug_text=True)
     profile = replace(profile, style=replace(profile.style, block1_y=0.95))

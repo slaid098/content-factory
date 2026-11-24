@@ -9,6 +9,7 @@ live in ``<profiles>/_shared``.
 from __future__ import annotations
 
 import json
+import math
 import random
 import re
 from collections.abc import Mapping
@@ -465,7 +466,12 @@ def _optional_str(value: object) -> str | None:
 
 def _optional_int(value: object) -> int | None:
     """Optional integer."""
-    return None if value is None else int(str(value))
+    if value is None:
+        return None
+    try:
+        return int(str(value))
+    except (TypeError, ValueError) as ex:
+        raise ProfileError(f"ожидалось целое число, получено {value!r}") from ex
 
 
 def _optional_number(value: object) -> float | None:
@@ -473,9 +479,12 @@ def _optional_number(value: object) -> float | None:
     if value is None:
         return None
     try:
-        return float(str(value))
+        number = float(str(value))
     except (TypeError, ValueError) as ex:
         raise ProfileError(f"ожидалось число, получено {value!r}") from ex
+    if not math.isfinite(number):
+        raise ProfileError(f"ожидалось конечное число, получено {value!r}")
+    return number
 
 
 def _alpha(value: object) -> int:
@@ -493,9 +502,12 @@ def _float_or(value: object, default: float, key: str) -> float:
     if value is None:
         return default
     try:
-        return float(str(value))
+        number = float(str(value))
     except (TypeError, ValueError) as ex:
         raise ProfileError(f"{key} должен быть числом: {value!r}") from ex
+    if not math.isfinite(number):
+        raise ProfileError(f"{key} должен быть конечным числом: {value!r}")
+    return number
 
 
 def _bool_or(value: object, default: bool, key: str) -> bool:
