@@ -197,9 +197,7 @@ def test_hug_text_wraps_at_profile_text_width(tmp_path: Path, monkeypatch) -> No
     assert all(font.getlength(line) <= limit for line in boxes[0].lines)
 
 
-def test_hug_text_breaks_a_word_wider_than_the_text_limit(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_hug_text_breaks_a_word_wider_than_the_text_limit(tmp_path: Path, monkeypatch) -> None:
     profile = fixture_profile(tmp_path / "profiles")
     profile = replace(profile, style=replace(profile.style, hug_text=True, max_text_width=0.2))
     _patch_font(monkeypatch)
