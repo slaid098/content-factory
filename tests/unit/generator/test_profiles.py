@@ -14,6 +14,7 @@ from content_factory.exceptions.generator import ProfileError
 from content_factory.services.generator.profiles import (
     _age_text,
     _alpha,
+    _bool_or,
     _float_or,
     _optional_int,
     _optional_number,
@@ -288,12 +289,20 @@ def test_optional_profile_values_are_normalized(tmp_path: Path) -> None:
     assert _alpha(None) == 255
     assert _alpha("300") == 255
     assert _alpha("-1") == 0
-    assert _float_or(None, 0.5) == 0.5
-    assert _float_or("0.25", 0.5) == 0.25
+    assert _float_or(None, 0.5, "size") == 0.5
+    assert _float_or("0.25", 0.5, "size") == 0.25
+    assert _bool_or(None, False, "hug_text") is False
+    assert _bool_or(True, False, "hug_text") is True
     assert _profile_name(tmp_path / "outside", tmp_path / "root") == "outside"
 
     with pytest.raises(ProfileError, match="ожидалось число"):
         _optional_number("x")
+
+    with pytest.raises(ProfileError, match="size должен быть числом"):
+        _float_or("wide", 0.06, "size")
+
+    with pytest.raises(ProfileError, match="hug_text"):
+        _bool_or("false", False, "hug_text")
 
     with pytest.raises(ProfileError, match="непрозрачность"):
         _alpha("x")
@@ -306,8 +315,39 @@ def test_overlay_hug_options_are_read(tmp_path: Path) -> None:
     assert profile.style.max_text_width == 0.7
 
 
-def test_bad_text_width_fails_before_rent(tmp_path: Path) -> None:
-    make_profile(tmp_path / "profiles", max_text_width=1.5)
+def test_text_width_defaults_to_the_full_card_limit(tmp_path: Path) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+
+    assert profile.style.max_text_width == 0.86
+
+
+@pytest.mark.parametrize("value", [0.2, 0.9])
+def test_text_width_bounds_are_accepted(tmp_path: Path, value: float) -> None:
+    profile = fixture_profile(tmp_path / "profiles", max_text_width=value)
+
+    assert profile.style.max_text_width == value
+
+
+@pytest.mark.parametrize("value", [0.19, 0.91, 1.5, "wide"])
+def test_bad_text_width_fails_before_rent(tmp_path: Path, value: object) -> None:
+    make_profile(tmp_path / "profiles", max_text_width=value)
 
     with pytest.raises(ProfileError, match="max_text_width"):
+        load_profile("dating/profile_2", tmp_path / "profiles")
+
+
+@pytest.mark.parametrize("value", [-0.1, 1.1])
+def test_bad_gap_fails_before_rent(tmp_path: Path, value: float) -> None:
+    fixture_profile(tmp_path / "profiles")
+    _rewrite(tmp_path / "profiles", gap=value)
+
+    with pytest.raises(ProfileError, match="gap"):
+        load_profile("dating/profile_2", tmp_path / "profiles")
+
+
+def test_hug_text_must_be_boolean(tmp_path: Path) -> None:
+    fixture_profile(tmp_path / "profiles")
+    _rewrite(tmp_path / "profiles", hug_text="false")
+
+    with pytest.raises(ProfileError, match="hug_text"):
         load_profile("dating/profile_2", tmp_path / "profiles")

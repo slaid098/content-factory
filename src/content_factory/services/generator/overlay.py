@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -12,7 +13,8 @@ from content_factory.services.generator import media
 from content_factory.services.generator.profiles import _OverlayStyle, _Profile
 from content_factory.services.generator.texts import _Overlay
 
-_MIN_FONT_PX = 12
+_MIN_HUG_FONT_PX = 12
+_FULL_WIDTH_MIN_FONT_PX = 20
 _HORIZONTAL_PAD = 0.04
 _LINE_HEIGHT = 1.28
 _BOX_RADIUS = 18
@@ -43,7 +45,8 @@ def block_boxes(profile: _Profile, overlay: _Overlay) -> tuple[_TextBox, ...]:
     The first block sits at ``block1_y``. With ``hug_text`` every next block
     follows the previous one with ``gap`` of empty frame space; otherwise the
     next block sits at ``block2_y``. The second block receives the accent
-    colours of the profile.
+    colours of the profile. A hug stack that does not fit moves up as a whole;
+    a stack taller than the frame fails instead of drawing a cut card.
 
     Args:
         profile: Loaded profile with frame size and text style.
@@ -53,26 +56,45 @@ def block_boxes(profile: _Profile, overlay: _Overlay) -> tuple[_TextBox, ...]:
         Boxes in block order.
     """
     style = profile.style
-    font_px = max(_MIN_FONT_PX, int(profile.width * style.font_size))
+    floor = _MIN_HUG_FONT_PX if style.hug_text else _FULL_WIDTH_MIN_FONT_PX
+    font_px = max(floor, int(profile.width * style.font_size))
     font = _load_font(profile.font, font_px)
     max_text_width = int(profile.width * style.max_text_width)
     boxes: list[_TextBox] = []
     for index, block in enumerate(overlay.blocks):
-        lines = _wrap(block.lines, font, max_text_width)
+        lines = _wrap(block.lines, font, max_text_width, break_words=style.hug_text)
         if not lines:
             continue
         y_pct = style.block1_y if index == 0 else _second_y(style)
-        box = _box(profile, style, index, lines, font_px, y_pct)
+        box = _box(profile, style, index, lines, font, font_px, y_pct)
         if style.hug_text and boxes:
-            box = _below(box, boxes[-1], int(style.gap * profile.height), profile.height)
+            box = _below(box, boxes[-1], int(style.gap * profile.height))
         boxes.append(box)
-    return tuple(boxes)
+    return _fit_stack(tuple(boxes), profile.height) if style.hug_text else tuple(boxes)
 
 
-def _below(box: _TextBox, previous: _TextBox, gap: int, frame_height: int) -> _TextBox:
+def _below(box: _TextBox, previous: _TextBox, gap: int) -> _TextBox:
     """Place *box* right below *previous*, keeping *gap* pixels between them."""
-    top = previous.top + previous.height + gap
-    return replace(box, top=max(0, min(top, frame_height - box.height)))
+    return replace(box, top=previous.top + previous.height + gap)
+
+
+def _fit_stack(boxes: tuple[_TextBox, ...], frame_height: int) -> tuple[_TextBox, ...]:
+    """Move a hug stack up so its last card ends inside the frame.
+
+    Raises:
+        OverlayError: The stack is taller than the frame and cannot fit.
+    """
+    if not boxes:
+        return boxes
+    bottom = boxes[-1].top + boxes[-1].height
+    if bottom <= frame_height:
+        return boxes
+    shift = bottom - frame_height
+    if boxes[0].top < shift:
+        raise OverlayError(
+            f"текст не помещается в кадр: нижняя кромка {bottom} при высоте {frame_height}"
+        )
+    return tuple(replace(box, top=box.top - shift) for box in boxes)
 
 
 def _second_y(style: _OverlayStyle) -> float:
@@ -151,6 +173,7 @@ def _box(
     style: _OverlayStyle,
     index: int,
     lines: tuple[str, ...],
+    font: ImageFont.FreeTypeFont,
     font_px: int,
     y_pct: float,
 ) -> _TextBox:
@@ -161,12 +184,12 @@ def _box(
     """
     background, color = _colors(style, index)
     if style.hug_text:
-        font = _load_font(profile.font, font_px)
         pad_x = max(10, int(profile.width * _HUG_PAD_X))
         pad_y = max(7, int(font_px * _HUG_PAD_Y))
         line_h = _line_height(style, font_px)
         width = max(int(font.getlength(line)) for line in lines) + 2 * pad_x
-        left = (profile.width - width) // 2
+        width = min(width, profile.width)
+        left = max(0, (profile.width - width) // 2)
     else:
         pad_x = int(profile.width * _HORIZONTAL_PAD)
         pad_y = font_px // 3
@@ -259,25 +282,56 @@ def _command(source: Path, card: Path, output: Path, audio: Path | None) -> list
     return command
 
 
-def _wrap(lines: tuple[str, ...], font: ImageFont.FreeTypeFont, max_width: int) -> tuple[str, ...]:
+def _wrap(
+    lines: tuple[str, ...],
+    font: ImageFont.FreeTypeFont,
+    max_width: int,
+    *,
+    break_words: bool = False,
+) -> tuple[str, ...]:
     """Wrap card lines by words so they fit the frame width."""
     wrapped: list[str] = []
     for line in lines:
         words = line.split()
         if not words:
             continue
-        current = words[0]
-        for word in words[1:]:
-            candidate = f"{current} {word}"
-            if font.getlength(candidate) <= max_width:
-                current = candidate
+        current = ""
+        for word in words:
+            if break_words and font.getlength(word) > max_width:
+                if current:
+                    wrapped.append(current)
+                    current = ""
+                wrapped.extend(_chunks(word, font, max_width))
+                continue
+            if not current:
+                current = word
+            elif font.getlength(f"{current} {word}") <= max_width:
+                current = f"{current} {word}"
             else:
                 wrapped.append(current)
                 current = word
-        wrapped.append(current)
+        if current:
+            wrapped.append(current)
     return tuple(wrapped)
 
 
+def _chunks(word: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
+    """Split one overlong word into pieces that fit *max_width*."""
+    chunks: list[str] = []
+    chunk = ""
+    for char in word:
+        candidate = chunk + char
+        if chunk and font.getlength(candidate) > max_width:
+            chunks.append(chunk)
+            chunk = char
+        else:
+            chunk = candidate
+    if chunk:
+        chunks.append(chunk)
+    return chunks
+
+
+@lru_cache(maxsize=8)
 def _load_font(path: Path, size: int) -> ImageFont.FreeTypeFont:
     """Load the profile font; tests replace this seam."""
     try:
