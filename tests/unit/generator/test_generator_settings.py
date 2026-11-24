@@ -92,6 +92,23 @@ def test_offer_refresh_rejects_values_outside_the_window(monkeypatch, value: str
         load_generator_settings()
 
 
+def test_stale_instance_hours_defaults_to_three() -> None:
+    assert GeneratorSettings().stale_instance_hours == 3
+
+
+def test_stale_instance_hours_reads_the_env(monkeypatch) -> None:
+    monkeypatch.setenv("GENERATOR_STALE_INSTANCE_HOURS", "5")
+
+    assert GeneratorSettings().stale_instance_hours == 5
+
+
+def test_stale_instance_hours_rejects_zero(monkeypatch) -> None:
+    monkeypatch.setenv("GENERATOR_STALE_INSTANCE_HOURS", "0")
+
+    with pytest.raises(ConfigError, match="GENERATOR_STALE_INSTANCE_HOURS"):
+        load_generator_settings()
+
+
 def test_bad_openai_base_url_names_the_variable_without_raw_value(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_BASE_URL", "ftp://secret-host")
 

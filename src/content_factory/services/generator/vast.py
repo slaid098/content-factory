@@ -40,9 +40,8 @@ class _RentCancelled(RentError):
 
 @dataclass
 class _PoolState:
-    """Threads, deadline and outcomes shared by one floating rent pool."""
+    """Threads and outcomes shared by one floating rent pool."""
 
-    deadline: float
     stop: threading.Event = field(default_factory=threading.Event)
     outcomes: queue.Queue[ServerInfo | RentError] = field(default_factory=queue.Queue)
     workers: list[threading.Thread] = field(default_factory=list)
@@ -187,15 +186,15 @@ class VastSession:
         """Keep a floating pool of one verified pass full until a server is ready.
 
         New offers are searched at most once per ``offer_refresh_seconds`` and
-        fill free slots only. Every member shares one ``server_ready_timeout``
-        deadline; the first ready server wins and every other member is
-        destroyed before the pool returns.
+        fill free slots only. Every attempt waits its own
+        ``server_ready_timeout`` from the moment it starts; the first ready
+        server wins and every other member is destroyed before the pool returns.
 
         Raises:
             _TeardownError: A loser is still listed after ``destroy_verified``.
-            RentError: No member became ready and no fresh offer appeared.
+            RentError: The market ran dry before any member became ready.
         """
-        state = _PoolState(deadline=self._clock() + self._settings.server_ready_timeout)
+        state = _PoolState()
         try:
             result = self._pool_loop(provider, verified, used_offers, used_ips, state)
         finally:
@@ -234,14 +233,8 @@ class VastSession:
                 return result
             now = self._clock()
             active = self._active(state)
-            expired = now >= state.deadline
-            if expired and active == 0:
-                return self._final_result(
-                    state, last, "дедлайн пула аренды истёк, готового сервера нет"
-                )
             if (
-                not expired
-                and active < size
+                active < size
                 and not state.stop.is_set()
                 and now >= last_search + self._settings.offer_refresh_seconds
             ):
@@ -252,7 +245,7 @@ class VastSession:
                 result, last = self._pool_outcomes(state, last)
                 if result is not None:
                     return result
-                if state.stop.is_set() or self._clock() >= state.deadline:
+                if state.stop.is_set():
                     continue
                 added = self._start_attempts(provider, fresh, state)
                 active = self._active(state)
@@ -282,7 +275,6 @@ class VastSession:
             now,
             last_search,
             self._settings.offer_refresh_seconds,
-            state.deadline,
         )
         if state.stop.is_set():
             pause = min(pause, _POOL_TICK_SECONDS)
@@ -310,11 +302,15 @@ class VastSession:
     def _final_result(
         self, state: _PoolState, last: RentError | None, empty_error: str
     ) -> ServerInfo | RentError:
-        """Read outcomes once more after every worker has finished."""
+        """Read outcomes once more and return the last failure reason."""
         result, last = self._pool_outcomes(state, last)
         if result is not None:
             return result
-        return last or RentError(empty_error)
+        reason = last or RentError(empty_error)
+        logger.bind(error=str(reason), error_type=type(reason).__name__).warning(
+            "Пул аренды завершён без готового сервера"
+        )
+        return reason
 
     def _start_attempts(
         self,
@@ -329,7 +325,7 @@ class VastSession:
                 break
             worker = threading.Thread(
                 target=self._attempt,
-                args=(provider, offer, state.deadline, state.stop, state.outcomes),
+                args=(provider, offer, state.stop, state.outcomes),
                 name=f"vast-rent-{offer.get('id')}",
                 daemon=True,
             )
@@ -342,34 +338,31 @@ class VastSession:
         self,
         provider: VastProvider,
         offer: Mapping[str, Any],
-        deadline: float,
         stop: threading.Event,
         outcomes: queue.Queue[ServerInfo | RentError],
     ) -> None:
         """Rent one pool candidate and report its ready server or failure."""
-        if stop.is_set() or self._clock() >= deadline:
+        if stop.is_set():
             return
         contract_id: str | None = None
+        deadline = self._clock() + self._settings.server_ready_timeout
         try:
             contract_id = self._create(provider, offer)
             connection = self._wait_ready(provider, contract_id, deadline=deadline, stop=stop)
         except _RentCancelled:
             return
         except RentError as ex:
+            _log_attempt_failure(contract_id, deadline, ex)
             outcomes.put(self._failed_candidate(provider, contract_id, ex))
         except Exception as ex:  # noqa: BLE001 — a provider bug must not stall the pool
-            outcomes.put(
-                self._failed_candidate(
-                    provider,
-                    contract_id,
-                    RentError(f"{type(ex).__name__}: {ex}"),
-                )
-            )
+            error = RentError(f"{type(ex).__name__}: {ex}")
+            _log_attempt_failure(contract_id, deadline, error)
+            outcomes.put(self._failed_candidate(provider, contract_id, error))
         else:
             stop.set()
-            logger.bind(contract_id=contract_id, gpu=connection.gpu, ip=connection.ip).info(
-                "Сервер ComfyUI готов"
-            )
+            logger.bind(
+                contract_id=contract_id, deadline=deadline, gpu=connection.gpu, ip=connection.ip
+            ).info("Сервер ComfyUI готов")
             outcomes.put(
                 ServerInfo(
                     connection=connection,
@@ -501,7 +494,7 @@ class VastSession:
         Args:
             provider: Vast.ai CLI provider.
             contract_id: Rented instance.
-            deadline: Shared pool deadline; defaults to one ready timeout.
+            deadline: Deadline of this attempt; defaults to one ready timeout.
             stop: Set when another pool member won; the wait is abandoned and
                 the contract stays tracked for the main thread to destroy.
 
@@ -680,12 +673,21 @@ def _pool_pause(
     now: float,
     last_search: float,
     refresh: int,
-    deadline: float,
 ) -> float:
     """Return how long the coordinator naps before its next pool check."""
     if active:
         return _POOL_TICK_SECONDS
-    return max(0.0, min(last_search + refresh - now, deadline - now))
+    return max(0.0, last_search + refresh - now)
+
+
+def _log_attempt_failure(contract_id: str | None, deadline: float, error: RentError) -> None:
+    """Log a failed attempt with its contract, deadline and reason."""
+    logger.bind(
+        contract_id=contract_id,
+        deadline=deadline,
+        error=str(error),
+        error_type=type(error).__name__,
+    ).warning("Попытка аренды не дала готовый сервер")
 
 
 def _log_pool(added: int, active: int) -> None:

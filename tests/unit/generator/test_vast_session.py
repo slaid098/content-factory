@@ -691,11 +691,10 @@ def test_pool_does_not_rent_when_a_winner_appears_during_a_blocking_search(
     assert state[0] < 60
 
 
-def test_pool_does_not_rent_when_the_search_crosses_the_deadline(
-    tmp_path: Path, monkeypatch
-) -> None:
-    provider = _RefillProvider(searches=[["1"], ["1", "2"]])
+def test_pool_gives_a_later_offer_its_own_full_ready_timeout(tmp_path: Path, monkeypatch) -> None:
+    provider = _RefillProvider(searches=[["1"], [], [], [], [], [], ["2"]])
     state, clock, sleep = _refill_clock(monkeypatch)
+    monkeypatch.setattr(vast, "_POLL_SECONDS", 5.0)
     session = VastSession(
         fixture_profile(tmp_path / "profiles"),
         _settings(
@@ -708,21 +707,73 @@ def test_pool_does_not_rent_when_the_search_crosses_the_deadline(
         sleep=sleep,
         clock=clock,
     )
-    search = provider.search_offers
+    wait = session._wait_ready
+    budgets: list[tuple[str, float]] = []
 
-    def slow_search(query: dict[str, Any]) -> list[dict[str, Any]]:
-        offers = search(query)
-        if len(provider.queries) == 2:
-            state[0] = 65.0
-        return offers
+    def recording_wait(
+        provider: Any,
+        contract_id: str,
+        *,
+        deadline: float | None = None,
+        stop: threading.Event | None = None,
+    ) -> ServerConnection:
+        assert deadline is not None
+        budgets.append((contract_id, deadline - clock()))
+        return wait(provider, contract_id, deadline=deadline, stop=stop)
 
-    provider.search_offers = slow_search  # type: ignore[method-assign]
+    session._wait_ready = recording_wait  # type: ignore[method-assign]
 
     with pytest.raises(RentError, match="годного сервера"):
         session._rent(provider)
 
-    assert [config["offer_id"] for config in provider.created] == ["1"]
-    assert state[0] >= 60
+    assert budgets == [("c1", 60.0), ("c2", 60.0)]
+    assert state[0] > 60
+    assert sorted(provider.destroyed) == ["c1", "c2"]
+    assert session._contracts == set()
+
+
+def test_sequential_path_gives_every_offer_its_own_full_ready_timeout(
+    tmp_path: Path, monkeypatch
+) -> None:
+    provider = _PoolProvider(
+        offers=[
+            {"id": "1", "public_ipaddr": "10.0.0.1"},
+            {"id": "2", "public_ipaddr": "10.0.0.2"},
+        ],
+        ready="",
+    )
+    state, clock, sleep = _refill_clock(monkeypatch)
+    monkeypatch.setattr(vast, "_POLL_SECONDS", 5.0)
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(tmp_path, rent_pool_size=1, server_ready_timeout=60),
+        provider=provider,
+        sleep=sleep,
+        clock=clock,
+    )
+    wait = session._wait_ready
+    starts: list[tuple[str, float]] = []
+
+    def recording_wait(
+        provider: Any,
+        contract_id: str,
+        *,
+        deadline: float | None = None,
+        stop: threading.Event | None = None,
+    ) -> ServerConnection:
+        starts.append((contract_id, clock()))
+        return wait(provider, contract_id, deadline=deadline, stop=stop)
+
+    session._wait_ready = recording_wait  # type: ignore[method-assign]
+
+    with pytest.raises(RentError, match="годного сервера"):
+        session._rent(provider)
+
+    assert [contract_id for contract_id, _ in starts] == ["c1", "c2"]
+    assert starts[1][1] >= 60
+    assert state[0] >= 120
+    assert sorted(provider.destroyed) == ["c1", "c2"]
+    assert session._contracts == set()
 
 
 def test_pool_stops_renting_when_a_ready_worker_is_not_yet_reported(
@@ -828,12 +879,12 @@ def test_pool_does_not_rent_after_stop(tmp_path: Path) -> None:
         _settings(tmp_path, rent_pool_size=2),
         provider=provider,
     )
-    pool_state = vast._PoolState(deadline=session._clock() + 60)
+    pool_state = vast._PoolState()
     pool_state.stop.set()
     offers = [{"id": "1"}]
 
     started = session._start_attempts(provider, offers, pool_state)
-    session._attempt(provider, offers[0], pool_state.deadline, pool_state.stop, pool_state.outcomes)
+    session._attempt(provider, offers[0], pool_state.stop, pool_state.outcomes)
 
     assert started == 0
     assert provider.created == []
@@ -844,7 +895,7 @@ def test_pool_does_not_rent_after_stop(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("searches", "refresh", "inject_at"),
     [([["1"]], 600, 2), ([["1"], []], 10, 3)],
-    ids=["deadline", "empty_refill"],
+    ids=["refresh", "empty_refill"],
 )
 def test_pool_reads_a_winner_that_arrives_after_the_outcome_drain(
     tmp_path: Path,
