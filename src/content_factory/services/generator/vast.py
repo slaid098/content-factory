@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import queue
+import threading
 import time
 from collections.abc import Callable, Mapping
 from typing import Any
@@ -30,6 +32,10 @@ class _TeardownError(RentError):
     """A failed rental could not be destroyed; no further server may be rented."""
 
 
+class _RentCancelled(RentError):
+    """Another pool member won; the server is left for the main thread to destroy."""
+
+
 class VastSession:
     """One rented, ready ComfyUI server with a guaranteed teardown."""
 
@@ -48,6 +54,7 @@ class VastSession:
         self._provider = provider
         self._sleep = sleep
         self._clock = clock
+        self._lock = threading.Lock()
         self._contract_id: str | None = None
         self._contracts: set[str] = set()
         self._info: ServerInfo | None = None
@@ -72,52 +79,210 @@ class VastSession:
             RentError: At least one instance is still listed after every
                 attempt. Remaining contract ids stay tracked for a retry.
         """
-        if not self._contracts:
+        if not self._tracked():
             return
         provider = self._provider
         if provider is None:
             raise RentError("нет провайдера Vast.ai для уничтожения сервера")
         errors: list[str] = []
-        for contract_id in sorted(self._contracts):
+        for contract_id in sorted(self._tracked()):
             try:
                 destroy_verified(provider, contract_id)
             except RentError as ex:
                 errors.append(str(ex))
                 continue
-            self._contracts.discard(contract_id)
-            if self._contract_id == contract_id:
-                self._contract_id = None
+            self._untrack(contract_id)
             logger.bind(contract_id=contract_id).info("Сервер уничтожен и проверен")
         if errors:
             raise RentError("; ".join(errors))
 
     def _rent(self, provider: VastProvider) -> ServerInfo:
-        """Try offers of every verified pass until one server is ready."""
+        """Race offers of every verified pass until one server is ready."""
         used_offers: set[str] = set()
         used_ips: set[str] = set()
         last: Exception | None = None
         for verified in _VERIFIED_PASSES:
-            for offer in _offers(provider, self._profile, self._settings, verified):
-                offer_id = str(offer.get("id", ""))
-                ip = str(offer.get("public_ipaddr") or "")
-                if not offer_id or offer_id in used_offers or (ip and ip in used_ips):
-                    continue
-                used_offers.add(offer_id)
-                if ip:
-                    used_ips.add(ip)
+            candidates = self._candidates(provider, verified, used_offers, used_ips)
+            for batch in _batches(candidates, self._settings.rent_pool_size):
                 try:
-                    return self._rent_offer(provider, offer)
+                    return self._rent_batch(provider, batch)
                 except _TeardownError:
                     raise
                 except RentError as ex:
                     last = ex
                     logger.bind(error=str(ex), error_type=type(ex).__name__).warning(
-                        "Оффер не подошёл — следующий"
+                        "Пул офферов не подошёл — следующие"
                     )
         raise RentError(f"годного сервера Vast.ai нет: {last}")
 
+    def _candidates(
+        self,
+        provider: VastProvider,
+        verified: bool | None,
+        used_offers: set[str],
+        used_ips: set[str],
+    ) -> list[Mapping[str, Any]]:
+        """Return the offers of one pass, cheapest first and never repeated."""
+        candidates: list[Mapping[str, Any]] = []
+        for offer in _offers(provider, self._profile, self._settings, verified):
+            offer_id = str(offer.get("id", ""))
+            ip = str(offer.get("public_ipaddr") or "")
+            if not offer_id or offer_id in used_offers or (ip and ip in used_ips):
+                continue
+            used_offers.add(offer_id)
+            if ip:
+                used_ips.add(ip)
+            candidates.append(offer)
+        return candidates
+
+    def _rent_batch(self, provider: VastProvider, offers: list[Mapping[str, Any]]) -> ServerInfo:
+        """Rent one pool; an offer without company keeps the sequential path."""
+        if len(offers) == 1:
+            return self._rent_offer(provider, offers[0])
+        return self._race(provider, offers)
+
+    def _race(self, provider: VastProvider, offers: list[Mapping[str, Any]]) -> ServerInfo:
+        """Rent the whole pool and return the first server that answers.
+
+        Every member shares one ``server_ready_timeout`` deadline. Losers are
+        destroyed only after their threads stop, so the winner stays the sole
+        tracked contract when the rental returns.
+
+        Raises:
+            _TeardownError: A loser is still listed after ``destroy_verified``.
+                It stays tracked for the final ``destroy()`` and the rental
+                stops, so no new paid server appears next to an orphan.
+        """
+        deadline = self._clock() + self._settings.server_ready_timeout
+        stop = threading.Event()
+        outcomes: queue.Queue[ServerInfo | RentError] = queue.Queue()
+        workers = [
+            threading.Thread(
+                target=self._attempt,
+                args=(provider, offer, deadline, stop, outcomes),
+                name=f"vast-rent-{offer.get('id')}",
+                daemon=True,
+            )
+            for offer in offers
+        ]
+        for worker in workers:
+            worker.start()
+        try:
+            winner, failure = self._collect(outcomes, len(workers))
+        finally:
+            stop.set()
+            for worker in workers:
+                worker.join()
+        if winner is None:
+            raise failure or RentError("пул аренды не дал готового сервера")
+        self._destroy_losers(provider, winner)
+        self._set_current(winner.connection.contract_id)
+        return winner
+
+    def _collect(
+        self, outcomes: queue.Queue[ServerInfo | RentError], size: int
+    ) -> tuple[ServerInfo | None, RentError | None]:
+        """Wait for the first ready server or for every candidate to fail."""
+        last: RentError | None = None
+        for _ in range(size):
+            outcome = outcomes.get()
+            if isinstance(outcome, ServerInfo):
+                return outcome, None
+            last = outcome
+            if isinstance(outcome, _TeardownError):
+                return None, outcome
+            logger.bind(error=str(outcome), error_type=type(outcome).__name__).warning(
+                "Кандидат пула не подошёл — ждём остальных"
+            )
+        return None, last
+
+    def _attempt(
+        self,
+        provider: VastProvider,
+        offer: Mapping[str, Any],
+        deadline: float,
+        stop: threading.Event,
+        outcomes: queue.Queue[ServerInfo | RentError],
+    ) -> None:
+        """Rent one pool candidate and report its ready server or failure."""
+        contract_id: str | None = None
+        try:
+            contract_id = self._create(provider, offer)
+            connection = self._wait_ready(provider, contract_id, deadline=deadline, stop=stop)
+        except _RentCancelled:
+            return
+        except RentError as ex:
+            outcomes.put(self._failed_candidate(provider, contract_id, ex))
+        except Exception as ex:  # noqa: BLE001 — a provider bug must not stall the pool
+            outcomes.put(
+                self._failed_candidate(
+                    provider,
+                    contract_id,
+                    RentError(f"{type(ex).__name__}: {ex}"),
+                )
+            )
+        else:
+            logger.bind(contract_id=contract_id, gpu=connection.gpu, ip=connection.ip).info(
+                "Сервер ComfyUI готов"
+            )
+            outcomes.put(
+                ServerInfo(
+                    connection=connection,
+                    cost_per_hour=_float_or_none(offer.get("dph_total")),
+                )
+            )
+
+    def _failed_candidate(
+        self, provider: VastProvider, contract_id: str | None, error: RentError
+    ) -> RentError:
+        """Destroy a failed pool member and return the failure for the queue."""
+        if contract_id is None:
+            return error
+        try:
+            self._destroy_after_failure(provider, contract_id)
+        except _TeardownError as teardown:
+            return teardown
+        return error
+
+    def _destroy_losers(self, provider: VastProvider, winner: ServerInfo) -> None:
+        """Destroy every tracked pool member except the winner.
+
+        Raises:
+            _TeardownError: A loser is still listed after ``destroy_verified``.
+                It stays tracked for the final ``destroy()``.
+        """
+        keep = winner.connection.contract_id
+        errors: list[str] = []
+        for contract_id in sorted(self._tracked() - {keep}):
+            try:
+                destroy_verified(provider, contract_id)
+            except RentError as ex:
+                errors.append(f"проигравший сервер {contract_id} не уничтожен: {ex}")
+                continue
+            self._untrack(contract_id)
+            logger.bind(contract_id=contract_id).info("Проигравший сервер уничтожен")
+        if errors:
+            raise _TeardownError("; ".join(errors))
+
     def _rent_offer(self, provider: VastProvider, offer: Mapping[str, Any]) -> ServerInfo:
         """Create one instance and wait for its ComfyUI."""
+        contract_id = self._create(provider, offer)
+        self._set_current(contract_id)
+        try:
+            connection = self._wait_ready(provider, contract_id)
+        except RentError:
+            self._destroy_after_failure(provider, contract_id)
+            raise
+        logger.bind(contract_id=contract_id, gpu=connection.gpu, ip=connection.ip).info(
+            "Сервер ComfyUI готов"
+        )
+        return ServerInfo(
+            connection=connection,
+            cost_per_hour=_float_or_none(offer.get("dph_total")),
+        )
+
+    def _create(self, provider: VastProvider, offer: Mapping[str, Any]) -> str:
+        """Rent one offer and track its contract until a verified teardown."""
         offer_id = str(offer.get("id") or "").strip()
         if not offer_id:
             raise RentError("Vast.ai вернул оффер без id")
@@ -131,20 +296,30 @@ class VastSession:
                 "onstart_cmd": "bash /start.sh",
             }
         )
-        self._contract_id = contract_id
-        self._contracts.add(contract_id)
-        try:
-            connection = self._wait_ready(provider, contract_id)
-        except RentError:
-            self._destroy_after_failure(provider, contract_id)
-            raise
-        logger.bind(contract_id=contract_id, gpu=connection.gpu, ip=connection.ip).info(
-            "Сервер ComfyUI готов"
-        )
-        return ServerInfo(
-            connection=connection,
-            cost_per_hour=_float_or_none(offer.get("dph_total")),
-        )
+        self._track(contract_id)
+        return contract_id
+
+    def _track(self, contract_id: str) -> None:
+        """Remember a rented contract until its verified teardown."""
+        with self._lock:
+            self._contracts.add(contract_id)
+
+    def _untrack(self, contract_id: str) -> None:
+        """Forget a destroyed contract and clear it as the current one."""
+        with self._lock:
+            self._contracts.discard(contract_id)
+            if self._contract_id == contract_id:
+                self._contract_id = None
+
+    def _set_current(self, contract_id: str) -> None:
+        """Mark the contract the session currently uses."""
+        with self._lock:
+            self._contract_id = contract_id
+
+    def _tracked(self) -> set[str]:
+        """Return a snapshot of the contracts that may still be alive."""
+        with self._lock:
+            return set(self._contracts)
 
     def _destroy_after_failure(self, provider: VastProvider, contract_id: str) -> None:
         """Destroy a failed rental; an unverified teardown stops the rental loop.
@@ -164,14 +339,33 @@ class VastSession:
             raise _TeardownError(
                 f"сервер {contract_id} не уничтожен после сбоя аренды: {ex}"
             ) from ex
-        self._contracts.discard(contract_id)
-        if self._contract_id == contract_id:
-            self._contract_id = None
+        self._untrack(contract_id)
 
-    def _wait_ready(self, provider: VastProvider, contract_id: str) -> ServerConnection:
-        """Wait for the public port, then for the ComfyUI health endpoint."""
-        deadline = self._clock() + self._settings.server_ready_timeout
+    def _wait_ready(
+        self,
+        provider: VastProvider,
+        contract_id: str,
+        *,
+        deadline: float | None = None,
+        stop: threading.Event | None = None,
+    ) -> ServerConnection:
+        """Wait for the public port, then for the ComfyUI health endpoint.
+
+        Args:
+            provider: Vast.ai CLI provider.
+            contract_id: Rented instance.
+            deadline: Shared pool deadline; defaults to one ready timeout.
+            stop: Set when another pool member won; the wait is abandoned and
+                the contract stays tracked for the main thread to destroy.
+
+        Raises:
+            RentError: The host did not publish a port in time.
+            _RentCancelled: Another pool member won first.
+        """
+        if deadline is None:
+            deadline = self._clock() + self._settings.server_ready_timeout
         while self._clock() < deadline:
+            _raise_if_cancelled(stop)
             try:
                 instance = provider.show_instance(contract_id)
             except RentError:
@@ -179,18 +373,23 @@ class VastSession:
             if instance is not None:
                 connection = connection_from_instance(contract_id, instance)
                 if connection is not None:
-                    return self._wait_health(connection)
+                    return self._wait_health(connection, stop=stop)
+            _raise_if_cancelled(stop)
             self._sleep(_POLL_SECONDS)
         raise RentError(
             f"хост не выдал IP/порт за {self._settings.server_ready_timeout} с — образ не скачался"
         )
 
-    def _wait_health(self, connection: ServerConnection) -> ServerConnection:
+    def _wait_health(
+        self, connection: ServerConnection, *, stop: threading.Event | None = None
+    ) -> ServerConnection:
         """Wait until ComfyUI answers ``/system_stats``."""
         deadline = self._clock() + self._settings.comfy_health_timeout
         while self._clock() < deadline:
+            _raise_if_cancelled(stop)
             if _healthy(connection):
                 return connection
+            _raise_if_cancelled(stop)
             self._sleep(_POLL_SECONDS)
         raise RentError(
             f"ComfyUI не ожил за {self._settings.comfy_health_timeout} с — сервер дохлый"
@@ -317,6 +516,22 @@ def destroy_verified(
     raise RentError(
         f"сервер {contract_id} не уничтожен за {attempts} попыток — погасите вручную в кабинете"
     )
+
+
+def _batches(offers: list[Mapping[str, Any]], size: int) -> list[list[Mapping[str, Any]]]:
+    """Split offers into pools of at most *size* candidates, cheapest first."""
+    step = max(1, size)
+    return [offers[start : start + step] for start in range(0, len(offers), step)]
+
+
+def _raise_if_cancelled(stop: threading.Event | None) -> None:
+    """Abandon a wait once another pool member has won.
+
+    Raises:
+        _RentCancelled: The pool already has a ready server.
+    """
+    if stop is not None and stop.is_set():
+        raise _RentCancelled("пул уже получил готовый сервер")
 
 
 def _offers(

@@ -199,6 +199,7 @@ class GeneratorSettings(_OpenAIEndpointSettings):
     vast_api_token: SecretStr | None = Field(default=None, validation_alias="VAST_API_TOKEN")
     model: str = Field(default="deepseek-v4.1-flash", min_length=1)
     server_ready_timeout: int = Field(default=3600, ge=60)
+    rent_pool_size: int = Field(default=3, ge=1, le=8)
     comfy_health_timeout: int = Field(default=300, ge=10)
     max_cost_per_hour: float | None = Field(default=None, gt=0)
     stale_instance_hours: int = Field(default=6, ge=1)
