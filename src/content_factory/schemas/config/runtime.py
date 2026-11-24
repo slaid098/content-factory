@@ -85,6 +85,18 @@ class DeliveryConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class GeneratorConfig:
+    """Global stock goal of one generator profile and its refill threshold.
+
+    A profile may override both values; without an override the generator
+    refill uses these numbers.
+    """
+
+    target: int
+    refill_at: int
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     """Complete runtime configuration."""
 
@@ -95,6 +107,7 @@ class RuntimeConfig:
     captcha: CaptchaConfig
     alerts: AlertsConfig
     languages: dict[str, LanguageConfig]
+    generator: GeneratorConfig
     # Required: DEFAULT_CONFIG.delivery is the single source of the default
     # value, so the schema never carries a second copy of it.
     delivery: DeliveryConfig

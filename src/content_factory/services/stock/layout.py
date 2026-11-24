@@ -17,6 +17,7 @@ from loguru import logger
 
 from content_factory.constants import CONTENT_DIR, LANGUAGE_CODE_RE, NICHE_CODE_RE, PROFILES_DIR
 from content_factory.schemas.stock.layout import StockFile
+from content_factory.utils.filesystem import child_directories
 
 _PROFILE_FILENAME = "profile.yaml"
 _SHARED_DIR = "_shared"
@@ -141,10 +142,10 @@ def profile_slugs(profiles_root: Path) -> dict[str, str]:
     if not profiles_root.is_dir():
         return {}
     entries: list[tuple[str, str, str, str]] = []
-    for category in _child_dirs(profiles_root):
+    for category in child_directories(profiles_root):
         if category.name == _SHARED_DIR:
             continue
-        for directory in _child_dirs(category):
+        for directory in child_directories(category):
             if not (directory / _PROFILE_FILENAME).is_file():
                 continue
             entries.append(
@@ -185,7 +186,7 @@ def _conflicting_profile_ids(entries: list[tuple[str, str, str, str]]) -> set[st
 def _flat_language_dirs(content_dir: Path) -> list[Path]:
     """Return valid flat language directories in name order."""
     directories: list[Path] = []
-    for directory in _child_dirs(content_dir):
+    for directory in child_directories(content_dir):
         if LANGUAGE_CODE_RE.fullmatch(directory.name) is not None:
             directories.append(directory)
         elif NICHE_CODE_RE.fullmatch(directory.name) is None:
@@ -196,7 +197,7 @@ def _flat_language_dirs(content_dir: Path) -> list[Path]:
 def _niche_dirs(content_dir: Path) -> list[Path]:
     """Return niche directories of the nested layout in name order."""
     directories: list[Path] = []
-    for directory in _child_dirs(content_dir):
+    for directory in child_directories(content_dir):
         if LANGUAGE_CODE_RE.fullmatch(directory.name) is not None:
             continue
         if NICHE_CODE_RE.fullmatch(directory.name) is None:
@@ -208,24 +209,12 @@ def _niche_dirs(content_dir: Path) -> list[Path]:
 def _nested_language_dirs(niche_dir: Path) -> list[Path]:
     """Return valid language directories inside one niche."""
     directories: list[Path] = []
-    for directory in _child_dirs(niche_dir):
+    for directory in child_directories(niche_dir):
         if LANGUAGE_CODE_RE.fullmatch(directory.name) is not None:
             directories.append(directory)
         elif NICHE_CODE_RE.fullmatch(directory.name) is None:
             _warn_invalid(directory, "языка")
     return directories
-
-
-def _child_dirs(root: Path) -> list[Path]:
-    """Return child directories in name order, logging a read error."""
-    try:
-        entries = sorted(root.iterdir(), key=lambda path: path.name)
-    except OSError as ex:
-        logger.bind(path=str(root), error=ex, error_type=type(ex).__name__).warning(
-            "Не удалось прочитать каталог стока {}", root
-        )
-        return []
-    return [entry for entry in entries if entry.is_dir()]
 
 
 def _mp4_files(directory: Path) -> list[Path]:

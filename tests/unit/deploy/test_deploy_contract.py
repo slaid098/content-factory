@@ -299,3 +299,30 @@ def test_prefect_titles_deployment_contract() -> None:
 
     module = importlib.import_module("content_factory.flows.titles.flow")
     assert callable(module.titles)
+
+
+def test_prefect_profile_refill_deployment_contract() -> None:
+    deployment = _deployment("profile_refill")
+
+    assert deployment["entrypoint"] == (
+        "src/content_factory/flows/profile_refill/flow.py:profile_refill"
+    )
+    assert deployment["work_pool"]["name"] == "content-factory"
+    assert deployment["concurrency_limit"] == 1
+    assert deployment["schedules"] == [
+        {
+            "slug": "every-15-minutes",
+            "cron": "*/15 * * * *",
+            "timezone": "UTC",
+            "active": True,
+        }
+    ]
+
+    module = importlib.import_module("content_factory.flows.profile_refill.flow")
+    assert callable(module.profile_refill)
+
+
+def test_prefect_declares_four_deployments() -> None:
+    names = [deployment["name"] for deployment in _load("prefect.yaml")["deployments"]]
+
+    assert names == ["stock_topup", "titles", "profile_refill", "generate_batch"]

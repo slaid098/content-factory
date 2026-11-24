@@ -12,6 +12,7 @@ from content_factory.schemas.config.runtime import (
     DeliveryConfig,
     DownloadConfig,
     FilterConfig,
+    GeneratorConfig,
     LanguageConfig,
     RunConfig,
     RuntimeConfig,
@@ -113,6 +114,7 @@ def make_runtime(**overrides: object) -> RuntimeConfig:
             "ru": LanguageConfig(enabled=True, stock_target=100),
             "en": LanguageConfig(enabled=False, stock_target=50),
         },
+        generator=GeneratorConfig(target=20, refill_at=2),
         delivery=DeliveryConfig(max_count=100),
     )
     return replace(base, **overrides)

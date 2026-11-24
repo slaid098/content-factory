@@ -38,6 +38,21 @@ deployments:
         active: true
     concurrency_limit: 1
 
+  - name: profile_refill
+    description: "Плановый добор включённых профилей генератора"
+    entrypoint: src/content_factory/flows/profile_refill/flow.py:profile_refill
+    work_pool:
+      name: content-factory
+    # Тик каждые 15 минут. По умолчанию все профили выключены, поэтому тик
+    # выходит сразу; включённый профиль запускает generate_batch отдельным
+    # flow run и не ждёт его конца.
+    schedules:
+      - slug: every-15-minutes
+        cron: "*/15 * * * *"
+        timezone: UTC
+        active: true
+    concurrency_limit: 1
+
   - name: generate_batch
     description: "Ручной батч дейтинг-роликов: Vast.ai + ComfyUI, без расписания"
     entrypoint: src/content_factory/flows/generate_batch/flow.py:generate_batch

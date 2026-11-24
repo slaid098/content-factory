@@ -17,6 +17,7 @@ from content_factory.schemas.config.runtime import (
     DeliveryConfig,
     DownloadConfig,
     FilterConfig,
+    GeneratorConfig,
     LanguageConfig,
     RunConfig,
     RuntimeConfig,
@@ -172,6 +173,7 @@ def _build(data: Mapping[str, Any]) -> RuntimeConfig:
         ),
         alerts=AlertsConfig(cooldown=_duration(alerts, "cooldown", "alerts.cooldown")),
         languages={code: _language(code, value) for code, value in languages.items()},
+        generator=_generator_config(data),
         delivery=DeliveryConfig(
             max_count=_int(
                 delivery,
@@ -185,6 +187,18 @@ def _build(data: Mapping[str, Any]) -> RuntimeConfig:
     if config.run.pause_between_languages > config.run.max_duration:
         raise ConfigError("run.pause_between_languages не может превышать run.max_duration")
     return config
+
+
+def _generator_config(data: Mapping[str, Any]) -> GeneratorConfig:
+    """Build the global generator refill settings with range checks."""
+    section = cast(Mapping[str, Any], data["generator"])
+    target = _int(section, "target", "generator.target", minimum=1, maximum=1000)
+    refill_at = _int(section, "refill_at", "generator.refill_at", minimum=0)
+    if refill_at >= target:
+        raise ConfigError(
+            f"generator.refill_at должен быть меньше generator.target: {refill_at} >= {target}"
+        )
+    return GeneratorConfig(target=target, refill_at=refill_at)
 
 
 def _int(

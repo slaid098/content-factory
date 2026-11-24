@@ -46,6 +46,8 @@ _LEAF_KEYS = (
     "max_count",
     "enabled",
     "stock_target",
+    "target",
+    "refill_at",
 )
 
 
@@ -60,7 +62,7 @@ def test_seeded_file_comments_every_key(tmp_path: Path) -> None:
         if line.strip().startswith(tuple(f"{key}:" for key in _LEAF_KEYS))
     ]
 
-    assert len(key_lines) == 19
+    assert len(key_lines) == 21
     for index, line in key_lines:
         assert lines[index - 1].strip().startswith("#"), f"нет комментария: {line.strip()}"
 
