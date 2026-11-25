@@ -8,6 +8,7 @@ from content_factory.exceptions.generator import ProfileError
 from content_factory.services.production.protocol import Producer
 
 VAST_PRODUCER = "vast"
+CARD_PRODUCER = "card"
 
 _ProducerFactory = Callable[[], Producer]
 
@@ -19,7 +20,17 @@ def _vast() -> Producer:
     return VastProducer()
 
 
-_BUILTINS: Mapping[str, _ProducerFactory] = {VAST_PRODUCER: _vast}
+def _card() -> Producer:
+    """Build the producer of photo posts from the profile text card."""
+    from content_factory.services.production.card import CardProducer
+
+    return CardProducer()
+
+
+_BUILTINS: Mapping[str, _ProducerFactory] = {
+    VAST_PRODUCER: _vast,
+    CARD_PRODUCER: _card,
+}
 
 
 class Registry:

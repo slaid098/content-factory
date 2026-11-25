@@ -38,8 +38,13 @@ _SUPPORTED_RENDERERS = ("default",)
 _AUDIO_SUFFIXES = (".mp3", ".wav")
 _DEFAULT_MAX_TEXT_WIDTH = 0.86
 _DEFAULT_QA = ("media", "clef")
+_PHOTO_QA = ("image",)
+_VIDEO_ONLY_QA = frozenset({"media", "clef"})
+_PHOTO_ONLY_QA = frozenset({"image"})
 
 _REQUIRED_KEYS = ("count", "width", "height", "frames", "fps", "image", "gpu", "max_cost")
+_MAX_IMAGE_SIDE = 8192
+_MAX_IMAGE_PIXELS = 16_777_216
 _SPIN = re.compile(r"\{([^{}|]+(?:\|[^{}]+)+)\}")
 
 
@@ -174,14 +179,17 @@ def load_profile(name: str, root: Path) -> _Profile:
     if renderer not in _SUPPORTED_RENDERERS:
         raise ProfileError(f"renderer={renderer!r} не поддержан в v0: допустим только default")
     profile_name = _profile_name(directory, root)
+    width = read_profile_positive_int(data, "width", name)
+    height = read_profile_positive_int(data, "height", name)
+    _validate_image_size(name, width, height)
     profile = _Profile(
         name=profile_name,
         language=read_profile_language(data, name),
         niche=read_profile_niche(data, name, profile_name.split("/", 1)[0]),
         dir=directory,
         count=read_profile_positive_int(data, "count", name),
-        width=read_profile_positive_int(data, "width", name),
-        height=read_profile_positive_int(data, "height", name),
+        width=width,
+        height=height,
         frames=read_profile_positive_int(data, "frames", name),
         frames_jitter=_non_negative_int(data, "frames_jitter", name),
         fps=read_profile_positive_int(data, "fps", name),
@@ -208,6 +216,24 @@ def load_profile(name: str, root: Path) -> _Profile:
     prompt_template(profile)
     text_prompt(profile)
     return profile
+
+
+def _validate_image_size(name: str, width: int, height: int) -> None:
+    """Reject photo sizes that cannot be rendered safely on this host.
+
+    The check runs while the profile is loaded, before any renderer or
+    ``Image.new`` touches the size, so an oversized profile fails in dry-run
+    and normal mode alike instead of exhausting memory.
+
+    Raises:
+        ProfileError: A side exceeds :data:`_MAX_IMAGE_SIDE` pixels or the
+            photo area exceeds :data:`_MAX_IMAGE_PIXELS` pixels.
+    """
+    if width > _MAX_IMAGE_SIDE or height > _MAX_IMAGE_SIDE or width * height > _MAX_IMAGE_PIXELS:
+        raise ProfileError(
+            f"в профиле {name} размер {width}x{height} больше допустимого: "
+            f"сторона не больше {_MAX_IMAGE_SIDE}, пикселей не больше {_MAX_IMAGE_PIXELS}"
+        )
 
 
 def profile_niche(profile: _Profile) -> str:
@@ -430,7 +456,7 @@ def _read_production(data: Mapping[str, Any], name: str) -> tuple[ProductionStep
             ProductionStep(
                 producer=producer,
                 type=content_type,
-                qa=_qa_names(item.get("qa"), name, index, allowed_qa),
+                qa=_qa_names(item.get("qa"), name, index, allowed_qa, content_type),
             )
         )
     return tuple(steps)
@@ -454,15 +480,17 @@ def _qa_names(
     name: str,
     index: int,
     allowed: tuple[str, ...],
+    content_type: ContentType,
 ) -> tuple[str, ...]:
     """Read the ordered QA names of one step, rejecting blanks and repeats."""
     if raw is None:
-        return _DEFAULT_QA
+        return _PHOTO_QA if content_type is ContentType.PHOTO else _DEFAULT_QA
     if not isinstance(raw, list) or not raw:
         raise ProfileError(
             f"qa шага production {index} в профиле {name} должен быть непустым списком"
         )
     names: list[str] = []
+    incompatible = _VIDEO_ONLY_QA if content_type is ContentType.PHOTO else _PHOTO_ONLY_QA
     for value in raw:
         qa = str(value).strip()
         if not qa:
@@ -472,6 +500,10 @@ def _qa_names(
         if qa not in allowed:
             raise ProfileError(
                 f"неизвестная QA-проверка {qa!r} в профиле {name}: допустимы {', '.join(allowed)}"
+            )
+        if qa in incompatible:
+            raise ProfileError(
+                f"QA {qa!r} не подходит для type={content_type.value!r} в профиле {name}"
             )
         names.append(qa)
     return tuple(names)

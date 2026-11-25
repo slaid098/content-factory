@@ -75,6 +75,18 @@ class _BrokenProducer(_FakeProducer):
         raise AssertionError("producer must not be called")
 
 
+class _BrokenPhotoProducer(_BrokenProducer):
+    """Photo producer that must never be called in a dry run."""
+
+    supported_types = frozenset({ContentType.PHOTO})
+
+
+class _PhotoSequenceProducer(_SequenceProducer):
+    """Photo producer that gives every call its own run id."""
+
+    supported_types = frozenset({ContentType.PHOTO})
+
+
 def _recipe(*producers: str) -> dict[str, object]:
     return {
         "production": [
@@ -185,3 +197,105 @@ def test_dry_run_validates_the_recipe_without_calling_the_producer(tmp_path: Pat
     report = json.loads(reports[0].read_text(encoding="utf-8"))
     assert report["production"] == [{"producer": "fake", "type": "video", "qa": ["media", "clef"]}]
     assert report["items"][0]["producer"] == "fake"
+
+
+def _photo_recipe() -> dict[str, object]:
+    return {"production": [{"producer": "card", "type": "photo"}]}
+
+
+def _mixed_recipe() -> dict[str, object]:
+    return {
+        "production": [
+            {"producer": "vast", "type": "video", "qa": ["media", "clef"]},
+            {"producer": "card", "type": "photo"},
+        ]
+    }
+
+
+def test_dry_run_plans_photo_items_without_calling_the_producer(tmp_path: Path) -> None:
+    make_profile(tmp_path / "profiles", width=544, height=960, extra=_photo_recipe())
+    registry.register("card", _BrokenPhotoProducer)
+    try:
+        outcome = generate_batch.fn(profiles="dating/profile_2", count=2, dry_run=True)
+    finally:
+        registry.reset()
+
+    assert "status=dry_run" in outcome
+    report = json.loads(
+        next((tmp_path / "generated").rglob("run.json")).read_text(encoding="utf-8")
+    )
+    assert report["production"] == [{"producer": "card", "type": "photo", "qa": ["image"]}]
+    assert [item["file"] for item in report["items"]] == [
+        f"dating_profile_2_{report['run_id']}_{seq:03d}.jpg" for seq in (1, 2)
+    ]
+    assert [item["status"] for item in report["items"]] == ["dry_run", "dry_run"]
+    assert [item["type"] for item in report["items"]] == ["photo", "photo"]
+    assert [item["producer"] for item in report["items"]] == ["card", "card"]
+    for item in report["items"]:
+        assert item["look_id"] is None
+        assert item["seed"] is None
+        assert item["frames"] is None
+
+
+def test_dry_run_plans_every_recipe_step_by_type(tmp_path: Path) -> None:
+    make_profile(tmp_path / "profiles", extra=_mixed_recipe())
+    registry.register("vast", _BrokenProducer)
+    registry.register("card", _BrokenPhotoProducer)
+    try:
+        outcome = generate_batch.fn(profiles="dating/profile_2", count=2, dry_run=True)
+    finally:
+        registry.reset()
+
+    assert "status=dry_run" in outcome
+    reports = list((tmp_path / "generated").rglob("run.json"))
+    assert len(reports) == 1
+    report = json.loads(reports[0].read_text(encoding="utf-8"))
+    assert report["production"] == [
+        {"producer": "vast", "type": "video", "qa": ["media", "clef"]},
+        {"producer": "card", "type": "photo", "qa": ["image"]},
+    ]
+    assert [item["type"] for item in report["items"]] == ["video", "video", "photo", "photo"]
+    assert [Path(item["file"]).suffix for item in report["items"]] == [
+        ".mp4",
+        ".mp4",
+        ".jpg",
+        ".jpg",
+    ]
+    assert [item["status"] for item in report["items"]] == ["dry_run"] * 4
+    assert all(item["look_id"] is not None for item in report["items"][:2])
+    assert all(item["look_id"] is None for item in report["items"][2:])
+
+
+def test_dry_run_starts_videos_after_the_rotation_cursor(tmp_path: Path) -> None:
+    make_profile(tmp_path / "profiles", extra=_mixed_recipe())
+    cursor = tmp_path / "generated" / "ru" / "dating_profile_2" / "rotation.json"
+    cursor.parent.mkdir(parents=True)
+    cursor.write_text(json.dumps({"last_look_id": "c01"}), encoding="utf-8")
+    registry.register("vast", _BrokenProducer)
+    registry.register("card", _BrokenPhotoProducer)
+    try:
+        generate_batch.fn(profiles="dating/profile_2", count=1, dry_run=True)
+    finally:
+        registry.reset()
+
+    report = json.loads(
+        next((tmp_path / "generated").rglob("run.json")).read_text(encoding="utf-8")
+    )
+    video = [item for item in report["items"] if item["type"] == "video"]
+    assert [item["look_id"] for item in video] == ["c02"]
+
+
+def test_mixed_recipe_returns_every_step_run_id(tmp_path: Path) -> None:
+    make_profile(tmp_path / "profiles", extra=_mixed_recipe())
+    video = _SequenceProducer("run-video")
+    photo = _PhotoSequenceProducer("run-photo")
+    registry.register("vast", lambda: video)
+    registry.register("card", lambda: photo)
+    try:
+        outcome = generate_batch.fn(profiles="dating/profile_2", count=1)
+    finally:
+        registry.reset()
+
+    assert outcome == "run=run-video-1 run=run-photo-1 status=done generated=2 failed=0"
+    assert video.calls == [("dating/profile_2", 1)]
+    assert photo.calls == [("dating/profile_2", 1)]

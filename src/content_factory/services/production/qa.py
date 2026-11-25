@@ -21,7 +21,11 @@ class _QaCheck:
     stage: str
 
 
-_BUILTINS: Mapping[str, str] = {"media": QA_FINAL, "clef": QA_SOURCE}
+_BUILTINS: Mapping[str, str] = {
+    "clef": QA_SOURCE,
+    "image": QA_FINAL,
+    "media": QA_FINAL,
+}
 
 
 class Registry:

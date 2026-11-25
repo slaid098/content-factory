@@ -105,6 +105,25 @@ def test_unsupported_renderer_fails_before_rent(tmp_path: Path) -> None:
         load_profile("dating/profile_2", root)
 
 
+@pytest.mark.parametrize(
+    ("width", "height"),
+    [(8193, 960), (960, 8193), (8192, 2049)],
+)
+def test_oversized_photo_fails_before_rent(tmp_path: Path, width: int, height: int) -> None:
+    root = tmp_path / "profiles"
+    make_profile(root, width=width, height=height)
+
+    with pytest.raises(ProfileError, match="размер"):
+        load_profile("dating/profile_2", root)
+
+
+def test_photo_size_at_the_limit_is_accepted(tmp_path: Path) -> None:
+    root = tmp_path / "profiles"
+    make_profile(root, width=8192, height=2048)
+
+    assert load_profile("dating/profile_2", root).width == 8192
+
+
 def test_empty_niche_falls_back_to_the_profile_category(tmp_path: Path) -> None:
     root = tmp_path / "profiles"
     make_profile(root, extra={"niche": ""})
@@ -518,6 +537,43 @@ def test_production_step_selects_by_producer(tmp_path: Path) -> None:
 
     with pytest.raises(ProfileError, match="нет шага unique"):
         production_step(profile, "unique")
+
+
+def test_photo_recipe_defaults_to_the_image_check(tmp_path: Path) -> None:
+    profile = fixture_profile(
+        tmp_path / "profiles",
+        extra={"production": [{"producer": "card", "type": "photo"}]},
+    )
+
+    assert profile.production == (ProductionStep("card", ContentType.PHOTO, ("image",)),)
+
+
+def test_photo_recipe_accepts_the_image_check_explicitly(tmp_path: Path) -> None:
+    profile = fixture_profile(
+        tmp_path / "profiles",
+        extra={
+            "production": [
+                {"producer": "card", "type": "photo", "qa": ["image"]},
+            ]
+        },
+    )
+
+    assert profile.production[0].qa == ("image",)
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        {"producer": "card", "type": "photo", "qa": ["media"]},
+        {"producer": "card", "type": "photo", "qa": ["clef"]},
+        {"producer": "vast", "type": "video", "qa": ["image"]},
+    ],
+)
+def test_recipe_rejects_checks_of_another_type(tmp_path: Path, step: dict[str, Any]) -> None:
+    make_profile(tmp_path / "profiles", extra={"production": [step]})
+
+    with pytest.raises(ProfileError, match="не подходит"):
+        load_profile("dating/profile_2", tmp_path / "profiles")
 
 
 def test_profile_names_are_split_without_blanks_or_repeats() -> None:

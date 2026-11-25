@@ -64,9 +64,12 @@ python -m pytest tests/<файл> -q --no-cov
   только ответ `/system_stats` и результат задания, а не «инстанс создан»:
   пока он «поднимается», деньги уже капают.
 - Рецепт `production` в `profile.yaml` задаёт producer, тип и QA шага; без
-  блока действует прежний `vast/video/[media, clef]`. Новый способ генерации
-  подключается через реестр producers и рецепт, а не правкой `generate_batch`.
-  Подробности — `docs/generator-profiles.md`.
+  блока действует прежний `vast/video/[media, clef]`, фото-профиль объявляет
+  `card/photo/[image]`. QA по умолчанию зависит от типа, чужие проверки
+  (`media`/`clef` в photo, `image` в video) — `ProfileError`. `dry_run`
+  строит план по каждому шагу рецепта, не вызывая producers. Новый способ
+  генерации подключается через реестр producers и рецепт, а не правкой
+  `generate_batch`. Подробности — `docs/generator-profiles.md`.
 
 ## Аудит и merge-гейт
 

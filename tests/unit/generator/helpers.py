@@ -43,6 +43,8 @@ def make_profile(
     name: str = "dating/profile_2",
     *,
     looks: int = 3,
+    width: int = 512,
+    height: int = 896,
     renderer: str = "default",
     audio: bool = True,
     workflow: bool = False,
@@ -81,8 +83,8 @@ def make_profile(
     )
     data: dict[str, Any] = {
         "count": 20,
-        "width": 512,
-        "height": 896,
+        "width": width,
+        "height": height,
         "frames": 119,
         "frames_jitter": frames_jitter,
         "fps": 24,
