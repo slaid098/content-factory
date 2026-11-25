@@ -7,6 +7,7 @@ import stat
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 import yaml
 from tests.unit.common.profile_helpers import add_profile
@@ -15,6 +16,7 @@ from content_factory.config.settings import GeneratorSettings
 from content_factory.exceptions.errors import ProfileDescriptionError
 from content_factory.exceptions.generator import TextError
 from content_factory.schemas.profiles.description import ProfileDescription
+from content_factory.services.generator import TextClient
 from content_factory.services.profiles import describe as describe_module
 from content_factory.services.profiles.describe import describe_profile
 
@@ -73,14 +75,18 @@ def test_prompt_contains_profile_fields_and_prompt_fragments(tmp_path: Path) -> 
     result = _describe(tmp_path, writer)
 
     assert result == ProfileDescription(_VALID_TITLE, _VALID_SUMMARY)
-    prompt = writer.prompts[0]
-    assert "category (категория): dating" in prompt
-    assert "name (имя): profile_1" in prompt
-    assert "language (язык): en" in prompt
-    assert "niche (ниша): dating" in prompt
-    assert "Сцена: {age}" in prompt
-    assert "Голос: спокойный" in prompt
-    assert "JSON" in prompt
+    system = writer.prompts[0]
+    user = writer.user_prompts[0]
+    assert "category (категория): dating" in system
+    assert "name (имя): profile_1" in system
+    assert "language (язык): en" in system
+    assert "niche (ниша): dating" in system
+    assert "JSON" in system
+    assert "Сцена: {age}" in user
+    assert "Голос: спокойный" in user
+    assert "Опиши профиль" in user
+    assert "Сцена: {age}" not in system
+    assert "Голос: спокойный" not in system
     assert len(writer.prompts) == 1
 
 
@@ -259,10 +265,11 @@ def test_prompt_without_prompt_files_uses_profile_yaml_only(tmp_path: Path) -> N
 
     _describe(tmp_path, writer)
 
-    prompt = writer.prompts[0]
-    assert "Сцена (prompt_template):" not in prompt
-    assert "Голос и стиль (text_prompt):" not in prompt
-    assert "language (язык): ru" in prompt
+    user = writer.user_prompts[0]
+    assert "Сцена (prompt_template):" not in user
+    assert "Голос и стиль (text_prompt):" not in user
+    assert "language (язык): ru" in writer.prompts[0]
+    assert "Опиши профиль" in user
 
 
 def test_video_prompt_is_the_legacy_scene_prompt(tmp_path: Path) -> None:
@@ -272,7 +279,7 @@ def test_video_prompt_is_the_legacy_scene_prompt(tmp_path: Path) -> None:
 
     _describe(tmp_path, writer)
 
-    assert "Старая сцена" in writer.prompts[0]
+    assert "Старая сцена" in writer.user_prompts[0]
 
 
 def test_prompt_fragment_is_capped(tmp_path: Path) -> None:
@@ -282,7 +289,41 @@ def test_prompt_fragment_is_capped(tmp_path: Path) -> None:
 
     _describe(tmp_path, writer)
 
-    assert writer.prompts[0].count("x") == 20_000
+    assert writer.user_prompts[0].count("x") == 20_000
+
+
+def test_payload_keeps_all_fragments_and_task_user_message(tmp_path: Path) -> None:
+    profile = add_profile(tmp_path, "dating", "profile_1")
+    scene = "s" * 25_000
+    voice = "v" * 10_000
+    (profile / "prompt_template.txt").write_text(scene, encoding="utf-8")
+    (profile / "text_prompt.txt").write_text(voice, encoding="utf-8")
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": _answer()}}]},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        describe_profile(
+            tmp_path,
+            "dating/profile_1",
+            _settings(),
+            writer=TextClient(_settings(), client=client),
+        )
+
+    messages = seen["body"]["messages"]
+    system = messages[0]["content"]
+    user = messages[1]["content"]
+    assert "Опиши профиль" in user
+    assert "Сгенерируй один текст для одного видео" not in user
+    assert "Опиши профиль" not in system
+    assert "s" * 20_000 in user
+    assert "v" * 10_000 in user
+    assert "s" * 20_000 not in system
 
 
 def test_missing_profile_raises_description_error(tmp_path: Path) -> None:

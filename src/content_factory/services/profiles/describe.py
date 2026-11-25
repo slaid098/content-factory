@@ -30,6 +30,9 @@ _SCENE_PROMPTS = ("prompt_template.txt", "video_prompt.txt")
 _TEXT_PROMPT = "text_prompt.txt"
 _MAX_FRAGMENT = 20_000
 _ATTEMPTS = 2
+_DESCRIPTION_USER_MESSAGE = (
+    "Опиши профиль Content Factory: предложи title и summary по данным ниже."
+)
 _FENCE_RE = re.compile(r"^\s*```[^\n]*\n?(.*?)\n?```\s*$", re.DOTALL)
 
 
@@ -70,22 +73,28 @@ def describe_profile(
     if profile.title and profile.summary:
         return ProfileDescription(profile.title, profile.summary)
     data = _read_yaml(profile)
-    prompt = _build_prompt(profile, data)
-    description = _describe_with_retry(writer or TextClient(settings), prompt, profile.id)
+    system_prompt, user_prompt = _build_prompt(profile, data)
+    description = _describe_with_retry(
+        writer or TextClient(settings),
+        system_prompt,
+        user_prompt,
+        profile.id,
+    )
     _write_profile(profile, data, description)
     return description
 
 
 def _describe_with_retry(
     writer: TextWriter,
-    prompt: str,
+    system_prompt: str,
+    user_prompt: str,
     profile_id: str,
 ) -> ProfileDescription:
     """Ask the model and parse the answer, retrying one bad attempt."""
     last = "нет ответа"
     for attempt in range(1, _ATTEMPTS + 1):
         try:
-            return _parse(writer.write(prompt), profile_id)
+            return _parse(writer.write(system_prompt, user_prompt), profile_id)
         except (TextError, ProfileDescriptionError) as ex:
             last = str(ex)
             logger.bind(
@@ -120,9 +129,15 @@ def _strip_fence(raw: str) -> str:
     return (match.group(1) if match is not None else raw).strip()
 
 
-def _build_prompt(profile: ProfileInfo, data: Mapping[str, Any]) -> str:
-    """Build the model prompt from the profile fields and its prompt files."""
-    parts = [
+def _build_prompt(profile: ProfileInfo, data: Mapping[str, Any]) -> tuple[str, str]:
+    """Build the system and user messages of one profile description.
+
+    Instructions, the answer format and scalar fields stay in the system
+    message, which the client caps at 20 000 characters. The profile dump and
+    the prompt fragments go into the user message, so a long scene prompt
+    cannot push ``text_prompt.txt`` out of the request.
+    """
+    system_parts = [
         "Ты описываешь профиль генератора контента Content Factory для оператора.",
         "Верни строго один JSON-объект без markdown, без ``` и без пояснений:",
         '{"title": "...", "summary": "..."}',
@@ -135,17 +150,20 @@ def _build_prompt(profile: ProfileInfo, data: Mapping[str, Any]) -> str:
         f"category (категория): {profile.category}",
         f"name (имя): {profile.name}",
         f"niche (ниша): {profile.niche}",
+    ]
+    user_parts = [
+        _DESCRIPTION_USER_MESSAGE,
         "",
         "Профиль (profile.yaml):",
         _truncate(yaml.safe_dump(dict(data), allow_unicode=True, sort_keys=False)),
     ]
     scene = _read_fragment(profile, _SCENE_PROMPTS)
     if scene is not None:
-        parts.extend(("", "Сцена (prompt_template):", scene))
+        user_parts.extend(("", "Сцена (prompt_template):", scene))
     text = _read_fragment(profile, (_TEXT_PROMPT,))
     if text is not None:
-        parts.extend(("", "Голос и стиль (text_prompt):", text))
-    return "\n".join(parts)
+        user_parts.extend(("", "Голос и стиль (text_prompt):", text))
+    return "\n".join(system_parts), "\n".join(user_parts)
 
 
 def _read_fragment(profile: ProfileInfo, names: tuple[str, ...]) -> str | None:
