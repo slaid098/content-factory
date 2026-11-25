@@ -66,10 +66,14 @@ describe("source invariants", () => {
     expect(profiles).not.toContain("object-fit: cover");
     expect(profiles).not.toMatch(/height:\s*150px/);
     expect(profiles).toContain("object-fit: contain");
-    expect(profiles).toContain("max-height: 80px");
-    expect(profiles).toContain("max-height: 96px");
-    expect(profiles).toContain("max-width: 96px");
-    expect(profiles).toContain("max-width: 128px");
+    expect(profiles).toContain("--preview-ratio: 1;");
+    expect(profiles).toContain("--preview-height: min(80px, calc(96px / var(--preview-ratio)));");
+    expect(profiles).toContain("--preview-height: min(96px, calc(128px / var(--preview-ratio)));");
+    expect(profiles).toContain("width: calc(var(--preview-height) * var(--preview-ratio));");
+    expect(profiles).toContain("height: var(--preview-height);");
+    expect(profiles).toMatch(
+      /\.profile-preview,\s+\.profile-preview-fallback\s*\{[^}]*width: 100%;[^}]*height: 100%;/,
+    );
     expect(profiles).toContain("grid-template-columns: repeat(2, minmax(0, 1fr))");
     expect(profiles).not.toContain("minmax(280px");
   });

@@ -11,6 +11,7 @@ const EMPTY_TEXT = "Профилей пока нет.";
 const LOADING_TEXT = "Загружаем профили…";
 const NOT_FOUND_TEXT = "Профиль не найден";
 const PREVIEW_FALLBACK = "Превью появится после первого ролика или поста.";
+const PREVIEW_FALLBACK_SHORT = "Нет превью";
 const ERROR_LIMIT = 200;
 const TARGET_MIN = 1;
 const TARGET_MAX = 1000;
@@ -212,7 +213,7 @@ export function createProfilesView(elements: ProfilesElements): ProfilesView {
     const card = el("li", "profile-card");
     const media = el("button", "profile-media");
     const image = el("img", "profile-preview");
-    const fallback = el("span", "profile-preview-fallback", PREVIEW_FALLBACK);
+    const fallback = el("span", "profile-preview-fallback", PREVIEW_FALLBACK_SHORT);
     const body = el("div", "profile-body");
     const head = el("div", "profile-head");
     const badges = el("p", "profile-badges");
@@ -229,6 +230,9 @@ export function createProfilesView(elements: ProfilesElements): ProfilesView {
 
     media.type = "button";
     media.setAttribute("aria-haspopup", "dialog");
+    fallback.setAttribute("role", "img");
+    fallback.title = PREVIEW_FALLBACK;
+    fallback.setAttribute("aria-label", PREVIEW_FALLBACK);
     image.setAttribute("loading", "lazy");
     image.setAttribute("decoding", "async");
     image.addEventListener("error", () => {
@@ -295,6 +299,8 @@ export function createProfilesView(elements: ProfilesElements): ProfilesView {
     function renderPreview(): void {
       media.setAttribute("aria-label", `Открыть превью профиля ${profile.id}`);
       image.alt = `Превью профиля ${profile.id}`;
+      const ratio = profile.width > 0 && profile.height > 0 ? profile.width / profile.height : 1;
+      media.style.setProperty("--preview-ratio", String(ratio));
       if (profile.width > 0 && profile.height > 0) {
         image.setAttribute("width", String(profile.width));
         image.setAttribute("height", String(profile.height));

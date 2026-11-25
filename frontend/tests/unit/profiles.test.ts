@@ -142,6 +142,27 @@ describe("createProfilesView", () => {
       "Открыть превью профиля dating/profile_1",
     );
     expect(mediaButton().getAttribute("aria-haspopup")).toBe("dialog");
+    expect(mediaButton().style.getPropertyValue("--preview-ratio")).toBe(String(544 / 960));
+  });
+
+  it("builds one slot for square, portrait and wide previews", async () => {
+    mockFetch(() =>
+      jsonResponse({
+        profiles: [
+          profile({ id: "dating/square", width: 1080, height: 1080 }),
+          profile({ id: "dating/portrait", width: 544, height: 960 }),
+          profile({ id: "dating/wide", width: 1280, height: 720 }),
+        ],
+      }),
+    );
+    const view = createView();
+
+    await view.load();
+
+    const ratios = Array.from(
+      node("profiles-list").querySelectorAll<HTMLElement>(".profile-media"),
+    ).map((media) => media.style.getPropertyValue("--preview-ratio"));
+    expect(ratios).toEqual(["1", String(544 / 960), String(1280 / 720)]);
   });
 
   it("shows the Shorts progress and the photo counter without a goal", async () => {
@@ -313,16 +334,32 @@ describe("createProfilesView", () => {
     expect(node<HTMLButtonElement>("profiles-refresh").disabled).toBe(false);
   });
 
-  it("falls back to the placeholder when the preview image fails", async () => {
-    mockFetch(() => jsonResponse({ profiles: [profile()] }));
+  it("keeps the preview slot stable when the image fails", async () => {
+    mockFetch(() => jsonResponse({ profiles: [profile({ width: 544, height: 960 })] }));
     const view = createView();
     await view.load();
 
-    const image = card().querySelector<HTMLImageElement>(".profile-preview");
+    const media = mediaButton();
+    const image = media.querySelector<HTMLImageElement>(".profile-preview");
+    const fallback = media.querySelector<HTMLElement>(".profile-preview-fallback");
+    const slotStyle = media.getAttribute("style");
+    expect(fallback?.hidden).toBe(true);
+
     image?.dispatchEvent(new Event("error"));
 
     expect(image?.hidden).toBe(true);
-    expect(card().querySelector<HTMLElement>(".profile-preview-fallback")?.hidden).toBe(false);
+    expect(fallback?.hidden).toBe(false);
+    expect(fallback?.textContent).toBe("Нет превью");
+    expect(fallback?.getAttribute("role")).toBe("img");
+    expect(fallback?.title).toBe("Превью появится после первого ролика или поста.");
+    expect(fallback?.getAttribute("aria-label")).toBe(
+      "Превью появится после первого ролика или поста.",
+    );
+    expect(mediaButton()).toBe(media);
+    expect(media.getAttribute("style")).toBe(slotStyle);
+    expect(media.style.getPropertyValue("--preview-ratio")).toBe(String(544 / 960));
+    expect(image?.getAttribute("width")).toBe("544");
+    expect(image?.getAttribute("height")).toBe("960");
   });
 
   it("opens one shared dialog and restores focus on Escape", async () => {
