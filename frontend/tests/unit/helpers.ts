@@ -44,6 +44,7 @@ export function mockFetch(handler: FetchHandler): MockFetch {
 }
 
 export function resetPage(): void {
+  document.body.className = "";
   const parsed = new DOMParser().parseFromString(pageHtml, "text/html");
   const nodes = Array.from(parsed.body.childNodes, (node) => document.importNode(node, true));
   document.body.replaceChildren(...nodes);

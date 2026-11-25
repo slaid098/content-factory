@@ -57,6 +57,23 @@ describe("source invariants", () => {
     }
   });
 
+  it("keeps profile previews compact and uncropped", () => {
+    const css = text(join(SOURCE, "styles.css"));
+    const start = css.indexOf("/* Profiles */");
+    expect(start).toBeGreaterThan(0);
+    const profiles = css.slice(start);
+
+    expect(profiles).not.toContain("object-fit: cover");
+    expect(profiles).not.toMatch(/height:\s*150px/);
+    expect(profiles).toContain("object-fit: contain");
+    expect(profiles).toContain("max-height: 80px");
+    expect(profiles).toContain("max-height: 96px");
+    expect(profiles).toContain("max-width: 96px");
+    expect(profiles).toContain("max-width: 128px");
+    expect(profiles).toContain("grid-template-columns: repeat(2, minmax(0, 1fr))");
+    expect(profiles).not.toContain("minmax(280px");
+  });
+
   it("imports modules without a .js extension", () => {
     for (const path of sourceFiles()) {
       expect(text(path), relativeName(path)).not.toMatch(/from\s+"[^"]+\.js"/);
