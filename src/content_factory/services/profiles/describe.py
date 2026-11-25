@@ -10,7 +10,7 @@ import tempfile
 from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 import yaml
 from loguru import logger
@@ -18,6 +18,7 @@ from loguru import logger
 from content_factory.config.settings import GeneratorSettings
 from content_factory.exceptions.errors import ProfileDescriptionError
 from content_factory.exceptions.generator import ProfileError, TextError
+from content_factory.schemas.generator.text import TextWriter
 from content_factory.schemas.profiles.description import ProfileDescription
 from content_factory.schemas.profiles.registry import ProfileInfo
 from content_factory.services.generator import TextClient
@@ -32,20 +33,12 @@ _ATTEMPTS = 2
 _FENCE_RE = re.compile(r"^\s*```[^\n]*\n?(.*?)\n?```\s*$", re.DOTALL)
 
 
-class _TextWriter(Protocol):
-    """Port of the text model used to describe a profile."""
-
-    def write(self, system_prompt: str, user_prompt: str = "") -> str:
-        """Return the raw answer of the model for one request."""
-        ...
-
-
 def describe_profile(
     data_dir: Path,
     profile_id: str,
     settings: GeneratorSettings,
     *,
-    writer: _TextWriter | None = None,
+    writer: TextWriter | None = None,
 ) -> ProfileDescription:
     """Describe one profile with the text model and save both fields.
 
@@ -84,7 +77,7 @@ def describe_profile(
 
 
 def _describe_with_retry(
-    writer: _TextWriter,
+    writer: TextWriter,
     prompt: str,
     profile_id: str,
 ) -> ProfileDescription:

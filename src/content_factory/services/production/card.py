@@ -18,6 +18,7 @@ from content_factory.schemas.generator.pipeline import (
     Layer,
     PipelineContext,
 )
+from content_factory.schemas.generator.text import TextWriter
 from content_factory.services.generator import (
     TextClient,
     generate_overlay,
@@ -34,14 +35,6 @@ _FINAL_DIR = "final"
 _JPEG_QUALITY = 90
 _MAX_CAPTION_BYTES = 4096
 _JPEG_MEDIA_TYPE = "image/jpeg"
-
-
-class _Writer(Protocol):
-    """Port of the text model used for one post caption."""
-
-    def write(self, system_prompt: str, user_prompt: str = "") -> str:
-        """Return the raw answer of the model for one request."""
-        ...
 
 
 class _Style(Protocol):
@@ -101,7 +94,7 @@ class CardProducer:
     def __init__(
         self,
         *,
-        writer: _Writer | None = None,
+        writer: TextWriter | None = None,
         renderer: _Renderer | None = None,
     ) -> None:
         """Store optional test seams; production uses the text model and PIL.
@@ -167,7 +160,7 @@ class CardProducer:
         profile: Any,
         filename: str,
         final_dir: Path,
-        writer: _Writer,
+        writer: TextWriter,
         renderer: _Renderer,
         context: PipelineContext,
     ) -> Artifact:
@@ -193,7 +186,7 @@ class CardProducer:
 
 def _produce_item(
     profile: Any,
-    writer: _Writer,
+    writer: TextWriter,
     renderer: _Renderer,
     final: Path,
     context: PipelineContext,

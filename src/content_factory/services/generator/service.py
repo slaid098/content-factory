@@ -27,6 +27,7 @@ from content_factory.schemas.generator.run import (
     RunStep,
 )
 from content_factory.schemas.generator.server import ServerInfo
+from content_factory.schemas.generator.text import TextWriter
 from content_factory.services import production
 from content_factory.services.generator import (
     comfy,
@@ -95,7 +96,7 @@ def generate_batch(
     settings: GeneratorSettings | None = None,
     session_factory: _SessionFactory | None = None,
     client_factory: _ClientFactory | None = None,
-    text_writer: texts._TextWriter | None = None,
+    text_writer: TextWriter | None = None,
     store: _Store | None = None,
     safety_checker: safety._Checker | None = None,
     rng: random.Random | None = None,
@@ -206,7 +207,7 @@ def _run_all(
     dry_run: bool,
     session_factory: _SessionFactory | None,
     client_factory: _ClientFactory | None,
-    text_writer: texts._TextWriter | None,
+    text_writer: TextWriter | None,
     store: _Store | None,
     checker: safety._Checker | None,
     randomizer: random.Random,
@@ -288,7 +289,7 @@ def _produce_safely(
     settings: GeneratorSettings,
     session_factory: _SessionFactory,
     client_factory: _ClientFactory,
-    text_writer: texts._TextWriter | None,
+    text_writer: TextWriter | None,
     store: _Store | None,
     checker: safety._Checker | None,
     rng: random.Random,
@@ -330,7 +331,7 @@ def _produce(
     settings: GeneratorSettings,
     session_factory: _SessionFactory,
     client_factory: _ClientFactory,
-    text_writer: texts._TextWriter | None,
+    text_writer: TextWriter | None,
     store: _Store | None,
     checker: safety._Checker | None,
     rng: random.Random,
@@ -393,7 +394,7 @@ def _postprocess(
     run_dir: Path,
     report: RunReport,
     settings: GeneratorSettings,
-    text_writer: texts._TextWriter | None,
+    text_writer: TextWriter | None,
     rng: random.Random,
     data_root: Path,
 ) -> None:
@@ -453,7 +454,7 @@ def _finish_item(
     item: RunItem,
     source: Path,
     run_dir: Path,
-    writer: texts._TextWriter,
+    writer: TextWriter,
     rng: random.Random,
     data_root: Path,
 ) -> None:

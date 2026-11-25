@@ -10,13 +10,14 @@ import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 import httpx
 from loguru import logger
 
 from content_factory.config.settings import GeneratorSettings
 from content_factory.exceptions.generator import TextError
+from content_factory.schemas.generator.text import DEFAULT_USER_MESSAGE, TextWriter
 from content_factory.services.generator.auth import bearer_header
 from content_factory.services.generator.profiles import _Profile, text_prompt
 
@@ -30,7 +31,6 @@ _RESULT_RE = re.compile(r"<result(?:\s[^>]*)?>\s*(.*?)\s*</result>", re.DOTALL |
 _BLOCK_RE = re.compile(r"<block(?:\s[^>]*)?>\s*(.*?)\s*</block>", re.DOTALL | re.IGNORECASE)
 _FENCE_RE = re.compile(r"^\s*```[^\n]*$", re.MULTILINE)
 _MIN_TEXT_LEN = 5
-_USER_MESSAGE = "Сгенерируй один текст для одного видео."
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,14 +45,6 @@ class _Overlay:
     """Text card of one video: the main block and the call to action."""
 
     blocks: tuple[_TextBlock, ...]
-
-
-class _TextWriter(Protocol):
-    """Port of the text model used by the overlay step."""
-
-    def write(self, system_prompt: str, user_prompt: str = _USER_MESSAGE) -> str:
-        """Return the raw answer of the model for one request."""
-        ...
 
 
 class TextClient:
@@ -70,7 +62,7 @@ class TextClient:
         self._client = client
         self._timeout = timeout
 
-    def write(self, system_prompt: str, user_prompt: str = _USER_MESSAGE) -> str:
+    def write(self, system_prompt: str, user_prompt: str = DEFAULT_USER_MESSAGE) -> str:
         """Ask the model for one answer and return its raw text.
 
         Args:
@@ -122,7 +114,7 @@ def _bearer(key: str) -> str:
 
 def generate_overlay(
     profile: _Profile,
-    writer: _TextWriter,
+    writer: TextWriter,
     *,
     attempts: int = _TEXT_ATTEMPTS,
     pause: float = _TEXT_PAUSE,
@@ -269,7 +261,7 @@ def _spin(text: str, rng: random.Random) -> str:
 def _payload(
     system_prompt: str,
     model: str,
-    user_prompt: str = _USER_MESSAGE,
+    user_prompt: str = DEFAULT_USER_MESSAGE,
 ) -> dict[str, Any]:
     """Build the OpenAI-compatible chat-completions payload."""
     return {
