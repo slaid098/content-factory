@@ -39,8 +39,8 @@ _JPEG_MEDIA_TYPE = "image/jpeg"
 class _Writer(Protocol):
     """Port of the text model used for one post caption."""
 
-    def write(self, system_prompt: str) -> str:
-        """Return the raw answer of the model for one overlay."""
+    def write(self, system_prompt: str, user_prompt: str = "") -> str:
+        """Return the raw answer of the model for one request."""
         ...
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import random
 from typing import Any
 
@@ -55,6 +56,21 @@ def test_client_posts_system_prompt_and_returns_content() -> None:
     assert b'"model":"deepseek-v4.1-flash"' in seen["body"]
     assert b'"messages"' in seen["body"]
     assert b'"system"' in seen["body"]
+
+
+def test_client_sends_the_custom_user_message() -> None:
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return _chat_response('{"title": "Профиль", "summary": "Короткое пояснение."}')
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        TextClient(_settings(), client=client).write("Системный промпт", "Опиши профиль")
+
+    messages = seen["body"]["messages"]
+    assert messages[0] == {"role": "system", "content": "Системный промпт"}
+    assert messages[1] == {"role": "user", "content": "Опиши профиль"}
 
 
 def test_client_without_key_sends_no_authorization() -> None:

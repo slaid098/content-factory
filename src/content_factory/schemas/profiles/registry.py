@@ -26,6 +26,8 @@ class ProfileInfo:
     audio: bool
     dir: Path
     delivery: DeliveryInfo = field(default_factory=DeliveryInfo)
+    title: str | None = None
+    summary: str | None = None
 
 
 __all__ = ["ProfileInfo"]

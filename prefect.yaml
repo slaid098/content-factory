@@ -59,3 +59,10 @@ deployments:
     work_pool:
       name: content-factory
     concurrency_limit: 1
+
+  - name: profiles_describe
+    description: "Человекочитаемые названия и пояснения профилей, без расписания"
+    entrypoint: src/content_factory/flows/profiles_describe/flow.py:profiles_describe
+    work_pool:
+      name: content-factory
+    concurrency_limit: 1

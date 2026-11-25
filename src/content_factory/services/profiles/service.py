@@ -171,6 +171,8 @@ def _view(
         name=profile.name,
         language=profile.language,
         niche=profile.niche,
+        title=profile.title,
+        summary=profile.summary,
         width=profile.width,
         height=profile.height,
         audio=profile.audio,

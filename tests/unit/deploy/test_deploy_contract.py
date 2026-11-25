@@ -322,7 +322,27 @@ def test_prefect_profile_refill_deployment_contract() -> None:
     assert callable(module.profile_refill)
 
 
-def test_prefect_declares_four_deployments() -> None:
+def test_prefect_declares_five_deployments() -> None:
     names = [deployment["name"] for deployment in _load("prefect.yaml")["deployments"]]
 
-    assert names == ["stock_topup", "titles", "profile_refill", "generate_batch"]
+    assert names == [
+        "stock_topup",
+        "titles",
+        "profile_refill",
+        "generate_batch",
+        "profiles_describe",
+    ]
+
+
+def test_prefect_profiles_describe_deployment_contract() -> None:
+    deployment = _deployment("profiles_describe")
+
+    assert deployment["entrypoint"] == (
+        "src/content_factory/flows/profiles_describe/flow.py:profiles_describe"
+    )
+    assert deployment["work_pool"]["name"] == "content-factory"
+    assert deployment["concurrency_limit"] == 1
+    assert "schedules" not in deployment
+
+    module = importlib.import_module("content_factory.flows.profiles_describe.flow")
+    assert callable(module.profiles_describe)

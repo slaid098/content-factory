@@ -28,6 +28,8 @@ from content_factory.utils.profiles import (
     read_profile_language,
     read_profile_niche,
     read_profile_positive_int,
+    read_profile_summary,
+    read_profile_title,
 )
 
 _PROFILE_FILENAME = "profile.yaml"
@@ -139,6 +141,8 @@ def _read_info(directory: Path, category: str, name: str) -> ProfileInfo:
         audio=bool(data.get("audio", True)),
         dir=directory,
         delivery=read_profile_delivery(data, label),
+        title=read_profile_title(data, label),
+        summary=read_profile_summary(data, label),
     )
 
 

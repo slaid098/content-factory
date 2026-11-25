@@ -14,6 +14,10 @@ _HASHTAG_RE = re.compile(r"[\w][\w-]*")
 _MAX_TITLE_LENGTH = 100
 _MAX_HASHTAGS = 10
 _MISSING = object()
+_DESCRIPTION_TITLE_MIN = 3
+_DESCRIPTION_TITLE_MAX = 80
+_DESCRIPTION_SUMMARY_MIN = 20
+_DESCRIPTION_SUMMARY_MAX = 300
 
 
 def read_profile_language(data: Mapping[str, Any], label: str) -> str:
@@ -41,6 +45,44 @@ def read_profile_positive_int(data: Mapping[str, Any], key: str, label: str) -> 
     if value <= 0:
         raise ProfileError(f"в профиле {label} {key} должен быть больше нуля")
     return value
+
+
+def read_profile_title(data: Mapping[str, Any], label: str) -> str | None:
+    """Return the optional human-readable profile title.
+
+    A missing key, ``null``, a blank string and a whitespace-only string mean
+    no title. The returned value is stripped and stays on one line.
+
+    Raises:
+        ProfileError: The value is not a string, holds a line break or does
+            not fit 3..80 characters.
+    """
+    return _read_description_line(
+        data.get("title"),
+        "title",
+        label,
+        _DESCRIPTION_TITLE_MIN,
+        _DESCRIPTION_TITLE_MAX,
+    )
+
+
+def read_profile_summary(data: Mapping[str, Any], label: str) -> str | None:
+    """Return the optional one-line profile summary.
+
+    A missing key, ``null``, a blank string and a whitespace-only string mean
+    no summary. The returned value is stripped and stays on one line.
+
+    Raises:
+        ProfileError: The value is not a string, holds a line break or does
+            not fit 20..300 characters.
+    """
+    return _read_description_line(
+        data.get("summary"),
+        "summary",
+        label,
+        _DESCRIPTION_SUMMARY_MIN,
+        _DESCRIPTION_SUMMARY_MAX,
+    )
 
 
 def read_profile_delivery(data: Mapping[str, Any], label: str) -> DeliveryInfo:
@@ -71,6 +113,30 @@ def read_profile_delivery(data: Mapping[str, Any], label: str) -> DeliveryInfo:
         title=TitleConfig() if title is _MISSING else _read_title_config(title, label),
         hashtags=() if hashtags is _MISSING else _read_hashtags(hashtags, label),
     )
+
+
+def _read_description_line(
+    raw: object,
+    key: str,
+    label: str,
+    minimum: int,
+    maximum: int,
+) -> str | None:
+    """Validate one optional single-line profile description field."""
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise ProfileError(f"в профиле {label} {key} должен быть строкой")
+    value = raw.strip()
+    if not value:
+        return None
+    if "\n" in value or "\r" in value:
+        raise ProfileError(f"в профиле {label} {key} должен быть одной строкой")
+    if not minimum <= len(value) <= maximum:
+        raise ProfileError(
+            f"в профиле {label} {key} должен быть длиной {minimum}..{maximum} символов"
+        )
+    return value
 
 
 def _read_title_config(raw: object, label: str) -> TitleConfig:
@@ -141,4 +207,6 @@ __all__ = [
     "read_profile_language",
     "read_profile_niche",
     "read_profile_positive_int",
+    "read_profile_summary",
+    "read_profile_title",
 ]
