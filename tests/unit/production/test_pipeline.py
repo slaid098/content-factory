@@ -329,8 +329,8 @@ def test_failed_item_does_not_return_through_another_input(tmp_path: Path) -> No
     )
     checks = CheckRegistry({"media": lambda: bad})
     layers = (
-        Layer("source", "video", (), ArtifactKind.VIDEO, ("media",)),
-        Layer("caption", "text", ("source",), ArtifactKind.TEXT),
+        Layer("source", "video", (), ArtifactKind.VIDEO),
+        Layer("caption", "text", ("source",), ArtifactKind.TEXT, ("media",)),
         Layer("render", "render", ("source", "caption"), ArtifactKind.VIDEO),
     )
 
@@ -350,7 +350,55 @@ def test_failed_item_does_not_return_through_another_input(tmp_path: Path) -> No
         "dating/profile_1:3",
     ]
     assert result.failures == (
-        ItemFailure("dating/profile_1:2", "dating/profile_1", "source", "брак"),
+        ItemFailure("dating/profile_1:2", "dating/profile_1", "caption", "брак"),
+    )
+
+
+def test_missing_item_does_not_return_through_another_input(tmp_path: Path) -> None:
+    source = _FakeProducer(ArtifactKind.VIDEO)
+    caption = _FixedProducer(
+        ArtifactKind.TEXT,
+        (
+            _artifact(ArtifactKind.TEXT, "dating/profile_1:1"),
+            _artifact(ArtifactKind.TEXT, "dating/profile_1:3"),
+        ),
+    )
+    render = _FakeProducer(ArtifactKind.VIDEO)
+    producers = ProducerRegistry(
+        {
+            "video": lambda: source,
+            "caption": lambda: caption,
+            "render": lambda: render,
+        }
+    )
+    layers = (
+        Layer("source", "video", (), ArtifactKind.VIDEO),
+        Layer("caption", "caption", ("source",), ArtifactKind.TEXT),
+        Layer("render", "render", ("source", "caption"), ArtifactKind.VIDEO),
+    )
+
+    result = run_pipeline(_context(tmp_path, count=3), layers, producers=producers)
+
+    render_inputs = render.produce_calls[0][1]
+    assert {artifact.item for artifact in render_inputs} == {
+        "dating/profile_1:1",
+        "dating/profile_1:3",
+    }
+    assert [artifact.item for artifact in result.layers[2].artifacts] == [
+        "dating/profile_1:1",
+        "dating/profile_1:3",
+    ]
+    assert [artifact.item for artifact in result.artifacts] == [
+        "dating/profile_1:1",
+        "dating/profile_1:3",
+    ]
+    assert result.failures == (
+        ItemFailure(
+            "dating/profile_1:2",
+            "dating/profile_1",
+            "caption",
+            "producer 'caption' не вернул артефакт",
+        ),
     )
 
 
