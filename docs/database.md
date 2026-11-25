@@ -50,16 +50,24 @@ SQL во всём сервисе пишется с плейсхолдерами 
 
 ## Схема
 
-Семь таблиц: `stock_items`, `titles`, `profile_settings`, `runtime_state`,
-`alert_cooldowns`, `videos`, `downloads`. Схема описана в
-`db/migrations/0001_initial.py` и включает:
+Операционных таблиц девять: `stock_items`, `titles`, `profile_settings`,
+`runtime_state`, `alert_cooldowns`, `videos`, `downloads`, `source_items`,
+`source_cursors`. Схема описана миграциями
+`db/migrations/0001_initial.py` и `db/migrations/0002_sources.py` и включает:
 
 - `stock_items.content_type` (`video`/`photo`) и индекс по языку, типу и
   выдаче;
 - `videos.language` и частичный UNIQUE `videos(author) WHERE status =
   'downloaded'`: у одного автора не больше одного скачанного видео;
 - `downloads` с внешним ключом на `videos`;
-- `schema_migrations(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`.
+- `source_items` — метаданные исходников уникализатора: путь, язык, профиль,
+  SHA-256, размер, длительность, `added_at`, `used_at`, `missing_at`,
+  `use_count`; UNIQUE `(language, profile_id, sha256)`;
+- `source_cursors` — последний обработанный `last_path` профиля, PK
+  `(language, profile_id)`.
+
+Служебная `schema_migrations(version TEXT PRIMARY KEY, applied_at TEXT NOT
+NULL)` создаётся раннером и в число операционных таблиц не входит.
 
 ## Миграции
 
@@ -83,7 +91,7 @@ python -m content_factory.db.migrate
 ```
 
 Команда идемпотентна и печатает применённые версии. Новая миграция — модуль
-`0002_<имя>.py` с `VERSION` и `apply(connection)`, добавленный в
+`0003_<имя>.py` с `VERSION` и `apply(connection)`, добавленный в
 `MIGRATION_MODULES`; менять уже применённую миграцию нельзя.
 
 ## Импорт SQLite → PostgreSQL
@@ -94,13 +102,15 @@ python -m content_factory.db.migrate
 python -m content_factory.db.import_sqlite --sqlite app_data/db/db.sqlite3
 ```
 
-Импорт читает все семь таблиц, пишет в текущую базу (DSN) и печатает счётчики
-по таблицам. Вставки идут с `ON CONFLICT DO NOTHING`, поэтому повторный запуск
-не создаёт дублей и не затирает уже перенесённые строки; `delivered_at` и
-`request_id` стока сохраняются. Весь импорт — одна транзакция: при ошибке
-чтения или записи база остаётся нетронутой, команда завершается ненулевым
-кодом. Файлы контента импорт не трогает, `stock_items` можно пересобрать
-сканом.
+Импорт читает семь операционных таблиц стока, названий и настроек, пишет в
+текущую базу (DSN) и печатает счётчики по таблицам. Метаданные
+`source_items`/`source_cursors` он не переносит: источники уникализатора
+восстанавливаются импортом папок, а курсоры начинаются заново. Вставки идут с
+`ON CONFLICT DO NOTHING`, поэтому повторный запуск не создаёт дублей и не
+затирает уже перенесённые строки; `delivered_at` и `request_id` стока
+сохраняются. Весь импорт — одна транзакция: при ошибке чтения или записи база
+остаётся нетронутой, команда завершается ненулевым кодом. Файлы контента
+импорт не трогает, `stock_items` можно пересобрать сканом.
 
 ## Откат
 

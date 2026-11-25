@@ -228,3 +228,26 @@ check_id = "one_public_class_per_file"
 path = "src/content_factory/services/production/qa.py"
 reason = "issue #119: CheckRegistry — второй реестр того же домена проверок"
 
+[[tool.audit.ignore]]
+check_id = "dead_module"
+path = "src/content_factory/db/migrations/0002_sources.py"
+reason = "миграция подключается по строковому имени из реестра: имя начинается с цифры"
+
+# Очередь уникализатора — инфраструктурный адаптер: connect(), репозиторий
+# источников и обработка DatabaseError. ORM-моделей и обхода слоя здесь нет;
+# сервисного entry service.py у капсулы нет, вход — CLI main.py.
+[[tool.audit.ignore]]
+check_id = "orm_in_core"
+path = "src/content_factory/services/uniqueizer/importer.py"
+reason = "импортёр источников: db.connection.connect и db.sources, ORM-моделей нет"
+
+[[tool.audit.ignore]]
+check_id = "orm_in_core"
+path = "src/content_factory/services/uniqueizer/queue.py"
+reason = "очередь копий: db.connection.connect и db.sources, ORM-моделей нет"
+
+[[tool.audit.ignore]]
+check_id = "orm_in_core"
+path = "src/content_factory/services/uniqueizer/main.py"
+reason = "CLI импортёра: db.errors для обработки отказа базы, ORM-моделей нет"
+

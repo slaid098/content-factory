@@ -1,5 +1,6 @@
 """Dating batch generator service capsule."""
 
+from content_factory.services.generator.media import probe as probe
 from content_factory.services.generator.overlay import render_card
 from content_factory.services.generator.plan import plan_batch, validate_count
 from content_factory.services.generator.profiles import (
