@@ -53,7 +53,21 @@ mypy src main.py
 python -m pytest tests/<файл> -q --no-cov
 ```
 
+UI — Vite + TypeScript в `frontend/`; сборка кладёт бандл в
+`src/content_factory/api/ui` и нужна перед Python-тестами страницы:
+
+```bash
+cd frontend
+npm ci
+npm run build
+npm run lint
+npm run typecheck
+npm run test
+```
+
 Полный `python -m pytest` и coverage — в CI; `-n auto` локально запрещён.
+Playwright (`npm run test:e2e`) гоняется в CI; локально — только если
+установлен Chromium.
 
 ## Генератор
 

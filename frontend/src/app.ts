@@ -1,36 +1,54 @@
 /** Partner delivery page: stock, async archive build, queries and settings. */
 
-import { MESSAGES, requestJson } from "./api.js";
-import { createArchivesView } from "./archives.js";
-import { byId, el, setMessage, setText, toggle } from "./dom.js";
-import { formatBytes, formatCount, formatDateTime, languageName } from "./format.js";
-import { createJobsView } from "./jobs.js";
-import { createProfilesView } from "./profiles.js";
-import { createQueriesView } from "./queries.js";
-import { createSettingsView } from "./settings.js";
-import { createTabs } from "./tabs.js";
+import "./styles.css";
+
+import { createArchivesView } from "./archives";
+import { byId, el, setMessage, setText, toggle } from "./dom";
+import { createJobsView } from "./jobs";
+import { formatDateTime } from "./lib/datetime";
+import { errorMessage } from "./lib/errors";
+import { formatBytes, formatCount, languageName } from "./lib/format";
+import { MESSAGES, requestJson } from "./lib/http";
+import { createProfilesView } from "./profiles";
+import { createQueriesView } from "./queries";
+import { createSettingsView } from "./settings";
+import { createTabs } from "./tabs";
 
 const REFRESH_MS = 60000;
 const MAX_COUNT_FALLBACK = 100;
+
+interface LanguageRow {
+  language: string;
+  stock: number;
+  target: number;
+  titled: number;
+  untitled: number;
+  videoBytes: number;
+}
+
+interface TopicRow {
+  query: string;
+  count: number;
+}
 
 const ui = {
   stockList: byId("stock-list"),
   stockMessage: byId("stock-message"),
   stockEmpty: byId("stock-empty"),
   stockUpdated: byId("stock-updated"),
-  language: byId("language"),
-  queriesLanguage: byId("queries-language"),
+  language: byId<HTMLSelectElement>("language"),
+  queriesLanguage: byId<HTMLSelectElement>("queries-language"),
   topicList: byId("topic-list"),
   topicsLanguage: byId("topics-language"),
   topicsMessage: byId("topics-message"),
   unclassified: byId("unclassified"),
-  form: byId("delivery-form"),
-  count: byId("count"),
+  form: byId<HTMLFormElement>("delivery-form"),
+  count: byId<HTMLInputElement>("count"),
   countHint: byId("count-hint"),
-  deliver: byId("deliver"),
+  deliver: byId<HTMLButtonElement>("deliver"),
   available: byId("available"),
   deliveryStatus: byId("delivery-status"),
-  refresh: byId("refresh"),
+  refresh: byId<HTMLButtonElement>("refresh"),
 };
 
 const archives = createArchivesView({
@@ -47,8 +65,8 @@ const jobs = createJobsView(
     state: byId("job-state"),
     message: byId("job-message"),
     timer: byId("job-timer"),
-    link: /** @type {HTMLAnchorElement} */ (byId("job-link")),
-    check: /** @type {HTMLButtonElement} */ (byId("job-check")),
+    link: byId<HTMLAnchorElement>("job-link"),
+    check: byId<HTMLButtonElement>("job-check"),
   },
   { onFinished: (job) => void refreshAfterJob(job) },
 );
@@ -57,53 +75,48 @@ const profiles = createProfilesView({
   list: byId("profiles-list"),
   message: byId("profiles-message"),
   empty: byId("profiles-empty"),
-  refresh: /** @type {HTMLButtonElement} */ (byId("profiles-refresh")),
+  refresh: byId<HTMLButtonElement>("profiles-refresh"),
 });
 
 const queries = createQueriesView({
-  language: /** @type {HTMLSelectElement} */ (ui.queriesLanguage),
-  search: /** @type {HTMLInputElement} */ (byId("queries-search")),
+  language: ui.queriesLanguage,
+  search: byId<HTMLInputElement>("queries-search"),
   summary: byId("queries-summary"),
   message: byId("queries-message"),
   list: byId("queries-list"),
   empty: byId("queries-empty"),
-  form: /** @type {HTMLFormElement} */ (byId("query-form")),
-  input: /** @type {HTMLInputElement} */ (byId("new-query")),
-  add: /** @type {HTMLButtonElement} */ (byId("query-add")),
+  form: byId<HTMLFormElement>("query-form"),
+  input: byId<HTMLInputElement>("new-query"),
+  add: byId<HTMLButtonElement>("query-add"),
   status: byId("query-status"),
-  refresh: /** @type {HTMLButtonElement} */ (byId("queries-refresh")),
+  refresh: byId<HTMLButtonElement>("queries-refresh"),
 });
 
 const settings = createSettingsView(
   {
-    form: /** @type {HTMLFormElement} */ (byId("settings-form")),
+    form: byId<HTMLFormElement>("settings-form"),
     languages: byId("settings-languages"),
-    batch: /** @type {HTMLInputElement} */ (byId("settings-batch")),
-    interval: /** @type {HTMLInputElement} */ (byId("settings-interval")),
-    maxDuration: /** @type {HTMLInputElement} */ (byId("settings-max-duration")),
-    maxQueries: /** @type {HTMLInputElement} */ (byId("settings-max-queries")),
-    filterMax: /** @type {HTMLInputElement} */ (byId("settings-filter-max")),
-    workers: /** @type {HTMLInputElement} */ (byId("settings-workers")),
-    deliveryMax: /** @type {HTMLInputElement} */ (byId("settings-delivery-max")),
-    preview: /** @type {HTMLButtonElement} */ (byId("settings-preview")),
-    apply: /** @type {HTMLButtonElement} */ (byId("settings-apply")),
+    batch: byId<HTMLInputElement>("settings-batch"),
+    interval: byId<HTMLInputElement>("settings-interval"),
+    maxDuration: byId<HTMLInputElement>("settings-max-duration"),
+    maxQueries: byId<HTMLInputElement>("settings-max-queries"),
+    filterMax: byId<HTMLInputElement>("settings-filter-max"),
+    workers: byId<HTMLInputElement>("settings-workers"),
+    deliveryMax: byId<HTMLInputElement>("settings-delivery-max"),
+    preview: byId<HTMLButtonElement>("settings-preview"),
+    apply: byId<HTMLButtonElement>("settings-apply"),
     status: byId("settings-status"),
     diff: byId("settings-diff"),
     diffText: byId("settings-diff-text"),
     backup: byId("settings-backup"),
     message: byId("settings-message"),
-    refresh: /** @type {HTMLButtonElement} */ (byId("settings-refresh")),
+    refresh: byId<HTMLButtonElement>("settings-refresh"),
   },
   { onLimits: applyLimits },
 );
 
 const tabs = createTabs({
-  tabs: [
-    byId("tab-delivery"),
-    byId("tab-queries"),
-    byId("tab-settings"),
-    byId("tab-profiles"),
-  ],
+  tabs: [byId("tab-delivery"), byId("tab-queries"), byId("tab-settings"), byId("tab-profiles")],
   panels: [
     byId("panel-delivery"),
     byId("panel-queries"),
@@ -114,12 +127,9 @@ const tabs = createTabs({
 });
 
 const state = {
-  /** @type {Array<{language: string, stock: number, target: number, titled: number, untitled: number, videoBytes: number}>} */
-  languages: [],
-  /** @type {string | null} */
-  language: null,
-  /** @type {Array<{query: string, count: number}>} */
-  topics: [],
+  languages: [] as LanguageRow[],
+  language: null as string | null,
+  topics: [] as TopicRow[],
   unclassified: 0,
   maxCount: MAX_COUNT_FALLBACK,
   busy: false,
@@ -129,10 +139,7 @@ const state = {
   activePanel: "panel-delivery",
 };
 
-/**
- * @param {Record<string, unknown>} job
- */
-async function refreshAfterJob(job) {
+async function refreshAfterJob(job: Record<string, unknown>): Promise<void> {
   const ready = job.status === "ready" || job.status === "ready_local";
   setStatus(
     job.status === "ready"
@@ -143,30 +150,31 @@ async function refreshAfterJob(job) {
     false,
   );
   await loadStock();
-  await Promise.allSettled([
-    loadTopics(),
-    archives.load(ready ? String(job.request_id) : null),
-  ]);
+  await Promise.allSettled([loadTopics(), archives.load(ready ? String(job.request_id) : null)]);
   if (state.queriesLoaded && state.language !== null) {
     await queries.load(state.language);
   }
 }
 
-async function loadStock() {
+async function loadStock(): Promise<boolean> {
   const previous = state.language;
   try {
-    const data = await requestJson("/api/v1/stock");
+    const data = asObject(await requestJson("/api/v1/stock"));
     const rows = Array.isArray(data.languages) ? data.languages : [];
-    state.languages = rows.map((row) => ({
-      language: String(row.language),
-      stock: Number(row.stock) || 0,
-      target: Number(row.target) || 0,
-      titled: Number(row.titled) || 0,
-      untitled: Number(row.untitled) || 0,
-      videoBytes: Number(row.video_bytes) || 0,
-    }));
+    state.languages = rows.map((row) => {
+      const item = asObject(row);
+      return {
+        language: String(item.language),
+        stock: Number(item.stock) || 0,
+        target: Number(item.target) || 0,
+        titled: Number(item.titled) || 0,
+        untitled: Number(item.untitled) || 0,
+        videoBytes: Number(item.video_bytes) || 0,
+      };
+    });
     if (!state.languages.some((row) => row.language === state.language)) {
-      state.language = state.languages.length > 0 ? state.languages[0].language : null;
+      const first = state.languages[0];
+      state.language = first ? first.language : null;
     }
     renderStock();
     syncLanguageSelects();
@@ -178,12 +186,12 @@ async function loadStock() {
       renderTopics();
     }
   } catch (error) {
-    setMessage(ui.stockMessage, error.message);
+    setMessage(ui.stockMessage, errorMessage(error));
   }
   return state.language !== previous;
 }
 
-function renderStock() {
+function renderStock(): void {
   const items = state.languages.map((row) => {
     const item = el("li", "stock-item");
     const head = el("div", "stock-head");
@@ -218,17 +226,13 @@ function renderStock() {
   toggle(ui.stockEmpty, !state.languages.some((row) => row.stock > 0));
 }
 
-function syncLanguageSelects() {
+function syncLanguageSelects(): void {
   fillLanguageSelect(ui.language, true);
   fillLanguageSelect(ui.queriesLanguage, false);
   updateAvailable();
 }
 
-/**
- * @param {HTMLSelectElement} select
- * @param {boolean} withStock
- */
-function fillLanguageSelect(select, withStock) {
+function fillLanguageSelect(select: HTMLSelectElement, withStock: boolean): void {
   if (state.languages.length === 0) {
     const placeholder = el("option", "", "Нет доступных языков");
     placeholder.disabled = true;
@@ -252,7 +256,7 @@ function fillLanguageSelect(select, withStock) {
   }
 }
 
-async function loadTopics() {
+async function loadTopics(): Promise<void> {
   const language = state.language;
   if (language === null) {
     state.topics = [];
@@ -261,27 +265,30 @@ async function loadTopics() {
     return;
   }
   try {
-    const data = await requestJson(
-      `/api/v1/content/topics?language=${encodeURIComponent(language)}`,
+    const data = asObject(
+      await requestJson(`/api/v1/content/topics?language=${encodeURIComponent(language)}`),
     );
     if (language !== state.language) {
       return;
     }
-    state.topics = (Array.isArray(data.topics) ? data.topics : []).map((row) => ({
-      query: String(row.query),
-      count: Number(row.count) || 0,
-    }));
+    state.topics = (Array.isArray(data.topics) ? data.topics : []).map((row) => {
+      const item = asObject(row);
+      return {
+        query: String(item.query),
+        count: Number(item.count) || 0,
+      };
+    });
     state.unclassified = Number(data.unclassified) || 0;
     setMessage(ui.topicsMessage, "");
   } catch (error) {
     if (language === state.language) {
-      setMessage(ui.topicsMessage, error.message);
+      setMessage(ui.topicsMessage, errorMessage(error));
     }
   }
   renderTopics();
 }
 
-function renderTopics() {
+function renderTopics(): void {
   const total = stockCount();
   const cards = [buildTopic("Все темы", total)];
   for (const topic of state.topics) {
@@ -296,31 +303,23 @@ function renderTopics() {
   updateAvailable();
 }
 
-/**
- * @param {string} label
- * @param {number} count
- * @returns {HTMLElement}
- */
-function buildTopic(label, count) {
+function buildTopic(label: string, count: number): HTMLElement {
   const row = el("li", "topic");
-  row.append(
-    el("span", "topic-name", label),
-    el("span", "topic-count", formatCount(count)),
-  );
+  row.append(el("span", "topic-name", label), el("span", "topic-count", formatCount(count)));
   return row;
 }
 
-function stockCount() {
+function stockCount(): number {
   const row = state.languages.find((item) => item.language === state.language);
   return row ? row.stock : 0;
 }
 
-function stockTotal() {
+function stockTotal(): number {
   const row = state.languages.find((item) => item.language === state.language);
   return row ? row.titled : 0;
 }
 
-function updateAvailable() {
+function updateAvailable(): void {
   const total = stockTotal();
   const row = state.languages.find((item) => item.language === state.language);
   const stock = row ? row.stock : 0;
@@ -355,29 +354,19 @@ function updateAvailable() {
         : "";
 }
 
-/**
- * @param {boolean} busy
- */
-function setBusy(busy) {
+function setBusy(busy: boolean): void {
   state.busy = busy;
   ui.form.setAttribute("aria-busy", String(busy));
   ui.deliver.classList.toggle("is-busy", busy);
   updateAvailable();
 }
 
-/**
- * @param {string} text
- * @param {boolean} isError
- */
-function setStatus(text, isError) {
+function setStatus(text: string, isError: boolean): void {
   ui.deliveryStatus.textContent = text;
   ui.deliveryStatus.classList.toggle("is-error", isError);
 }
 
-/**
- * @param {string} code
- */
-function selectLanguage(code) {
+function selectLanguage(code: string): void {
   if (!code || code === state.language) {
     syncLanguageSelects();
     return;
@@ -393,10 +382,7 @@ function selectLanguage(code) {
   }
 }
 
-/**
- * @param {SubmitEvent} event
- */
-async function submitDelivery(event) {
+async function submitDelivery(event: SubmitEvent): Promise<void> {
   event.preventDefault();
   const total = stockTotal();
   if (state.busy || state.language === null || total === 0) {
@@ -419,42 +405,30 @@ async function submitDelivery(event) {
       setStatus("Архив готов — скачайте его по ссылке.", false);
     }
   } catch (error) {
-    setStatus(error.message, true);
+    setStatus(errorMessage(error), true);
   } finally {
     setBusy(false);
   }
 }
 
-/**
- * @param {string} raw
- * @param {number} total
- * @returns {number}
- */
-function clampCount(raw, total) {
+function clampCount(raw: string, total: number): number {
   const parsed = Number.parseInt(raw, 10);
   const requested = Number.isFinite(parsed) ? Math.max(1, parsed) : 1;
   return Math.min(state.maxCount, total, requested);
 }
 
-/**
- * @param {Record<string, unknown>} settings
- */
-function applyLimits(settings) {
+function applyLimits(settings: Record<string, unknown>): void {
   // settings.delivery.max_count приходит из GET /api/v1/content/settings; без него — 100.
   const delivery = settings.delivery;
   const raw =
-    delivery && typeof delivery === "object"
-      ? Number(/** @type {Record<string, unknown>} */ (delivery).max_count)
+    delivery && typeof delivery === "object" && !Array.isArray(delivery)
+      ? Number((delivery as Record<string, unknown>).max_count)
       : Number.NaN;
-  state.maxCount =
-    Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : MAX_COUNT_FALLBACK;
+  state.maxCount = Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : MAX_COUNT_FALLBACK;
   updateAvailable();
 }
 
-/**
- * @param {string} panelId
- */
-function onTabChange(panelId) {
+function onTabChange(panelId: string): void {
   state.activePanel = panelId;
   if (panelId === "panel-queries" && !state.queriesLoaded && state.language !== null) {
     state.queriesLoaded = true;
@@ -469,7 +443,7 @@ function onTabChange(panelId) {
   }
 }
 
-async function refreshAll() {
+async function refreshAll(): Promise<void> {
   if (state.refreshing) {
     return;
   }
@@ -485,14 +459,14 @@ async function refreshAll() {
   }
 }
 
-function createRequestId() {
+function createRequestId(): string {
   if (typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
   }
   // crypto.randomUUID недоступен в небезопасном контексте (HTTP в локальной сети).
   const bytes = crypto.getRandomValues(new Uint8Array(16));
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;
+  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
   const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
   return [
     hex.slice(0, 8),
@@ -503,7 +477,7 @@ function createRequestId() {
   ].join("-");
 }
 
-function bindEvents() {
+function bindEvents(): void {
   ui.language.addEventListener("change", () => {
     selectLanguage(ui.language.value);
   });
@@ -519,7 +493,7 @@ function bindEvents() {
   ui.count.addEventListener("change", updateAvailable);
 }
 
-async function init() {
+async function init(): Promise<void> {
   bindEvents();
   tabs.show("panel-delivery");
   await loadStock();
@@ -530,6 +504,10 @@ async function init() {
       void profiles.load();
     }
   }, REFRESH_MS);
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
 }
 
 void init();

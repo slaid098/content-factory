@@ -1,30 +1,39 @@
 /** Asynchronous archive build: POST the request, poll its state, show the link. */
 
-import { ApiError, DELIVERY_TIMEOUT_MS, MESSAGES, requestJson } from "./api.js";
-import { setMessage, toggle } from "./dom.js";
-import { formatRemaining, statusLabel } from "./format.js";
+import { setMessage, toggle } from "./dom";
+import { formatRemaining } from "./lib/datetime";
+import { errorMessage } from "./lib/errors";
+import { statusLabel } from "./lib/format";
+import { ApiError, DELIVERY_TIMEOUT_MS, MESSAGES, requestJson } from "./lib/http";
 
 const LINK_URL = "/api/v1/content/deliveries/link";
 const POLL_MS = 3000;
 const POLL_LIMIT_MS = 30 * 60 * 1000;
 const TERMINAL = new Set(["ready", "ready_local", "empty", "failed"]);
 
+export interface JobElements {
+  container: HTMLElement;
+  title: HTMLElement;
+  state: HTMLElement;
+  message: HTMLElement;
+  timer: HTMLElement;
+  link: HTMLAnchorElement;
+  check: HTMLButtonElement;
+}
+
+export interface JobViewOptions {
+  onFinished: (job: Record<string, unknown>) => void;
+}
+
+export interface JobView {
+  start: (language: string, count: number, requestId: string) => Promise<Record<string, unknown>>;
+}
+
 /**
  * Build the delivery job card once and keep its state and countdown fresh.
- * @param {{
- *   container: HTMLElement,
- *   title: HTMLElement,
- *   state: HTMLElement,
- *   message: HTMLElement,
- *   timer: HTMLElement,
- *   link: HTMLAnchorElement,
- *   check: HTMLButtonElement,
- * }} elements
- * @param {{onFinished: (job: Record<string, unknown>) => void}} options
  */
-export function createJobsView(elements, options) {
-  /** @type {Record<string, unknown> | null} */
-  let job = null;
+export function createJobsView(elements: JobElements, options: JobViewOptions): JobView {
+  let job: Record<string, unknown> | null = null;
   let startedAt = 0;
   let pollTimer = 0;
   let polling = false;
@@ -32,12 +41,12 @@ export function createJobsView(elements, options) {
 
   /**
    * Start one background build and poll it until a terminal status.
-   * @param {string} language
-   * @param {number} count
-   * @param {string} requestId
-   * @returns {Promise<Record<string, unknown>>}
    */
-  async function start(language, count, requestId) {
+  async function start(
+    language: string,
+    count: number,
+    requestId: string,
+  ): Promise<Record<string, unknown>> {
     const data = await requestJson(
       LINK_URL,
       {
@@ -59,14 +68,14 @@ export function createJobsView(elements, options) {
     return job;
   }
 
-  function beginPolling() {
+  function beginPolling(): void {
     stopPolling();
     polling = true;
     elements.check.hidden = true;
     schedule();
   }
 
-  function schedule() {
+  function schedule(): void {
     stopPolling();
     polling = true;
     pollTimer = window.setTimeout(() => {
@@ -74,7 +83,7 @@ export function createJobsView(elements, options) {
     }, POLL_MS);
   }
 
-  function stopPolling() {
+  function stopPolling(): void {
     polling = false;
     if (pollTimer !== 0) {
       window.clearTimeout(pollTimer);
@@ -82,7 +91,7 @@ export function createJobsView(elements, options) {
     }
   }
 
-  async function poll() {
+  async function poll(): Promise<void> {
     if (!polling || job === null) {
       return;
     }
@@ -116,12 +125,12 @@ export function createJobsView(elements, options) {
         return;
       }
       elements.message.classList.add("is-error");
-      setMessage(elements.message, error.message);
+      setMessage(elements.message, errorMessage(error));
       elements.check.hidden = false;
     }
   }
 
-  async function checkNow() {
+  async function checkNow(): Promise<void> {
     if (job === null) {
       return;
     }
@@ -146,7 +155,7 @@ export function createJobsView(elements, options) {
         toggle(elements.link, false);
       } else {
         elements.message.classList.add("is-error");
-        setMessage(elements.message, error.message);
+        setMessage(elements.message, errorMessage(error));
         elements.check.hidden = false;
       }
     } finally {
@@ -154,10 +163,7 @@ export function createJobsView(elements, options) {
     }
   }
 
-  /**
-   * @param {Record<string, unknown>} current
-   */
-  function complete(current) {
+  function complete(current: Record<string, unknown>): void {
     stopPolling();
     if (!notified) {
       notified = true;
@@ -165,10 +171,7 @@ export function createJobsView(elements, options) {
     }
   }
 
-  /**
-   * @param {Record<string, unknown>} current
-   */
-  function show(current) {
+  function show(current: Record<string, unknown>): void {
     const status = String(current.status);
     elements.container.hidden = false;
     elements.container.classList.remove("is-expired");
@@ -212,16 +215,13 @@ export function createJobsView(elements, options) {
     elements.link.download = `delivery-${String(current.request_id)}.zip`;
     elements.link.textContent = "Скачать локальный архив";
     const detail = current.error ? ` ${String(current.error)}` : "";
-    setMessage(
-      elements.message,
-      `Внешняя ссылка недоступна. Архив лежит на сервере.${detail}`,
-    );
+    setMessage(elements.message, `Внешняя ссылка недоступна. Архив лежит на сервере.${detail}`);
     toggle(elements.link, true);
     toggle(elements.timer, true);
     updateTimer();
   }
 
-  function updateTimer() {
+  function updateTimer(): void {
     if (job === null || !TERMINAL.has(String(job.status))) {
       toggle(elements.timer, false);
       return;
@@ -251,11 +251,7 @@ export function createJobsView(elements, options) {
   return { start };
 }
 
-/**
- * @param {string} status
- * @returns {string}
- */
-function badgeClass(status) {
+function badgeClass(status: string): string {
   if (status === "failed" || status === "empty") {
     return "warn";
   }
@@ -265,33 +261,21 @@ function badgeClass(status) {
   return "";
 }
 
-/**
- * @param {Record<string, unknown>} current
- * @returns {string}
- */
-function jobUrl(current) {
+function jobUrl(current: Record<string, unknown>): string {
   const language = encodeURIComponent(String(current.language));
   const requestId = encodeURIComponent(String(current.request_id));
   return `/api/v1/content/deliveries/${language}/${requestId}`;
 }
 
-/**
- * @param {Record<string, unknown>} current
- * @returns {string}
- */
-function localArchiveUrl(current) {
+function localArchiveUrl(current: Record<string, unknown>): string {
   const language = encodeURIComponent(String(current.language));
   const requestId = encodeURIComponent(String(current.request_id));
   return `/api/v1/content/archives/${language}/${requestId}.zip`;
 }
 
-/**
- * @param {unknown} data
- * @returns {Record<string, unknown>}
- */
-function asJob(data) {
-  if (!data || typeof data !== "object") {
+function asJob(data: unknown): Record<string, unknown> {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
     throw new ApiError(MESSAGES.badResponse, 0);
   }
-  return /** @type {Record<string, unknown>} */ (data);
+  return data as Record<string, unknown>;
 }

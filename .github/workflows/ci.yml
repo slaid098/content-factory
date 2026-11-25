@@ -13,7 +13,7 @@ permissions:
 jobs:
   ci:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:17
@@ -33,6 +33,32 @@ jobs:
         postgresql://content_factory:content_factory@localhost:5432/content_factory_test
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install UI
+        working-directory: frontend
+        run: npm ci
+
+      - name: Lint UI
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Types UI
+        working-directory: frontend
+        run: npm run typecheck
+
+      - name: Tests UI
+        working-directory: frontend
+        run: npm run test
+
+      - name: Build UI
+        working-directory: frontend
+        run: npm run build
 
       - uses: actions/setup-python@v5
         with:
@@ -54,6 +80,14 @@ jobs:
 
       - name: Tests
         run: python -m pytest
+
+      - name: Install browser
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: E2E
+        working-directory: frontend
+        run: npm run test:e2e
 
   # Единственный блокирующий аудит-шаг: `audit` остаётся WARN-only, а гейт
   # падает только на новых находках в файлах, изменённых против базового

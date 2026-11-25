@@ -2,12 +2,12 @@
 
 /**
  * Create one element.
- * @param {string} tag
- * @param {string} [className]
- * @param {string} [text]
- * @returns {HTMLElement}
  */
-export function el(tag, className = "", text) {
+export function el<K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  className = "",
+  text?: string,
+): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
   if (className) {
     node.className = className;
@@ -20,41 +20,33 @@ export function el(tag, className = "", text) {
 
 /**
  * Find a required element by id.
- * @param {string} id
- * @returns {HTMLElement}
  */
-export function byId(id) {
+export function byId<T extends HTMLElement = HTMLElement>(id: string): T {
   const node = document.getElementById(id);
   if (!node) {
     throw new Error(`Не найден элемент #${id}`);
   }
-  return node;
+  return node as T;
 }
 
 /**
  * Show or hide one element without touching its content.
- * @param {HTMLElement} node
- * @param {boolean} visible
  */
-export function toggle(node, visible) {
+export function toggle(node: HTMLElement, visible: boolean): void {
   node.hidden = !visible;
 }
 
 /**
  * Show a text message, or hide the node when the text is empty.
- * @param {HTMLElement} node
- * @param {string} text
  */
-export function setMessage(node, text) {
+export function setMessage(node: HTMLElement, text: string): void {
   node.textContent = text;
   node.hidden = !text;
 }
 
 /**
  * Set the text of one element.
- * @param {HTMLElement} node
- * @param {string} text
  */
-export function setText(node, text) {
+export function setText(node: HTMLElement, text: string): void {
   node.textContent = text;
 }

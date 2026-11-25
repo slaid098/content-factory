@@ -1,39 +1,55 @@
 /** Search queries of one language: counters, filtering and append. */
 
-import { requestJson } from "./api.js";
-import { el, setMessage, toggle } from "./dom.js";
-import { formatCount } from "./format.js";
+import { el, setMessage, toggle } from "./dom";
+import { errorMessage } from "./lib/errors";
+import { formatCount } from "./lib/format";
+import { requestJson } from "./lib/http";
 
 const QUERIES_URL = "/api/v1/content/queries";
 
+export interface QueriesElements {
+  language: HTMLSelectElement;
+  search: HTMLInputElement;
+  summary: HTMLElement;
+  message: HTMLElement;
+  list: HTMLElement;
+  empty: HTMLElement;
+  form: HTMLFormElement;
+  input: HTMLInputElement;
+  add: HTMLButtonElement;
+  status: HTMLElement;
+  refresh: HTMLButtonElement;
+}
+
+export interface QueriesView {
+  load: (language: string) => Promise<void>;
+}
+
+interface QueryItem {
+  query: string;
+  count: number;
+  in_file: boolean;
+}
+
+interface QueriesData {
+  queries: QueryItem[];
+  unclassified: number;
+  total: number;
+}
+
 /**
  * Build the queries panel.
- * @param {{
- *   language: HTMLSelectElement,
- *   search: HTMLInputElement,
- *   summary: HTMLElement,
- *   message: HTMLElement,
- *   list: HTMLElement,
- *   empty: HTMLElement,
- *   form: HTMLFormElement,
- *   input: HTMLInputElement,
- *   add: HTMLButtonElement,
- *   status: HTMLElement,
- *   refresh: HTMLButtonElement,
- * }} elements
  */
-export function createQueriesView(elements) {
-  /** @type {{queries: Array<{query: string, count: number, in_file: boolean}>, unclassified: number, total: number} | null} */
-  let data = null;
+export function createQueriesView(elements: QueriesElements): QueriesView {
+  let data: QueriesData | null = null;
   let currentLanguage = "";
   let adding = false;
   let requestSeq = 0;
 
   /**
    * Load the query list of one language.
-   * @param {string} language
    */
-  async function load(language) {
+  async function load(language: string): Promise<void> {
     if (!language) {
       return;
     }
@@ -42,9 +58,7 @@ export function createQueriesView(elements) {
     setMessage(elements.message, "");
     elements.summary.textContent = "Загружаем запросы…";
     try {
-      const response = await requestJson(
-        `${QUERIES_URL}?language=${encodeURIComponent(language)}`,
-      );
+      const response = await requestJson(`${QUERIES_URL}?language=${encodeURIComponent(language)}`);
       if (seq !== requestSeq) {
         return;
       }
@@ -55,7 +69,7 @@ export function createQueriesView(elements) {
         return;
       }
       data = null;
-      setMessage(elements.message, error.message);
+      setMessage(elements.message, errorMessage(error));
       elements.summary.textContent = "";
       elements.list.replaceChildren();
       toggle(elements.list, false);
@@ -64,7 +78,7 @@ export function createQueriesView(elements) {
     }
   }
 
-  function render() {
+  function render(): void {
     if (data === null) {
       return;
     }
@@ -99,10 +113,7 @@ export function createQueriesView(elements) {
       `без темы: ${formatCount(data.unclassified)}.`;
   }
 
-  /**
-   * @param {SubmitEvent} event
-   */
-  async function add(event) {
+  async function add(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     const query = elements.input.value.trim();
     if (!query) {
@@ -123,15 +134,14 @@ export function createQueriesView(elements) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ language, query }),
       });
-      const created = Boolean(response && response.created);
-      setStatus(
-        created ? "Запрос добавлен в файл." : "Такой запрос уже есть в файле.",
-        false,
+      const created = Boolean(
+        response && typeof response === "object" && "created" in response && response.created,
       );
+      setStatus(created ? "Запрос добавлен в файл." : "Такой запрос уже есть в файле.", false);
       elements.input.value = "";
       await load(language);
     } catch (error) {
-      setStatus(error.message, true);
+      setStatus(errorMessage(error), true);
     } finally {
       adding = false;
       elements.add.disabled = false;
@@ -139,11 +149,7 @@ export function createQueriesView(elements) {
     }
   }
 
-  /**
-   * @param {string} text
-   * @param {boolean} isError
-   */
-  function setStatus(text, isError) {
+  function setStatus(text: string, isError: boolean): void {
     elements.status.textContent = text;
     elements.status.classList.toggle("is-error", isError);
   }
@@ -159,19 +165,13 @@ export function createQueriesView(elements) {
   return { load };
 }
 
-/**
- * @param {unknown} response
- * @returns {{queries: Array<{query: string, count: number, in_file: boolean}>, unclassified: number, total: number}}
- */
-function normalize(response) {
-  const body = /** @type {Record<string, unknown>} */ (
-    response && typeof response === "object" ? response : {}
-  );
+function normalize(response: unknown): QueriesData {
+  const body = asObject(response);
   const rows = Array.isArray(body.queries) ? body.queries : [];
   const queries = rows
     .filter((row) => row && typeof row === "object")
     .map((row) => {
-      const item = /** @type {Record<string, unknown>} */ (row);
+      const item = asObject(row);
       return {
         query: String(item.query ?? ""),
         count: Number(item.count) || 0,
@@ -184,4 +184,8 @@ function normalize(response) {
     unclassified: Number(body.unclassified) || 0,
     total: Number(body.total) || 0,
   };
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
 }
