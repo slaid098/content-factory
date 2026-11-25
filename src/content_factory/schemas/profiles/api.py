@@ -31,6 +31,8 @@ class ProfileResponse(BaseModel):
     name: str
     language: str
     niche: str
+    title: str | None = None
+    summary: str | None = None
     width: int
     height: int
     audio: bool

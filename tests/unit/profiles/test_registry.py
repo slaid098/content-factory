@@ -322,3 +322,81 @@ def test_profile_info_without_delivery_uses_generated_default(tmp_path: Path) ->
     )
 
     assert profile.delivery == DeliveryInfo()
+
+
+def test_reads_profile_title_and_summary(tmp_path: Path) -> None:
+    _make_profile(
+        tmp_path,
+        "dating",
+        "profile_2",
+        title="  Знакомства для 30+  ",
+        summary="  Спокойные знакомства с акцентом на серьёзные отношения.  ",
+    )
+
+    profile = get_profile(tmp_path, "dating/profile_2")
+
+    assert profile.title == "Знакомства для 30+"
+    assert profile.summary == "Спокойные знакомства с акцентом на серьёзные отношения."
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_missing_or_blank_title_and_summary_are_none(
+    tmp_path: Path,
+    value: object,
+) -> None:
+    _make_profile(tmp_path, "dating", "profile_2", title=value, summary=value)
+
+    profile = get_profile(tmp_path, "dating/profile_2")
+
+    assert profile.title is None
+    assert profile.summary is None
+
+
+def test_profile_without_description_fields_has_none(tmp_path: Path) -> None:
+    _make_profile(tmp_path, "dating", "profile_2")
+
+    profile = get_profile(tmp_path, "dating/profile_2")
+
+    assert profile.title is None
+    assert profile.summary is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("title", 42),
+        ("title", "я"),
+        ("title", "я" * 81),
+        ("title", "Первая строка\nвторая"),
+        ("title", "abc\x00def"),
+        ("title", "abc\u202edef"),
+        ("title", "\ud800\ud800\ud800"),
+        ("summary", 42),
+        ("summary", "коротко"),
+        ("summary", "я" * 301),
+        ("summary", "Первая строка\nвторая"),
+        ("summary", "я" * 10 + "\x00" + "я" * 10),
+        ("summary", "я" * 10 + "\u202e" + "я" * 10),
+        ("summary", "\ud800" * 20),
+    ],
+)
+def test_invalid_description_field_skips_only_that_profile(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    _make_profile(tmp_path, "dating", "profile_1")
+    _make_profile(tmp_path, "dating", "profile_2", **{field: value})
+
+    assert [profile.id for profile in list_profiles(tmp_path)] == ["dating/profile_1"]
+    with pytest.raises(ProfileError, match="профиль не найден"):
+        get_profile(tmp_path, "dating/profile_2")
+
+
+def test_lone_surrogate_title_is_skipped_without_crashing_the_list(tmp_path: Path) -> None:
+    _make_profile(tmp_path, "dating", "profile_1")
+    _make_profile(tmp_path, "dating", "profile_2", title="\ud800" * 3)
+
+    profiles = list_profiles(tmp_path)
+
+    assert [profile.id for profile in profiles] == ["dating/profile_1"]

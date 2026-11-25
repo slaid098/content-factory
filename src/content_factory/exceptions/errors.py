@@ -77,3 +77,7 @@ class ProfileStorageError(ContentFactoryError):
 
 class ProfilePreviewError(ContentFactoryError):
     """Raised when a profile preview frame cannot be extracted."""
+
+
+class ProfileDescriptionError(ContentFactoryError):
+    """Raised when a profile title and summary cannot be generated or saved."""

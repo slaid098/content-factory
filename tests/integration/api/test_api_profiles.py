@@ -119,6 +119,8 @@ def test_list_returns_profiles_with_stock_overrides_and_last_run(data_dir: Path)
         "name": "profile_2",
         "language": "en",
         "niche": "auto",
+        "title": None,
+        "summary": None,
         "width": 544,
         "height": 960,
         "audio": True,
@@ -153,6 +155,23 @@ def test_list_without_profiles_returns_empty_array(data_dir: Path) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"profiles": []}
+
+
+def test_list_returns_profile_title_and_summary(data_dir: Path) -> None:
+    add_profile(
+        data_dir,
+        "dating",
+        "profile_1",
+        title="Знакомства для 30+",
+        summary="Спокойные знакомства с акцентом на серьёзные отношения.",
+    )
+
+    response = _get(_client(), _PREFIX)
+
+    assert response.status_code == 200
+    profile = response.json()["profiles"][0]
+    assert profile["title"] == "Знакомства для 30+"
+    assert profile["summary"] == "Спокойные знакомства с акцентом на серьёзные отношения."
 
 
 def test_list_does_not_change_stored_settings(data_dir: Path) -> None:

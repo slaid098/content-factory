@@ -10,13 +10,14 @@ import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 import httpx
 from loguru import logger
 
 from content_factory.config.settings import GeneratorSettings
 from content_factory.exceptions.generator import TextError
+from content_factory.schemas.generator.text import DEFAULT_USER_MESSAGE, TextWriter
 from content_factory.services.generator.auth import bearer_header
 from content_factory.services.generator.profiles import _Profile, text_prompt
 
@@ -30,7 +31,6 @@ _RESULT_RE = re.compile(r"<result(?:\s[^>]*)?>\s*(.*?)\s*</result>", re.DOTALL |
 _BLOCK_RE = re.compile(r"<block(?:\s[^>]*)?>\s*(.*?)\s*</block>", re.DOTALL | re.IGNORECASE)
 _FENCE_RE = re.compile(r"^\s*```[^\n]*$", re.MULTILINE)
 _MIN_TEXT_LEN = 5
-_USER_MESSAGE = "Сгенерируй один текст для одного видео."
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,14 +45,6 @@ class _Overlay:
     """Text card of one video: the main block and the call to action."""
 
     blocks: tuple[_TextBlock, ...]
-
-
-class _TextWriter(Protocol):
-    """Port of the text model used by the overlay step."""
-
-    def write(self, system_prompt: str) -> str:
-        """Return the raw answer of the model for one overlay."""
-        ...
 
 
 class TextClient:
@@ -70,14 +62,17 @@ class TextClient:
         self._client = client
         self._timeout = timeout
 
-    def write(self, system_prompt: str) -> str:
-        """Ask the model for one card and return its raw answer.
+    def write(self, system_prompt: str, user_prompt: str = DEFAULT_USER_MESSAGE) -> str:
+        """Ask the model for one answer and return its raw text.
 
         Args:
-            system_prompt: Instruction of the profile (``text_prompt.txt``).
+            system_prompt: Instruction of the profile (``text_prompt.txt``) or
+                of another task such as the profile description.
+            user_prompt: User message of the request; the overlay step keeps
+                the default.
 
         Returns:
-            Raw answer with the ``<result><block>`` markup.
+            Raw answer with the markup the caller expects.
 
         Raises:
             TextError: The model is unreachable, rejected the request or
@@ -88,7 +83,7 @@ class TextClient:
         if authorization is not None:
             headers["Authorization"] = authorization
         url = f"{self._settings.api_url.rstrip('/')}/chat/completions"
-        payload = _payload(system_prompt, self._settings.model)
+        payload = _payload(system_prompt, self._settings.model, user_prompt)
         try:
             if self._client is None:
                 with httpx.Client(timeout=self._timeout) as http:
@@ -119,7 +114,7 @@ def _bearer(key: str) -> str:
 
 def generate_overlay(
     profile: _Profile,
-    writer: _TextWriter,
+    writer: TextWriter,
     *,
     attempts: int = _TEXT_ATTEMPTS,
     pause: float = _TEXT_PAUSE,
@@ -263,13 +258,17 @@ def _spin(text: str, rng: random.Random) -> str:
     )
 
 
-def _payload(system_prompt: str, model: str) -> dict[str, Any]:
+def _payload(
+    system_prompt: str,
+    model: str,
+    user_prompt: str = DEFAULT_USER_MESSAGE,
+) -> dict[str, Any]:
     """Build the OpenAI-compatible chat-completions payload."""
     return {
         "model": model,
         "messages": [
             {"role": "system", "content": system_prompt[:_MAX_DATA_LENGTH]},
-            {"role": "user", "content": _USER_MESSAGE},
+            {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.9,
         "stream": False,
