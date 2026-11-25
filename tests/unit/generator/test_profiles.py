@@ -105,6 +105,25 @@ def test_unsupported_renderer_fails_before_rent(tmp_path: Path) -> None:
         load_profile("dating/profile_2", root)
 
 
+@pytest.mark.parametrize(
+    ("width", "height"),
+    [(8193, 960), (960, 8193), (8192, 2049)],
+)
+def test_oversized_photo_fails_before_rent(tmp_path: Path, width: int, height: int) -> None:
+    root = tmp_path / "profiles"
+    make_profile(root, width=width, height=height)
+
+    with pytest.raises(ProfileError, match="размер"):
+        load_profile("dating/profile_2", root)
+
+
+def test_photo_size_at_the_limit_is_accepted(tmp_path: Path) -> None:
+    root = tmp_path / "profiles"
+    make_profile(root, width=8192, height=2048)
+
+    assert load_profile("dating/profile_2", root).width == 8192
+
+
 def test_empty_niche_falls_back_to_the_profile_category(tmp_path: Path) -> None:
     root = tmp_path / "profiles"
     make_profile(root, extra={"niche": ""})

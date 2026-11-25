@@ -266,6 +266,25 @@ def test_dry_run_plans_every_recipe_step_by_type(tmp_path: Path) -> None:
     assert all(item["look_id"] is None for item in report["items"][2:])
 
 
+def test_dry_run_starts_videos_after_the_rotation_cursor(tmp_path: Path) -> None:
+    make_profile(tmp_path / "profiles", extra=_mixed_recipe())
+    cursor = tmp_path / "generated" / "ru" / "dating_profile_2" / "rotation.json"
+    cursor.parent.mkdir(parents=True)
+    cursor.write_text(json.dumps({"last_look_id": "c01"}), encoding="utf-8")
+    registry.register("vast", _BrokenProducer)
+    registry.register("card", _BrokenPhotoProducer)
+    try:
+        generate_batch.fn(profiles="dating/profile_2", count=1, dry_run=True)
+    finally:
+        registry.reset()
+
+    report = json.loads(
+        next((tmp_path / "generated").rglob("run.json")).read_text(encoding="utf-8")
+    )
+    video = [item for item in report["items"] if item["type"] == "video"]
+    assert [item["look_id"] for item in video] == ["c02"]
+
+
 def test_mixed_recipe_returns_every_step_run_id(tmp_path: Path) -> None:
     make_profile(tmp_path / "profiles", extra=_mixed_recipe())
     video = _SequenceProducer("run-video")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
 from pathlib import Path
 
 from loguru import logger
@@ -17,10 +18,12 @@ def publish_stock(profile: _Profile, final: Path, data_root: Path) -> Path:
     """Publish one final video into ``content/<niche>/<language>/``.
 
     A hard link keeps the video in ``generated/`` without spending disk space.
-    When linking is impossible, the file is copied instead. An existing stock
-    file is never overwritten: that is a publication error. The niche and the
-    language are validated again here, and the resolved destination must stay
-    inside the stock root, so a malformed profile cannot write anywhere else.
+    When linking is impossible, the file is copied into a hidden temporary file
+    next to the destination and linked under its stock name only after the copy
+    is complete. An existing stock file is never overwritten: that is a
+    publication error. The niche and the language are validated again here, and
+    the resolved destination must stay inside the stock root, so a malformed
+    profile cannot write anywhere else.
 
     Args:
         profile: Profile that produced the video; an empty niche falls back
@@ -45,10 +48,13 @@ def publish_stock(profile: _Profile, final: Path, data_root: Path) -> Path:
 def publish_photo(profile: _Profile, final: Path, data_root: Path) -> Path:
     """Publish a photo and its text sidecar as one stock pair.
 
-    The photo keeps its ``.jpg`` name; the sidecar is linked or copied next to
-    it as ``.json``. Both destinations must be free before anything is placed,
-    and a failure of the second file removes the first one, so a published
-    post is always a complete pair. The source files stay in ``generated/``.
+    The text sidecar is placed first and the photo last: both final names
+    appear only after the photo itself is complete, so a process that dies
+    mid-publication never leaves a photo without its text. Both destinations
+    must be free before anything is placed. When the photo cannot be placed,
+    the sidecar is removed, but only while it is still the inode this call
+    created, so a file replaced by someone else is never deleted. The source
+    files stay in ``generated/``.
 
     Args:
         profile: Profile that produced the photo.
@@ -68,12 +74,11 @@ def publish_photo(profile: _Profile, final: Path, data_root: Path) -> Path:
         raise GeneratorError(f"не удалось положить в сток: нет текста поста {sidecar}")
     destination = _stock_path(profile, final.name, data_root)
     sidecar_destination = _stock_path(profile, sidecar.name, data_root)
-    _place(final, destination)
-    created = _stat_or_none(destination)
+    sidecar_created = _place(sidecar, sidecar_destination)
     try:
-        _place(sidecar, sidecar_destination)
+        _place(final, destination)
     except GeneratorError:
-        _remove_if_same(destination, created)
+        _remove_if_same(sidecar_destination, sidecar_created)
         raise
     return destination
 
@@ -108,73 +113,88 @@ def _stock_path(profile: _Profile, name: str, data_root: Path) -> Path:
     return destination
 
 
-def _place(source: Path, destination: Path) -> None:
-    """Link *source* to *destination*, falling back to an exclusive copy.
+def _place(source: Path, destination: Path) -> os.stat_result:
+    """Link *source* to *destination* and return the inode that was placed.
 
-    A destination created by the copy fallback is removed when copying fails,
-    so a failed publication never leaves a partial file. An existing
-    destination is never overwritten, even when the hard link fails for a
-    reason other than a name clash.
+    The returned stat describes the source inode, taken before linking, so it
+    never depends on what the destination name points to later. When a hard
+    link is impossible, the source is copied into an exclusive temporary file
+    in the destination directory and linked under its final name only after
+    the copy is complete; the final name never receives a partial file and
+    never replaces an existing one.
+
+    Args:
+        source: Finished file inside the run ``final`` directory.
+        destination: Free stock path of the file.
+
+    Returns:
+        Stat of the inode placed at *destination*.
 
     Raises:
-        GeneratorError: The destination exists or neither linking nor copying
-            succeeded.
+        GeneratorError: The source cannot be read, the destination exists or
+            neither linking nor copying succeeded.
     """
+    try:
+        created = source.stat()
+    except OSError as ex:
+        raise GeneratorError(_publish_error(destination)) from ex
     try:
         os.link(source, destination)
     except FileExistsError as ex:
         raise GeneratorError(_publish_error(destination)) from ex
     except OSError:
-        _copy_exclusive(source, destination)
+        return _copy_exclusive(source, destination)
+    return created
 
 
-def _copy_exclusive(source: Path, destination: Path) -> None:
-    """Copy *source* into a destination created exclusively by this call.
+def _copy_exclusive(source: Path, destination: Path) -> os.stat_result:
+    """Copy *source* into an exclusive temporary file and link it into place.
 
-    ``open("xb")`` refuses an existing name, so the copy fallback cannot
-    overwrite a file that appeared after the earlier free-name check.
+    The destination name appears only after the copy is complete, and
+    ``os.link`` refuses an existing name, so a concurrent publication cannot
+    be overwritten. The temporary file is removed in every case.
+
+    Args:
+        source: Finished file inside the run ``final`` directory.
+        destination: Free stock path of the file.
+
+    Returns:
+        Stat of the inode linked at *destination*.
 
     Raises:
-        GeneratorError: The destination exists or cannot be read or written.
+        GeneratorError: The source cannot be read, the temporary file cannot
+            be written, or the destination already exists.
     """
     try:
-        src = source.open("rb")
+        fd, temp_name = tempfile.mkstemp(
+            dir=destination.parent, prefix=f".{destination.name}.", suffix=".tmp"
+        )
     except OSError as ex:
         raise GeneratorError(_publish_error(destination)) from ex
+    temp = Path(temp_name)
     try:
+        created = os.fstat(fd)
         try:
-            dst = destination.open("xb")
+            with source.open("rb") as src, os.fdopen(fd, "wb") as dst:
+                fd = -1
+                shutil.copyfileobj(src, dst)
+        except OSError as ex:
+            raise GeneratorError(_publish_error(destination)) from ex
+        try:
+            os.link(temp, destination)
         except FileExistsError as ex:
             raise GeneratorError(_publish_error(destination)) from ex
         except OSError as ex:
             raise GeneratorError(_publish_error(destination)) from ex
-        try:
-            created: os.stat_result | None = None
-            with dst:
-                created = os.fstat(dst.fileno())
-                shutil.copyfileobj(src, dst)
-        except OSError as ex:
-            _remove_if_same(destination, created)
-            raise GeneratorError(_publish_error(destination)) from ex
+        return created
     finally:
-        src.close()
+        if fd != -1:
+            os.close(fd)
+        _remove(temp)
 
 
-def _stat_or_none(path: Path) -> os.stat_result | None:
-    """Return the stat of a just-created file, logging instead of failing."""
-    try:
-        return path.stat()
-    except OSError as ex:
-        logger.bind(path=str(path), error=ex, error_type=type(ex).__name__).warning(
-            "Не удалось проверить опубликованный файл {}", path
-        )
-        return None
-
-
-def _remove_if_same(path: Path, expected: os.stat_result | None) -> None:
-    """Remove *path* only while it is still the file this call created."""
-    if expected is None:
-        return
+def _remove_if_same(path: Path, expected: os.stat_result) -> None:
+    """Remove *path* only while it is still the inode this call created."""
     try:
         current = path.stat()
     except FileNotFoundError:

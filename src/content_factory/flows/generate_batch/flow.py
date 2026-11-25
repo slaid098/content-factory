@@ -36,6 +36,7 @@ from content_factory.services.generator import (
     write_report,
 )
 from content_factory.services.generator import generate_batch as run_batch
+from content_factory.services.generator.service import read_profile_cursor
 
 if TYPE_CHECKING:
     from content_factory.config.settings import GeneratorSettings
@@ -71,13 +72,15 @@ def _dry_run(loaded: list[Any], count: int, settings: GeneratorSettings) -> list
     started = datetime.now(UTC)
     run_id = choose_run_id(settings.output_dir, loaded, started)
     for profile in loaded:
-        report = _dry_report(profile, count, run_id, started)
+        report = _dry_report(profile, count, run_id, started, settings.output_dir)
         run_dir = settings.output_dir / profile.language / profile_slug(profile) / run_id
         write_report(run_dir, report)
     return [run_id]
 
 
-def _dry_report(profile: Any, count: int, run_id: str, started: datetime) -> RunReport:
+def _dry_report(
+    profile: Any, count: int, run_id: str, started: datetime, output_dir: Path
+) -> RunReport:
     """Build the dry-run report of one profile across all recipe steps."""
     return RunReport(
         run_id=run_id,
@@ -90,12 +93,16 @@ def _dry_report(profile: Any, count: int, run_id: str, started: datetime) -> Run
             for step in profile.production
         ],
         items=[
-            item for step in profile.production for item in _dry_items(profile, step, count, run_id)
+            item
+            for step in profile.production
+            for item in _dry_items(profile, step, count, run_id, output_dir)
         ],
     )
 
 
-def _dry_items(profile: Any, step: ProductionStep, count: int, run_id: str) -> list[RunItem]:
+def _dry_items(
+    profile: Any, step: ProductionStep, count: int, run_id: str, output_dir: Path
+) -> list[RunItem]:
     """Plan one step: video cards, seeds and lengths or photo post names."""
     if step.type is ContentType.PHOTO:
         slug = profile_slug(profile)
@@ -110,6 +117,7 @@ def _dry_items(profile: Any, step: ProductionStep, count: int, run_id: str) -> l
             )
             for seq in range(1, count + 1)
         ]
+    cursor = read_profile_cursor(output_dir, profile.language, profile_slug(profile))
     return [
         RunItem(
             file=item.filename,
@@ -122,7 +130,7 @@ def _dry_items(profile: Any, step: ProductionStep, count: int, run_id: str) -> l
             type=step.type,
             qa=list(step.qa),
         )
-        for item in plan_batch(profile, count, run_id)
+        for item in plan_batch(profile, count, run_id, start_after=cursor)
     ]
 
 

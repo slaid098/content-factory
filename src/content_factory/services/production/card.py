@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from loguru import logger
 from PIL import Image
@@ -164,19 +164,16 @@ class CardProducer:
         final_dir = run_dir / _FINAL_DIR
         generated = failed = total_bytes = 0
         for item in report.items:
-            final = final_dir / item.file
-            size = 0
             try:
-                overlay = generate_overlay(loaded, writer)
-                caption = _checked_caption(overlay)
-                _render_jpeg(loaded, overlay, renderer, final)
-                _write_sidecar(final, caption)
-                reason = _qa_reason(step, final, loaded.width, loaded.height)
-                if reason is not None:
-                    raise QaError(reason)
-                size = final.stat().st_size
-                publish_photo(loaded, final, data_dir)
-            except (GeneratorError, OSError, UnicodeError, Image.DecompressionBombError) as ex:
+                size = _produce_item(loaded, step, item, writer, renderer, final_dir, data_dir)
+            except (
+                GeneratorError,
+                OSError,
+                UnicodeError,
+                Image.DecompressionBombError,
+                MemoryError,
+                OverflowError,
+            ) as ex:
                 failed += 1
                 _mark_failed(item, ex)
             else:
@@ -193,6 +190,39 @@ class CardProducer:
             failed=report.totals.failed,
             run_dirs=(run_dir,),
         )
+
+
+def _produce_item(
+    profile: Any,
+    step: ProductionStep,
+    item: RunItem,
+    writer: _Writer,
+    renderer: _Renderer,
+    final_dir: Path,
+    data_dir: Path,
+) -> int:
+    """Generate, check and publish one photo; return its JPEG size.
+
+    Raises:
+        QaError: A declared final check rejected the photo.
+        GeneratorError: The caption or the publication failed.
+        OSError: A file could not be read or written.
+        UnicodeError: The caption cannot be encoded as UTF-8.
+        MemoryError: The image does not fit into memory.
+        OverflowError: The image size overflows the renderer.
+        Image.DecompressionBombError: The JPEG declares too many pixels.
+    """
+    final = final_dir / item.file
+    overlay = generate_overlay(profile, writer)
+    caption = _checked_caption(overlay)
+    _render_jpeg(profile, overlay, renderer, final)
+    _write_sidecar(final, caption)
+    reason = _qa_reason(step, final, profile.width, profile.height)
+    if reason is not None:
+        raise QaError(reason)
+    size = final.stat().st_size
+    publish_photo(profile, final, data_dir)
+    return size
 
 
 def _close_report(report: RunReport, generated: int, failed: int, total_bytes: int) -> None:
@@ -268,6 +298,8 @@ def _render_jpeg(
     Raises:
         OverlayError: The profile colour or the card renderer failed.
         OSError: The JPEG cannot be written.
+        MemoryError: The image does not fit into memory.
+        OverflowError: The image size overflows the renderer.
     """
     try:
         image = Image.new("RGB", (profile.width, profile.height), profile.style.text_bg_color)

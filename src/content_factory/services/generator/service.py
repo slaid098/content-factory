@@ -65,6 +65,7 @@ from content_factory.services.generator.report import (
     _status,
     _write_report,
 )
+from content_factory.services.generator.rotation import read_profile_cursor
 from content_factory.services.generator.vast import VastSession
 from content_factory.services.generator.workflow import build_workflow
 
@@ -492,4 +493,4 @@ def _cursor_path(output_dir: Path, profile: _Profile) -> Path:
     )
 
 
-__all__ = ["generate_batch", "publish_stock"]
+__all__ = ["generate_batch", "publish_stock", "read_profile_cursor"]

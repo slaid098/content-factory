@@ -53,6 +53,21 @@ def read_cursor(path: Path) -> str | None:
     return look_id
 
 
+def read_profile_cursor(output_dir: Path, language: str, slug: str) -> str | None:
+    """Return the cursor of one ``language + profile`` output directory.
+
+    Args:
+        output_dir: Root of the run directories.
+        language: Language folder of the profile.
+        slug: Profile slug folder used in output paths.
+
+    Returns:
+        ``last_look_id`` from the rotation cursor, or ``None`` when it is
+        missing or unusable.
+    """
+    return read_cursor(output_dir / language / slug / ROTATION_FILENAME)
+
+
 def advance_cursor(path: Path, last_look_id: str, run_id: str, now: datetime) -> None:
     """Move the cursor to *last_look_id*, writing the file atomically.
 

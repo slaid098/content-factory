@@ -192,6 +192,33 @@ def test_broken_render_marks_the_item_failed_without_publication(tmp_path: Path)
     assert "карточка не нарисовалась" in report["items"][0]["error"]
 
 
+@pytest.mark.parametrize("kind", [MemoryError, OverflowError])
+def test_render_resource_error_marks_the_item_failed_and_finalizes_the_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: type[Exception]
+) -> None:
+    _photo_profile(tmp_path)
+
+    def fail(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise kind("размер не помещается")
+
+    monkeypatch.setattr(card_module.Image, "new", fail)
+
+    produced = _producer().produce(
+        SimpleNamespace(name="dating/profile_2"), 1, tmp_path, _settings(tmp_path)
+    )
+
+    assert produced.generated == 0
+    assert produced.failed == 1
+    assert not _stock_dir(tmp_path).exists()
+    report = json.loads((_run_dir(tmp_path) / "run.json").read_text(encoding="utf-8"))
+    assert report["status"] == "failed"
+    assert report["finished_at"] is not None
+    assert report["totals"] == {"generated": 0, "failed": 1, "bytes": 0}
+    assert report["items"][0]["status"] == "failed"
+    assert "размер не помещается" in report["items"][0]["error"]
+
+
 def test_image_check_failure_marks_the_item_failed_without_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -261,15 +288,15 @@ def test_existing_stock_file_leaves_no_half_pair(tmp_path: Path, existing: str) 
         assert (stock_dir / f"{name}.json").read_text(encoding="utf-8") == "old"
 
 
-def test_sidecar_publication_failure_removes_the_published_jpeg(
+def test_photo_publication_failure_removes_the_published_sidecar(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _photo_profile(tmp_path)
     real_link = publish.os.link
 
     def link(source: Path, destination: Path, *args: object, **kwargs: object) -> None:
-        if str(destination).endswith(".json"):
-            raise OSError("sidecar link failed")
+        if str(destination).endswith(".jpg"):
+            raise OSError("photo link failed")
         real_link(source, destination, *args, **kwargs)
 
     def copy(source: Path, destination: Path, *args: object, **kwargs: object) -> None:
@@ -288,7 +315,7 @@ def test_sidecar_publication_failure_removes_the_published_jpeg(
     assert list(stock_dir.glob(f"{_post_name(1)}.*")) == []
 
 
-def test_sidecar_failure_does_not_remove_a_replaced_jpeg(
+def test_photo_failure_does_not_remove_a_replaced_sidecar(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, log_records: list[Any]
 ) -> None:
     _photo_profile(tmp_path)
@@ -296,11 +323,11 @@ def test_sidecar_failure_does_not_remove_a_replaced_jpeg(
     foreign = "чужой файл"
 
     def link(source: Path, destination: Path, *args: object, **kwargs: object) -> None:
-        if str(destination).endswith(".json"):
-            jpg = Path(destination).with_suffix(".jpg")
-            jpg.unlink()
-            jpg.write_text(foreign, encoding="utf-8")
-            raise OSError("sidecar link failed")
+        if str(destination).endswith(".jpg"):
+            sidecar = Path(destination).with_suffix(".json")
+            sidecar.unlink()
+            sidecar.write_text(foreign, encoding="utf-8")
+            raise OSError("photo link failed")
         real_link(source, destination, *args, **kwargs)
 
     def copy(source: Path, destination: Path, *args: object, **kwargs: object) -> None:
@@ -315,25 +342,82 @@ def test_sidecar_failure_does_not_remove_a_replaced_jpeg(
     )
 
     assert produced.failed == 1
-    stock = _stock_dir(tmp_path) / f"{_post_name(1)}.jpg"
+    stock = _stock_dir(tmp_path) / f"{_post_name(1)}.json"
     assert stock.read_text(encoding="utf-8") == foreign
-    assert not stock.with_suffix(".json").exists()
+    assert not stock.with_suffix(".jpg").exists()
     assert any(
         record["level"].name == "WARNING" and "заменён" in record["message"]
         for record in log_records
     )
 
 
-def test_publish_photo_places_the_jpeg_and_its_sidecar(tmp_path: Path) -> None:
+def test_failed_jpeg_publication_keeps_a_foreign_jpeg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _photo_profile(tmp_path)
+    real_link = publish.os.link
+    foreign = "чужой jpeg"
+
+    def link(source: Path, destination: Path, *args: object, **kwargs: object) -> None:
+        if str(destination).endswith(".jpg"):
+            Path(destination).write_text(foreign, encoding="utf-8")
+            raise FileExistsError(destination)
+        real_link(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(publish.os, "link", link)
+
+    produced = _producer().produce(
+        SimpleNamespace(name="dating/profile_2"), 1, tmp_path, _settings(tmp_path)
+    )
+
+    assert produced.failed == 1
+    stock = _stock_dir(tmp_path) / f"{_post_name(1)}.jpg"
+    assert stock.read_text(encoding="utf-8") == foreign
+    assert not stock.with_suffix(".json").exists()
+
+
+def test_remove_if_same_keeps_a_jpeg_replaced_after_placement(
+    tmp_path: Path, log_records: list[Any]
+) -> None:
+    path = tmp_path / "post.jpg"
+    path.write_bytes(b"mine")
+    created = path.stat()
+    kept = tmp_path / "kept.jpg"
+    kept.hardlink_to(path)
+    path.unlink()
+    path.write_bytes("чужой файл".encode())
+
+    publish._remove_if_same(path, created)
+
+    assert path.read_bytes() == "чужой файл".encode()
+    assert kept.read_bytes() == b"mine"
+    assert any(
+        record["level"].name == "WARNING" and "заменён" in record["message"]
+        for record in log_records
+    )
+
+
+def test_publish_photo_places_the_sidecar_before_the_jpeg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     profile = fixture_profile(tmp_path / "profiles")
     final = tmp_path / "generated" / "post.jpg"
     final.parent.mkdir(parents=True)
     final.write_bytes(b"jpeg")
     sidecar = final.with_suffix(".json")
     sidecar.write_text('{"text": "Текст"}', encoding="utf-8")
+    real_link = publish.os.link
+    order: list[str] = []
+
+    def link(source: Path, destination: Path, *args: object, **kwargs: object) -> None:
+        order.append(Path(destination).suffix)
+        real_link(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(publish.os, "link", link)
 
     destination = publish.publish_photo(profile, final, tmp_path)
 
+    assert order == [".json", ".jpg"]
     assert destination == tmp_path / "content" / "dating" / "ru" / "post.jpg"
     assert destination.read_bytes() == b"jpeg"
     assert destination.with_suffix(".json").read_text(encoding="utf-8") == '{"text": "Текст"}'

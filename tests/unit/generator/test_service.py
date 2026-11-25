@@ -374,11 +374,16 @@ def test_publish_stock_copies_when_hardlink_fails(
     final = tmp_path / "generated" / "final.mp4"
     final.parent.mkdir(parents=True)
     final.write_bytes(b"video")
+    real_link = publish.os.link
+    calls: list[int] = []
 
-    def fail_link(*args: object, **kwargs: object) -> None:
-        raise OSError("cross-device link")
+    def fail_first_link(source: Path, destination: Path, *args: object, **kwargs: object) -> None:
+        if not calls:
+            calls.append(1)
+            raise OSError("cross-device link")
+        real_link(source, destination, *args, **kwargs)
 
-    monkeypatch.setattr(publish.os, "link", fail_link)
+    monkeypatch.setattr(publish.os, "link", fail_first_link)
 
     destination = publish.publish_stock(profile, final, tmp_path)
 
@@ -433,7 +438,9 @@ def test_publish_stock_reports_copy_failure(
         publish.publish_stock(profile, final, tmp_path)
 
     assert final.is_file()
-    assert not (tmp_path / "content" / "dating" / "ru" / "final.mp4").exists()
+    destination = tmp_path / "content" / "dating" / "ru" / "final.mp4"
+    assert not destination.exists()
+    assert list(destination.parent.iterdir()) == []
 
 
 def test_publish_stock_copy_fallback_never_overwrites_an_existing_file(
@@ -445,19 +452,57 @@ def test_publish_stock_copy_fallback_never_overwrites_an_existing_file(
     final.parent.mkdir(parents=True)
     final.write_bytes(b"new")
     destination = tmp_path / "content" / "dating" / "ru" / "final.mp4"
-    destination.parent.mkdir(parents=True)
-    destination.write_bytes(b"old")
+    real_link = publish.os.link
+    calls: list[int] = []
 
-    def fail_link(*args: object, **kwargs: object) -> None:
-        raise OSError("cross-device link")
+    def race_link(source: Path, target: Path, *args: object, **kwargs: object) -> None:
+        if not calls:
+            calls.append(1)
+            target.write_bytes(b"old")
+            raise OSError("cross-device link")
+        real_link(source, target, *args, **kwargs)
 
-    monkeypatch.setattr(publish.os, "link", fail_link)
+    monkeypatch.setattr(publish.os, "link", race_link)
 
     with pytest.raises(GeneratorError, match="не удалось положить в сток"):
         publish.publish_stock(profile, final, tmp_path)
 
     assert destination.read_bytes() == b"old"
     assert final.read_bytes() == b"new"
+    assert list(destination.parent.iterdir()) == [destination]
+
+
+def test_publish_stock_copy_fallback_creates_the_name_after_the_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+    final = tmp_path / "generated" / "final.mp4"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"video")
+    destination = tmp_path / "content" / "dating" / "ru" / "final.mp4"
+    real_link = publish.os.link
+    real_copy = publish.shutil.copyfileobj
+    calls: list[int] = []
+    visible_during_copy: list[bool] = []
+
+    def fail_first_link(source: Path, target: Path, *args: object, **kwargs: object) -> None:
+        if not calls:
+            calls.append(1)
+            raise OSError("cross-device link")
+        real_link(source, target, *args, **kwargs)
+
+    def watch_copy(source: Any, target: Any, *args: object, **kwargs: object) -> None:
+        visible_during_copy.append(destination.exists())
+        real_copy(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(publish.os, "link", fail_first_link)
+    monkeypatch.setattr(publish.shutil, "copyfileobj", watch_copy)
+
+    published = publish.publish_stock(profile, final, tmp_path)
+
+    assert visible_during_copy == [False]
+    assert published.read_bytes() == b"video"
 
 
 @pytest.mark.parametrize("niche", ["../escape", "Dating", "dating/ru"])
