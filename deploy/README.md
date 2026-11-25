@@ -265,6 +265,8 @@ SUPPLIER_PROXY=
 # Bearer-токен выдачи контента; пустое значение выключает endpoint (503).
 CONTENT_FACTORY_DELIVERY_TOKEN=
 CONTENT_FACTORY_DELIVERY_RETENTION_HOURS=24
+# DSN PostgreSQL; пусто — SQLite app_data/db/db.sqlite3 (поведение по умолчанию).
+CONTENT_FACTORY_DATABASE_URL=
 # Генератор дейтинг-роликов (flow generate_batch). OPENAI_API_KEY и
 # OPENAI_BASE_URL — общие ключ и адрес LLM для названий и генератора;
 # VAST_API_TOKEN — ключ Vast.ai с правом аренды.
@@ -312,6 +314,7 @@ EOF
 | `SUPPLIER_PROXY` | нет | — | прокси движка: `http://`, `https://`, `socks5://`, `socks5h://` |
 | `CONTENT_FACTORY_DELIVERY_TOKEN` | нет | — | Bearer-токен `POST /api/v1/content/deliveries`; пусто — выдача выключена |
 | `CONTENT_FACTORY_DELIVERY_RETENTION_HOURS` | нет | `24` | TTL zip-архивов выдачи, часов (≥ 1) |
+| `CONTENT_FACTORY_DATABASE_URL` | нет | — | DSN PostgreSQL `postgresql://user:password@host:port/db`; пусто — SQLite |
 | `OPENAI_API_KEY` | для названий и генерации | — | общий ключ OpenAI-совместимого API; пусто — flow `titles` выключен |
 | `OPENAI_BASE_URL` | нет | `https://ollama.com/v1` | общий адрес API без завершающего `/` |
 | `TITLES_MODEL` | нет | `deepseek-v4.1-flash` | модель названий |
