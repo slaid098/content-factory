@@ -9,14 +9,17 @@ from typing import Any
 
 import pytest
 import yaml
+from tests.unit.common.profile_helpers import add_profile_photo
 
 from content_factory.db.connection import connect
 from content_factory.db.lock import GENERATOR_LOCK, lock_path, try_acquire
 from content_factory.db.profiles import upsert_refill
 from content_factory.flows.profile_refill.flow import profile_refill
+from content_factory.schemas.content.delivery import ContentType
 from content_factory.schemas.profiles.refill import ProfileRefill
 
 _NOW = datetime(2026, 11, 24, 12, 0, tzinfo=UTC).isoformat()
+_VIDEO = _PHOTO = frozenset({ContentType.VIDEO})
 
 
 @pytest.fixture(autouse=True)
@@ -29,16 +32,20 @@ def _make_profile(
     root: Path,
     category: str = "dating",
     name: str = "profile_2",
+    *,
+    production: list[dict[str, str]] | None = None,
 ) -> None:
     directory = root / "profiles" / category / name
     directory.mkdir(parents=True)
-    data = {
+    data: dict[str, Any] = {
         "language": "ru",
         "niche": category,
         "width": 512,
         "height": 896,
         "audio": True,
     }
+    if production is not None:
+        data["production"] = production
     (directory / "profile.yaml").write_text(
         yaml.safe_dump(data, allow_unicode=True),
         encoding="utf-8",
@@ -54,16 +61,31 @@ def _set_refill(root: Path, profile_id: str, refill: ProfileRefill) -> None:
         connection.close()
 
 
-def _touch_stock(root: Path, counts: int, category: str = "dating") -> None:
+def _touch_stock(
+    root: Path,
+    counts: int,
+    category: str = "dating",
+    name: str = "profile_2",
+) -> None:
     directory = root / "content" / category / "ru"
     directory.mkdir(parents=True, exist_ok=True)
     for index in range(counts):
-        (directory / f"dating_profile_2_run_{index:03}.mp4").write_bytes(b"video")
+        (directory / f"{category}_{name}_run_{index:03}.mp4").write_bytes(b"video")
 
 
-def _recorder(calls: list[tuple[str, int]]) -> Callable[[str, int], None]:
-    def start(profile_id: str, count: int) -> None:
-        calls.append((profile_id, count))
+def _touch_photos(root: Path, counts: int, category: str = "dating") -> None:
+    for index in range(counts):
+        add_profile_photo(
+            root,
+            category,
+            "profile_2",
+            filename=f"dating_profile_2_run_{index:03}.jpg",
+        )
+
+
+def _recorder(calls: list[tuple[str, int, str]]) -> Callable[[str, int, ContentType], None]:
+    def start(profile_id: str, count: int, content_type: ContentType) -> None:
+        calls.append((profile_id, count, content_type.value))
 
     return start
 
@@ -75,7 +97,7 @@ def test_flow_is_callable_and_named() -> None:
 
 def test_all_profiles_disabled_start_nothing(tmp_path: Path) -> None:
     _make_profile(tmp_path)
-    calls: list[tuple[str, int]] = []
+    calls: list[tuple[str, int, str]] = []
 
     outcome = profile_refill.fn(starter=_recorder(calls))
 
@@ -86,12 +108,12 @@ def test_all_profiles_disabled_start_nothing(tmp_path: Path) -> None:
 def test_enabled_profile_starts_exactly_one_batch(tmp_path: Path) -> None:
     _make_profile(tmp_path)
     _set_refill(tmp_path, "dating/profile_2", ProfileRefill(True, 3, 1))
-    calls: list[tuple[str, int]] = []
+    calls: list[tuple[str, int, str]] = []
 
     outcome = profile_refill.fn(starter=_recorder(calls))
 
     assert outcome == "started:dating/profile_2"
-    assert calls == [("dating/profile_2", 3)]
+    assert calls == [("dating/profile_2", 3, "video")]
 
 
 def test_only_first_profile_by_id_is_started(tmp_path: Path) -> None:
@@ -99,19 +121,19 @@ def test_only_first_profile_by_id_is_started(tmp_path: Path) -> None:
     _make_profile(tmp_path, "a", "profile_1")
     _set_refill(tmp_path, "z/profile_1", ProfileRefill(True, 2, 0))
     _set_refill(tmp_path, "a/profile_1", ProfileRefill(True, 4, 0))
-    calls: list[tuple[str, int]] = []
+    calls: list[tuple[str, int, str]] = []
 
     outcome = profile_refill.fn(starter=_recorder(calls))
 
     assert outcome == "started:a/profile_1"
-    assert calls == [("a/profile_1", 4)]
+    assert calls == [("a/profile_1", 4, "video")]
 
 
 def test_profile_with_enough_stock_is_idle(tmp_path: Path) -> None:
     _make_profile(tmp_path)
     _set_refill(tmp_path, "dating/profile_2", ProfileRefill(True, 3, 2))
     _touch_stock(tmp_path, 3)
-    calls: list[tuple[str, int]] = []
+    calls: list[tuple[str, int, str]] = []
 
     outcome = profile_refill.fn(starter=_recorder(calls))
 
@@ -123,23 +145,118 @@ def test_profile_at_threshold_refills_only_the_deficit(tmp_path: Path) -> None:
     _make_profile(tmp_path)
     _set_refill(tmp_path, "dating/profile_2", ProfileRefill(True, 3, 2))
     _touch_stock(tmp_path, 2)
-    calls: list[tuple[str, int]] = []
+    calls: list[tuple[str, int, str]] = []
 
     outcome = profile_refill.fn(starter=_recorder(calls))
 
     assert outcome == "started:dating/profile_2"
-    assert calls == [("dating/profile_2", 1)]
+    assert calls == [("dating/profile_2", 1, "video")]
 
 
 def test_zero_threshold_with_empty_stock_uses_global_target(tmp_path: Path) -> None:
     _make_profile(tmp_path)
     _set_refill(tmp_path, "dating/profile_2", ProfileRefill(True, None, 0))
-    calls: list[tuple[str, int]] = []
+    calls: list[tuple[str, int, str]] = []
 
     outcome = profile_refill.fn(starter=_recorder(calls))
 
     assert outcome == "started:dating/profile_2"
-    assert calls == [("dating/profile_2", 20)]
+    assert calls == [("dating/profile_2", 20, "video")]
+
+
+def test_photo_deficit_starts_a_photo_batch(tmp_path: Path) -> None:
+    _make_profile(
+        tmp_path,
+        production=[{"producer": "card", "type": "photo", "qa": ["image"]}],
+    )
+    _set_refill(tmp_path, "dating/profile_2", ProfileRefill(True, None, None, 10, 4))
+    _touch_photos(tmp_path, 4)
+    calls: list[tuple[str, int, str]] = []
+
+    outcome = profile_refill.fn(starter=_recorder(calls))
+
+    assert outcome == "started:dating/profile_2"
+    assert calls == [("dating/profile_2", 6, "photo")]
+
+
+def test_mixed_profile_fills_video_before_photo(tmp_path: Path) -> None:
+    _make_profile(
+        tmp_path,
+        production=[
+            {"producer": "vast", "type": "video", "qa": ["media", "clef"]},
+            {"producer": "card", "type": "photo", "qa": ["image"]},
+        ],
+    )
+    _set_refill(tmp_path, "dating/profile_2", ProfileRefill(True, None, None, 10, 1))
+    calls: list[tuple[str, int, str]] = []
+
+    outcome = profile_refill.fn(starter=_recorder(calls))
+
+    assert outcome == "started:dating/profile_2"
+    assert calls == [("dating/profile_2", 20, "video")]
+
+
+def test_mixed_profile_with_full_video_fills_photo(tmp_path: Path) -> None:
+    _make_profile(
+        tmp_path,
+        production=[
+            {"producer": "vast", "type": "video", "qa": ["media", "clef"]},
+            {"producer": "card", "type": "photo", "qa": ["image"]},
+        ],
+    )
+    _set_refill(tmp_path, "dating/profile_2", ProfileRefill(True, None, None, 10, 4))
+    _touch_stock(tmp_path, 20)
+    _touch_photos(tmp_path, 4)
+    calls: list[tuple[str, int, str]] = []
+
+    outcome = profile_refill.fn(starter=_recorder(calls))
+
+    assert outcome == "started:dating/profile_2"
+    assert calls == [("dating/profile_2", 6, "photo")]
+
+
+def test_photo_of_first_profile_is_not_blocked_by_video_of_second(tmp_path: Path) -> None:
+    mixed = [
+        {"producer": "vast", "type": "video", "qa": ["media", "clef"]},
+        {"producer": "card", "type": "photo", "qa": ["image"]},
+    ]
+    _make_profile(tmp_path, "a", "profile_1", production=mixed)
+    _make_profile(
+        tmp_path,
+        "b",
+        "profile_1",
+        production=[{"producer": "vast", "type": "video", "qa": ["media", "clef"]}],
+    )
+    _set_refill(tmp_path, "a/profile_1", ProfileRefill(True, None, None, 10, 0))
+    _set_refill(tmp_path, "b/profile_1", ProfileRefill(True, None, None))
+    calls: list[tuple[str, int, str]] = []
+
+    first = profile_refill.fn(starter=_recorder(calls))
+
+    assert first == "started:a/profile_1"
+    assert calls == [("a/profile_1", 20, "video")]
+
+    _touch_stock(tmp_path, 20, "a", "profile_1")
+    calls.clear()
+
+    second = profile_refill.fn(starter=_recorder(calls))
+
+    assert second == "started:a/profile_1"
+    assert calls == [("a/profile_1", 10, "photo")]
+
+
+def test_photo_refill_with_zero_target_is_idle(tmp_path: Path) -> None:
+    _make_profile(
+        tmp_path,
+        production=[{"producer": "card", "type": "photo", "qa": ["image"]}],
+    )
+    _set_refill(tmp_path, "dating/profile_2", ProfileRefill(True, None, None, 0, 0))
+    calls: list[tuple[str, int, str]] = []
+
+    outcome = profile_refill.fn(starter=_recorder(calls))
+
+    assert outcome == "idle"
+    assert calls == []
 
 
 def test_busy_generator_skips_the_tick(tmp_path: Path) -> None:
@@ -147,7 +264,7 @@ def test_busy_generator_skips_the_tick(tmp_path: Path) -> None:
     _set_refill(tmp_path, "dating/profile_2", ProfileRefill(True, 2, 0))
     lock = try_acquire(lock_path(tmp_path / "db", GENERATOR_LOCK))
     assert lock is not None
-    calls: list[tuple[str, int]] = []
+    calls: list[tuple[str, int, str]] = []
     try:
         outcome = profile_refill.fn(starter=_recorder(calls))
     finally:
@@ -164,7 +281,7 @@ def test_starter_failure_returns_start_failed(
     _make_profile(tmp_path)
     _set_refill(tmp_path, "dating/profile_2", ProfileRefill(True, 2, 0))
 
-    def failing(profile_id: str, count: int) -> None:
+    def failing(profile_id: str, count: int, content_type: ContentType) -> None:
         raise RuntimeError("prefect down")
 
     outcome = profile_refill.fn(starter=failing)
@@ -179,7 +296,7 @@ def test_starter_failure_returns_start_failed(
 def test_profile_without_settings_row_is_ignored(tmp_path: Path) -> None:
     _make_profile(tmp_path)
     _set_refill(tmp_path, "deleted/profile_1", ProfileRefill(True, 2, 0))
-    calls: list[tuple[str, int]] = []
+    calls: list[tuple[str, int, str]] = []
 
     outcome = profile_refill.fn(starter=_recorder(calls))
 

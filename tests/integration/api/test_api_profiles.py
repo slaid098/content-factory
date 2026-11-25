@@ -133,6 +133,8 @@ def test_list_returns_profiles_with_stock_overrides_and_last_run(data_dir: Path)
         "refill_enabled": False,
         "target_override": None,
         "refill_at_override": None,
+        "photo_target": 0,
+        "photo_refill_at": 0,
         "preview_url": "/api/v1/content/profiles/auto/profile_2/preview",
         "last_run": None,
     }
@@ -144,6 +146,8 @@ def test_list_returns_profiles_with_stock_overrides_and_last_run(data_dir: Path)
     assert second["refill_enabled"] is True
     assert second["target_override"] == 5
     assert second["refill_at_override"] == 1
+    assert second["photo_target"] == 0
+    assert second["photo_refill_at"] == 0
     assert second["last_run"] == {
         "status": "done",
         "finished_at": "2026-05-01T12:30:00Z",
@@ -332,6 +336,62 @@ def test_patch_rejects_refill_at_not_less_than_target(data_dir: Path) -> None:
     assert valid.status_code == 200
     assert valid.json()["target"] == 1
     assert valid.json()["refill_at"] == 0
+
+
+def test_patch_stores_photo_target_and_threshold(data_dir: Path) -> None:
+    add_profile(data_dir, "dating", "profile_1")
+    client = _client()
+    path = f"{_PREFIX}/dating/profile_1"
+
+    response = _patch(client, path, {"photo_target": 10, "photo_refill_at": 4})
+
+    assert response.status_code == 200
+    assert response.json()["photo_target"] == 10
+    assert response.json()["photo_refill_at"] == 4
+    stored = _get(client, path).json()
+    assert stored["photo_target"] == 10
+    assert stored["photo_refill_at"] == 4
+    assert stored["target"] == 20
+    assert stored["refill_at"] == 2
+
+
+def test_patch_disables_photo_refill_with_a_zero_pair(data_dir: Path) -> None:
+    add_profile(data_dir, "dating", "profile_1")
+    client = _client()
+    path = f"{_PREFIX}/dating/profile_1"
+    assert _patch(client, path, {"photo_target": 10, "photo_refill_at": 4}).status_code == 200
+
+    rejected = _patch(client, path, {"photo_target": 0})
+
+    assert rejected.status_code == 422
+    disabled = _patch(client, path, {"photo_target": 0, "photo_refill_at": 0})
+    assert disabled.status_code == 200
+    assert disabled.json()["photo_target"] == 0
+    assert disabled.json()["photo_refill_at"] == 0
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"photo_target": 0, "photo_refill_at": 1},
+        {"photo_target": 5, "photo_refill_at": 5},
+        {"photo_target": 5, "photo_refill_at": 6},
+        {"photo_target": -1},
+        {"photo_target": 1001},
+        {"photo_refill_at": 1000},
+        {"photo_target": None},
+        {"photo_refill_at": None},
+    ],
+)
+def test_patch_rejects_invalid_photo_settings(
+    data_dir: Path,
+    payload: dict[str, object],
+) -> None:
+    add_profile(data_dir, "dating", "profile_1")
+
+    response = _patch(_client(), f"{_PREFIX}/dating/profile_1", payload)
+
+    assert response.status_code == 422
 
 
 @pytest.mark.parametrize(

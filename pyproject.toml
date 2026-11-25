@@ -211,6 +211,11 @@ check_id = "dead_module"
 path = "src/content_factory/db/migrations/0002_sources.py"
 reason = "миграция подключается по строковому имени из реестра: имя начинается с цифры"
 
+[[tool.audit.ignore]]
+check_id = "dead_module"
+path = "src/content_factory/db/migrations/0003_photo_refill.py"
+reason = "миграция подключается по строковому имени из реестра: имя начинается с цифры"
+
 # Очередь уникализатора — инфраструктурный адаптер: connect(), репозиторий
 # источников и обработка DatabaseError. ORM-моделей и обхода слоя здесь нет;
 # сервисного entry service.py у капсулы нет, вход — CLI main.py.

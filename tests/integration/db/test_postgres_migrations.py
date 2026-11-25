@@ -47,14 +47,14 @@ def test_migrations_apply_from_scratch_and_again(
     connection_module._ready.clear()
     first = connect(pg)
     try:
-        assert applied_versions(first) == ("0001", "0002")
+        assert applied_versions(first) == ("0001", "0002", "0003")
     finally:
         first.close()
 
     connection_module._ready.clear()
     second = connect(pg)
     try:
-        assert applied_versions(second) == ("0001", "0002")
+        assert applied_versions(second) == ("0001", "0002", "0003")
     finally:
         second.close()
 

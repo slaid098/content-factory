@@ -121,9 +121,9 @@ def test_profile_refill_settings(pg: Path) -> None:
     connection = connect(pg)
     try:
         assert get_refill(connection, "dating/profile_1") == ProfileRefill(False, None, None)
-        upsert_refill(connection, "dating/profile_1", ProfileRefill(True, 30, 5), _NOW)
+        upsert_refill(connection, "dating/profile_1", ProfileRefill(True, 30, 5, 10, 4), _NOW)
         connection.commit()
-        assert get_refill(connection, "dating/profile_1") == ProfileRefill(True, 30, 5)
+        assert get_refill(connection, "dating/profile_1") == ProfileRefill(True, 30, 5, 10, 4)
     finally:
         connection.close()
 
