@@ -14,12 +14,17 @@ processes from applying the same migration twice.
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import urlsplit
 
+from content_factory.config.dsn import (
+    database_target_label,
+    normalize_database_url,
+    sanitize_database_text,
+)
 from content_factory.db import errors
 from content_factory.exceptions.errors import ConfigError
 from content_factory.schemas.database.port import Connection, Cursor, Params, Row, Rows
@@ -27,7 +32,7 @@ from content_factory.schemas.database.port import Connection, Cursor, Params, Ro
 _TIMEOUT_SECONDS = 30
 _BUSY_TIMEOUT_MS = 30_000
 _POSTGRES_LOCK_TIMEOUT = "30s"
-_POSTGRES_DSN_SCHEMES = frozenset({"postgresql", "postgres"})
+_POSTGRES_CONNECT_TIMEOUT = 10
 _TABLE_NAME_PATTERN = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
 
 _ready: set[str] = set()
@@ -98,20 +103,24 @@ def database_url() -> str | None:
     """Return the validated PostgreSQL DSN, or ``None`` for SQLite.
 
     Raises:
-        ConfigError: The DSN does not start with ``postgresql://`` or
-            ``postgres://``.
+        ConfigError: The DSN is not a PostgreSQL URL with a host and a
+            database name.
     """
     from content_factory.config.settings import get_settings
 
-    dsn = get_settings().database_url
-    if dsn is None:
+    value = get_settings().database_url
+    if value is None:
         return None
-    scheme = urlsplit(dsn).scheme.lower()
-    if scheme not in _POSTGRES_DSN_SCHEMES:
-        raise ConfigError(
-            "CONTENT_FACTORY_DATABASE_URL должен начинаться с postgresql:// или postgres://"
-        )
-    return dsn
+    return normalize_database_url(value.get_secret_value())
+
+
+def sanitize_error_text(text: str) -> str:
+    """Mask the configured database credentials in an error message."""
+    try:
+        dsn = database_url()
+    except (ConfigError, ValueError):
+        dsn = None
+    return sanitize_database_text(text, dsn)
 
 
 def _apply_migrations_once(connection: Connection, db_path: Path) -> None:
@@ -141,7 +150,8 @@ def _backend_key(db_path: Path) -> str:
     """Identify the backend and target for the per-process migration cache."""
     dsn = database_url()
     if dsn is not None:
-        return f"postgres:{dsn}"
+        digest = hashlib.sha256(dsn.encode("utf-8")).hexdigest()
+        return f"postgres:{digest}"
     return f"sqlite:{db_path.resolve()}"
 
 
@@ -154,14 +164,31 @@ def _translate_sqlite(error: sqlite3.Error) -> errors.DatabaseError:
     return errors.DatabaseError(str(error))
 
 
-def _translate_postgres(error: BaseException) -> errors.DatabaseError:
-    """Translate a psycopg error into the shared database error."""
+def _translate_postgres(error: BaseException, *, dsn: str | None = None) -> errors.DatabaseError:
+    """Translate a psycopg error into the shared database error.
+
+    Connection failures get a message built from the safe host, database name
+    and SQLSTATE; every other message is stripped of credentials the driver
+    may have echoed.
+    """
     psycopg = _psycopg()
+    message = (
+        _connection_message(error, dsn) if dsn is not None else sanitize_database_text(str(error))
+    )
     if isinstance(error, psycopg.errors.IntegrityError):
-        return errors.IntegrityError(str(error))
+        return errors.IntegrityError(message)
     if isinstance(error, (psycopg.OperationalError, psycopg.InterfaceError)):
-        return errors.OperationalError(str(error))
-    return errors.DatabaseError(str(error))
+        return errors.OperationalError(message)
+    return errors.DatabaseError(message)
+
+
+def _connection_message(error: BaseException, dsn: str) -> str:
+    """Build a connection failure message without the raw conninfo."""
+    target = database_target_label(dsn)
+    sqlstate = getattr(error, "sqlstate", None)
+    state = f", sqlstate={sqlstate}" if sqlstate else ""
+    detail = sanitize_database_text(str(error), dsn)
+    return f"не удалось подключиться к PostgreSQL ({target}{state}): {detail}"
 
 
 def _psycopg() -> Any:
@@ -269,6 +296,15 @@ class _SqliteConnection:
         except sqlite3.Error as ex:
             raise _translate_sqlite(ex) from ex
         return _SqliteCursor(cursor)
+
+    def begin(self) -> None:
+        """Start an immediate transaction so DDL can be rolled back."""
+        if self._connection.in_transaction:
+            return
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+        except sqlite3.Error as ex:
+            raise _translate_sqlite(ex) from ex
 
     def commit(self) -> None:
         try:
@@ -386,9 +422,14 @@ class _PostgresConnection:
         if readonly:
             options += " -c default_transaction_read_only=on"
         try:
-            connection = psycopg.connect(dsn, autocommit=False, options=options)
+            connection = psycopg.connect(
+                dsn,
+                autocommit=False,
+                options=options,
+                connect_timeout=_POSTGRES_CONNECT_TIMEOUT,
+            )
         except psycopg.Error as ex:
-            raise _translate_postgres(ex) from ex
+            raise _translate_postgres(ex, dsn=dsn) from ex
         return cls(connection)
 
     def execute(self, sql: str, params: Params = ()) -> Cursor:
@@ -410,6 +451,10 @@ class _PostgresConnection:
         except psycopg.Error as ex:
             raise _translate_postgres(ex) from ex
         return _PostgresCursor(cursor)
+
+    def begin(self) -> None:
+        """Start a transaction; ``autocommit=False`` already begins one."""
+        return None
 
     def commit(self) -> None:
         psycopg = _psycopg()
@@ -495,4 +540,5 @@ __all__ = [
     "connect_readonly",
     "database_url",
     "db_exists",
+    "sanitize_error_text",
 ]

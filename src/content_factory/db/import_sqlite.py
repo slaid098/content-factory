@@ -21,8 +21,14 @@ from pathlib import Path
 
 from content_factory.config.settings import get_settings
 from content_factory.constants import DB_DIR, DB_FILENAME
-from content_factory.db.connection import Connection, connect
+from content_factory.db.connection import (
+    Connection,
+    connect,
+    database_url,
+    sanitize_error_text,
+)
 from content_factory.db.errors import DatabaseError
+from content_factory.exceptions.errors import ConfigError
 
 # Parent tables come before their dependants: downloads references videos.
 TABLES = (
@@ -53,6 +59,8 @@ def import_sqlite(sqlite_path: Path) -> dict[str, int]:
         ValueError: The source and the destination are the same SQLite file.
     """
     db_path = get_settings().data_dir / DB_DIR / DB_FILENAME
+    if database_url() is None and db_path.resolve() == sqlite_path.resolve():
+        raise ValueError("источник и приёмник — один и тот же файл SQLite")
     if not sqlite_path.is_file():
         raise OSError(f"файл базы не найден: {sqlite_path}")
     source = sqlite3.connect(f"{sqlite_path.resolve().as_uri()}?mode=ro", uri=True)
@@ -62,9 +70,6 @@ def import_sqlite(sqlite_path: Path) -> dict[str, int]:
         if missing:
             raise ValueError(f"в источнике нет таблиц: {', '.join(missing)}")
         destination = connect(db_path)
-        if destination.dialect == "sqlite" and db_path.resolve() == sqlite_path.resolve():
-            destination.close()
-            raise ValueError("источник и приёмник — один и тот же файл SQLite")
         try:
             counts = _copy(source, destination)
             destination.commit()
@@ -79,7 +84,7 @@ def import_sqlite(sqlite_path: Path) -> dict[str, int]:
 
 
 def _copy(source: sqlite3.Connection, destination: Connection) -> dict[str, int]:
-    """Insert every row of the known tables, skipping duplicates."""
+    """Insert every row of the known tables in batches, skipping duplicates."""
     counts: dict[str, int] = {}
     for table in TABLES:
         columns = _source_columns(source, table) & destination.columns(table)
@@ -89,14 +94,14 @@ def _copy(source: sqlite3.Connection, destination: Connection) -> dict[str, int]
         names = ", ".join(sorted(columns))
         placeholders = ", ".join("?" for _ in columns)
         statement = f"INSERT INTO {table} ({names}) VALUES ({placeholders}) ON CONFLICT DO NOTHING"
-        rows = source.execute(
-            f"SELECT {names} FROM {table}",
-        ).fetchall()
+        cursor = source.execute(f"SELECT {names} FROM {table}")
         inserted = 0
-        for start in range(0, len(rows), _BATCH_SIZE):
-            batch = [tuple(row) for row in rows[start : start + _BATCH_SIZE]]
-            cursor = destination.executemany(statement, batch)
-            inserted += cursor.rowcount
+        while True:
+            rows = cursor.fetchmany(_BATCH_SIZE)
+            if not rows:
+                break
+            batch = [tuple(row) for row in rows]
+            inserted += destination.executemany(statement, batch).rowcount
         counts[table] = inserted
     return counts
 
@@ -136,8 +141,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     try:
         counts = import_sqlite(args.sqlite)
-    except (OSError, ValueError, DatabaseError, sqlite3.Error) as ex:
-        sys.stderr.write(f"импорт не выполнен: {ex}\n")
+    except (OSError, ValueError, ConfigError, DatabaseError, sqlite3.Error) as ex:
+        sys.stderr.write(f"импорт не выполнен: {sanitize_error_text(str(ex))}\n")
         return 1
     for table, amount in counts.items():
         sys.stdout.write(f"{table}: {amount}\n")

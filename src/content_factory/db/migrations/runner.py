@@ -7,11 +7,15 @@ database, so two processes that start together apply each migration once.
 
 from __future__ import annotations
 
+from contextlib import suppress
 from datetime import UTC, datetime
 from importlib import import_module
 from pathlib import Path
 from types import ModuleType
 
+from loguru import logger
+
+from content_factory.db.errors import DatabaseError
 from content_factory.db.lock import lock_path, locked
 from content_factory.db.migrations import MIGRATION_MODULES
 from content_factory.schemas.database.port import Connection
@@ -60,8 +64,18 @@ def _with_postgres_lock(connection: Connection) -> tuple[str, ...]:
     try:
         return _apply_pending(connection)
     finally:
-        connection.execute("SELECT pg_advisory_unlock(?)", (_POSTGRES_ADVISORY_LOCK_KEY,))
-        connection.commit()
+        # A failed statement leaves the transaction aborted, so unlock would
+        # fail too. Roll back first, and never let cleanup replace the error
+        # that brought us here.
+        with suppress(DatabaseError):
+            connection.rollback()
+        try:
+            connection.execute("SELECT pg_advisory_unlock(?)", (_POSTGRES_ADVISORY_LOCK_KEY,))
+            connection.commit()
+        except DatabaseError as ex:
+            logger.bind(error=ex, error_type=type(ex).__name__).warning(
+                "не удалось снять advisory lock миграций: {}", ex
+            )
 
 
 def _apply_pending(connection: Connection) -> tuple[str, ...]:
@@ -75,6 +89,7 @@ def _apply_pending(connection: Connection) -> tuple[str, ...]:
         if version in known:
             continue
         try:
+            connection.begin()
             migration.apply(connection)
             connection.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",

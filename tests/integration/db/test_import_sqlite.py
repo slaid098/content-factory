@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from content_factory.db.connection import connect, db_exists
-from content_factory.db.import_sqlite import import_sqlite, main
+from content_factory.db.import_sqlite import _BATCH_SIZE, import_sqlite, main
 
 _LEGACY_SCHEMA = """
 CREATE TABLE stock_items (
@@ -211,3 +211,73 @@ def test_cli_reports_an_empty_source(
 
     assert "нет таблиц" in capsys.readouterr().err
     assert not (tmp_path / "target" / "db" / "db.sqlite3").exists()
+
+
+def test_import_rejects_the_default_database_before_migrating(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("CONTENT_FACTORY_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("CONTENT_FACTORY_DATABASE_URL", raising=False)
+    db_path = tmp_path / "db" / "db.sqlite3"
+    db_path.parent.mkdir(parents=True)
+    _make_source(db_path)
+
+    assert main(["--sqlite", str(db_path)]) == 1
+    assert "тот же файл" in capsys.readouterr().err
+
+    with sqlite3.connect(db_path) as connection:
+        tables = {
+            str(row[0])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+    assert "schema_migrations" not in tables
+
+
+def test_import_reads_more_than_one_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CONTENT_FACTORY_DATA_DIR", str(tmp_path / "target"))
+    source = tmp_path / "source.sqlite3"
+    _make_source(source)
+    total = _BATCH_SIZE + 8
+    with sqlite3.connect(source) as connection:
+        connection.executemany(
+            "INSERT INTO titles (sha256, title, norm, created_at) VALUES (?, ?, ?, ?)",
+            [
+                (f"{index:064x}", f"Заголовок {index}", f"норма {index}", "2026-05-01")
+                for index in range(total - 1)
+            ],
+        )
+
+    counts = import_sqlite(source)
+
+    assert counts["titles"] == total
+    connection = connect(tmp_path / "target" / "db" / "db.sqlite3")
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM titles").fetchone()[0] == total
+    finally:
+        connection.close()
+
+
+def test_cli_failure_hides_the_destination_password(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("CONTENT_FACTORY_DATA_DIR", str(tmp_path / "target"))
+    monkeypatch.setenv(
+        "CONTENT_FACTORY_DATABASE_URL",
+        "postgresql://user:topsecret@127.0.0.1:1/content_factory",
+    )
+    source = tmp_path / "source.sqlite3"
+    _make_source(source)
+
+    assert main(["--sqlite", str(source)]) == 1
+
+    error = capsys.readouterr().err
+    assert "topsecret" not in error
+    assert "host=127.0.0.1:1" in error
+    assert "dbname=content_factory" in error

@@ -48,6 +48,9 @@ class Connection(Protocol):
     def executemany(self, sql: str, params: Rows) -> Cursor:
         """Run one statement for many parameter sets."""
 
+    def begin(self) -> None:
+        """Start a transaction that covers DDL on SQLite; no-op on PostgreSQL."""
+
     def commit(self) -> None:
         """Commit the current transaction."""
 

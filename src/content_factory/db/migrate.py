@@ -13,11 +13,11 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from urllib.parse import urlsplit
 
+from content_factory.config.dsn import redact_database_url
 from content_factory.config.settings import get_settings
 from content_factory.constants import DB_DIR, DB_FILENAME
-from content_factory.db.connection import connect, database_url
+from content_factory.db.connection import connect, database_url, sanitize_error_text
 from content_factory.db.errors import DatabaseError
 from content_factory.db.migrations.runner import applied_versions
 from content_factory.exceptions.errors import ConfigError
@@ -29,12 +29,12 @@ def main() -> int:
     try:
         connection = connect(db_path)
     except (ConfigError, DatabaseError, OSError) as ex:
-        sys.stderr.write(f"не удалось подключиться к базе: {ex}\n")
+        sys.stderr.write(f"не удалось подключиться к базе: {sanitize_error_text(str(ex))}\n")
         return 1
     try:
         versions = applied_versions(connection)
     except DatabaseError as ex:
-        sys.stderr.write(f"не удалось прочитать версии миграций: {ex}\n")
+        sys.stderr.write(f"не удалось прочитать версии миграций: {sanitize_error_text(str(ex))}\n")
         return 1
     finally:
         connection.close()
@@ -46,13 +46,10 @@ def main() -> int:
 
 def _redact(target: str) -> str:
     """Hide the credentials of a PostgreSQL DSN before printing it."""
-    if not target.startswith(("postgresql://", "postgres://")):
+    try:
+        return redact_database_url(target)
+    except ValueError:
         return target
-    parts = urlsplit(target)
-    host = parts.hostname or ""
-    if parts.port is not None:
-        host = f"{host}:{parts.port}"
-    return f"{parts.scheme}://{host}/{parts.path.lstrip('/')}"
 
 
 def _db_path() -> Path:

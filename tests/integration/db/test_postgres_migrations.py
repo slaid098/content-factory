@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from tests.integration.db.postgres_guard import require_test_database
 
 from content_factory.db import connection as connection_module
 from content_factory.db.connection import connect
@@ -21,7 +22,12 @@ _TABLES = (
 )
 
 
-def test_migrations_apply_from_scratch_and_again(pg: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_migrations_apply_from_scratch_and_again(
+    pg: Path,
+    postgres_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    require_test_database(postgres_url)
     connection = connect(pg)
     try:
         for table in (*_TABLES, "schema_migrations"):
@@ -70,3 +76,8 @@ def test_rows_support_column_names_and_positions(pg: Path) -> None:
         assert row[0] == "a" * 64
     finally:
         connection.close()
+
+
+def test_guard_rejects_a_database_without_the_test_suffix() -> None:
+    with pytest.raises(pytest.fail.Exception, match="_test"):
+        require_test_database("postgresql://user@localhost/content_factory")
