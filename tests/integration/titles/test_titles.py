@@ -12,6 +12,7 @@ import pytest
 from loguru import logger
 from pydantic import SecretStr
 from tests.unit.common.delivery_helpers import add_downloaded_video, add_title, touch_mp4
+from tests.unit.common.profile_helpers import add_profile, add_profile_video
 
 from content_factory.config.settings import TitlesSettings, load_titles_settings
 from content_factory.constants import (
@@ -1263,6 +1264,67 @@ def test_assign_titles_creates_schema_on_empty_content(tmp_path: Path) -> None:
         connection.close()
     assert rows == [("titles",)]
     assert load_titles(_db_path(tmp_path), ["a" * 64]) == {}
+
+
+def test_assign_titles_skips_fixed_profile_without_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    _patch_generation(monkeypatch, calls=calls)
+    add_profile(
+        tmp_path,
+        "dating",
+        "fixed",
+        delivery={"title": {"mode": "fixed", "value": "Название профиля"}},
+    )
+    add_profile_video(tmp_path, "dating", "fixed")
+
+    result = assign_titles(tmp_path, _settings(), now=_NOW)
+
+    assert result == TitlePassResult(candidates=0, titled=0, skipped=0)
+    assert calls == []
+    assert load_titles(_db_path(tmp_path), ["dating_fixed_run_001"]) == {}
+
+
+def test_assign_titles_titles_generated_profile_and_general_stock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    _patch_generation(monkeypatch, calls=calls)
+    add_profile(
+        tmp_path,
+        "dating",
+        "fixed",
+        delivery={"title": {"mode": "fixed", "value": "Название профиля"}},
+    )
+    add_profile(tmp_path, "dating", "generated", delivery={"hashtags": ["#dating"]})
+    add_profile_video(tmp_path, "dating", "fixed")
+    add_profile_video(tmp_path, "dating", "generated")
+    _stock(tmp_path, "ru", "a" * 64)
+
+    result = assign_titles(tmp_path, _settings(), now=_NOW)
+
+    assert result == TitlePassResult(candidates=2, titled=2, skipped=0)
+    assert len(calls) == 2
+    stored = load_titles(_db_path(tmp_path), ["dating_generated_run_001", "a" * 64])
+    assert set(stored) == {"dating_generated_run_001", "a" * 64}
+
+
+def test_assign_titles_treats_unknown_profile_as_generated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    _patch_generation(monkeypatch, calls=calls)
+    touch_mp4(tmp_path / CONTENT_DIR / "dating" / "ru" / "missing_profile_run_001.mp4")
+
+    result = assign_titles(tmp_path, _settings(), now=_NOW)
+
+    assert result == TitlePassResult(candidates=1, titled=1, skipped=0)
+    assert len(calls) == 1
+    assert load_titles(_db_path(tmp_path), ["missing_profile_run_001"]) != {}
 
 
 # --- flow -------------------------------------------------------------------

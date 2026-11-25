@@ -41,13 +41,15 @@ def build_archive(
     content_type: ContentType,
     language: str,
     profile_id: str | None,
+    hashtags: Sequence[str] = (),
 ) -> None:
     """Write the archive next to its final name and atomically replace it.
 
     The media entry keeps its source extension; ``NNN.json`` names the one
     type of the archive, the address and the video title or the photo text.
-    Any failure removes the staging file before the exception is re-raised, so
-    a failed build never leaves ``.tmp`` next to the archive.
+    Profile hashtags are written for videos only and only when present. Any
+    failure removes the staging file before the exception is re-raised, so a
+    failed build never leaves ``.tmp`` next to the archive.
     """
     tmp_path = _tmp_path(archive_path)
     replaced = False
@@ -60,7 +62,14 @@ def build_archive(
                 archive.writestr(
                     f"{prefix}{_SIDECAR_SUFFIX}",
                     json.dumps(
-                        _entry_sidecar(source, content_type, language, profile_id, titles),
+                        _entry_sidecar(
+                            source,
+                            content_type,
+                            language,
+                            profile_id,
+                            titles,
+                            hashtags,
+                        ),
                         ensure_ascii=False,
                     ),
                 )
@@ -88,6 +97,7 @@ def _entry_sidecar(
     language: str,
     profile_id: str | None,
     titles: Mapping[str, str],
+    hashtags: Sequence[str],
 ) -> dict[str, object]:
     """Build the YouTube Kit sidecar of one archive entry."""
     payload: dict[str, object] = {
@@ -99,6 +109,8 @@ def _entry_sidecar(
         payload["text"] = _photo_text(source)
     else:
         payload["title"] = titles[source.stem]
+        if hashtags:
+            payload["hashtags"] = list(hashtags)
     return payload
 
 

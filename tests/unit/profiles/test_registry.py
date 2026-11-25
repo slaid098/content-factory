@@ -9,6 +9,8 @@ import pytest
 import yaml
 
 from content_factory.exceptions.generator import ProfileError
+from content_factory.schemas.profiles.delivery import DeliveryInfo, TitleConfig, TitleMode
+from content_factory.schemas.profiles.registry import ProfileInfo
 from content_factory.services.profiles.registry import get_profile, list_profiles
 
 
@@ -213,3 +215,110 @@ def test_registry_does_not_need_prompts_fonts_or_looks(tmp_path: Path) -> None:
     profile = get_profile(tmp_path, "dating/profile_2")
 
     assert sorted(path.name for path in profile.dir.iterdir()) == ["profile.yaml"]
+
+
+def test_profile_without_delivery_is_generated_without_hashtags(tmp_path: Path) -> None:
+    _make_profile(tmp_path, "dating", "profile_2")
+
+    profile = get_profile(tmp_path, "dating/profile_2")
+
+    assert profile.delivery == DeliveryInfo(
+        title=TitleConfig(mode=TitleMode.GENERATED),
+        hashtags=(),
+    )
+
+
+@pytest.mark.parametrize("delivery", [None, {}])
+def test_empty_delivery_is_generated_without_hashtags(
+    tmp_path: Path,
+    delivery: object,
+) -> None:
+    _make_profile(tmp_path, "dating", "profile_2", delivery=delivery)
+
+    assert get_profile(tmp_path, "dating/profile_2").delivery == DeliveryInfo()
+
+
+def test_fixed_delivery_keeps_title_with_emoji_and_unique_hashtags(tmp_path: Path) -> None:
+    _make_profile(
+        tmp_path,
+        "dating",
+        "profile_2",
+        delivery={
+            "title": {
+                "mode": "fixed",
+                "value": "Давай знакомиться, ищу счастье ✨",
+            },
+            "hashtags": ["#знакомиться", "#Dating", "#dating", "познакомимся"],
+        },
+    )
+
+    delivery = get_profile(tmp_path, "dating/profile_2").delivery
+
+    assert delivery == DeliveryInfo(
+        title=TitleConfig(
+            mode=TitleMode.FIXED,
+            value="Давай знакомиться, ищу счастье ✨",
+        ),
+        hashtags=("#знакомиться", "#Dating", "#познакомимся"),
+    )
+
+
+def test_fixed_title_collapses_whitespace(tmp_path: Path) -> None:
+    _make_profile(
+        tmp_path,
+        "dating",
+        "profile_2",
+        delivery={"title": {"mode": "fixed", "value": "  Давай \n знакомиться  "}},
+    )
+
+    assert get_profile(tmp_path, "dating/profile_2").delivery.title.value == ("Давай знакомиться")
+
+
+@pytest.mark.parametrize(
+    "delivery",
+    [
+        "fixed",
+        {"title": "fixed"},
+        {"title": None},
+        {"title": {"mode": "unknown"}},
+        {"title": {"mode": "fixed"}},
+        {"title": {"mode": "fixed", "value": 123}},
+        {"title": {"mode": "fixed", "value": "   "}},
+        {"title": {"mode": "fixed", "value": "я" * 101}},
+        {"title": {"mode": "generated", "value": "Название"}},
+        {"title": {"mode": "generated", "value": ""}},
+        {"title": {"mode": "generated", "value": None}},
+        {"hashtags": "#tag"},
+        {"hashtags": [42]},
+        {"hashtags": [""]},
+        {"hashtags": ["#"]},
+        {"hashtags": ["пробел внутри"]},
+        {"hashtags": [f"#tag{index}" for index in range(11)]},
+    ],
+)
+def test_invalid_delivery_skips_only_that_profile(
+    tmp_path: Path,
+    delivery: object,
+) -> None:
+    _make_profile(tmp_path, "dating", "profile_1")
+    _make_profile(tmp_path, "dating", "profile_2", delivery=delivery)
+
+    assert [profile.id for profile in list_profiles(tmp_path)] == ["dating/profile_1"]
+    with pytest.raises(ProfileError, match="профиль не найден"):
+        get_profile(tmp_path, "dating/profile_2")
+
+
+def test_profile_info_without_delivery_uses_generated_default(tmp_path: Path) -> None:
+    profile = ProfileInfo(
+        id="dating/profile_1",
+        category="dating",
+        name="profile_1",
+        language="ru",
+        niche="dating",
+        width=544,
+        height=960,
+        audio=True,
+        dir=tmp_path / "profiles" / "dating" / "profile_1",
+    )
+
+    assert profile.delivery == DeliveryInfo()

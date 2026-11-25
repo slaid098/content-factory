@@ -10,6 +10,7 @@ from content_factory.services.profiles.service import (
     preview_for_profile,
     update_profile_settings,
 )
+from content_factory.services.profiles.titles import title_policy
 
 __all__ = [
     "decide_refill",
@@ -19,5 +20,6 @@ __all__ = [
     "list_profile_views",
     "list_profiles",
     "preview_for_profile",
+    "title_policy",
     "update_profile_settings",
 ]

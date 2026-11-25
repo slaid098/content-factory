@@ -16,6 +16,7 @@ from content_factory.exceptions.titles import TitleError
 from content_factory.schemas.content.titles import TitlePassResult
 from content_factory.schemas.content.video import VideoMeta
 from content_factory.schemas.database.port import Connection
+from content_factory.services.profiles import list_profiles, title_policy
 from content_factory.services.stock import stock_files
 from content_factory.services.titles.client import generate_titles
 from content_factory.services.titles.frames import extract_frames
@@ -41,8 +42,11 @@ def assign_titles(
     Both layouts are read: the nested ``content/<niche>/<language>`` and the
     legacy flat ``content/<language>``. The language comes from the language
     directory name. A file without a row in ``downloads``/``videos`` is still
-    titled from its frames, with an empty description and no duration. Errors
-    of one file are logged and skipped; database errors are not swallowed.
+    titled from its frames, with an empty description and no duration. Files
+    of a profile with a fixed delivery title need no generation and are left
+    out of the candidates; an unknown or missing profile id counts as
+    ``generated``. Errors of one file are logged and skipped; database errors
+    are not swallowed.
 
     Args:
         data_dir: Root of the runtime data directory.
@@ -55,10 +59,15 @@ def assign_titles(
     moment = now or datetime.now(UTC)
     db_path = data_dir / DB_DIR / DB_FILENAME
     files = stock_files(data_dir / CONTENT_DIR)
+    fixed_profiles = _fixed_profiles(data_dir)
     connection = connect(db_path)
     try:
         stored = load_titles(db_path, [item.path.stem for item in files])
-        pending = [item for item in files if item.path.stem not in stored]
+        pending = [
+            item
+            for item in files
+            if item.path.stem not in stored and item.profile_id not in fixed_profiles
+        ]
         meta = load_video_meta(db_path, [item.path.stem for item in pending])
         recent = list(recent_titles(db_path))
         titled = 0
@@ -80,6 +89,15 @@ def assign_titles(
     finally:
         connection.close()
     return TitlePassResult(candidates=len(pending), titled=titled, skipped=skipped)
+
+
+def _fixed_profiles(data_dir: Path) -> frozenset[str]:
+    """Return ids of profiles whose videos need no generated title."""
+    return frozenset(
+        profile.id
+        for profile in list_profiles(data_dir)
+        if not title_policy(profile.delivery.title).needs_generation
+    )
 
 
 def _title_one(

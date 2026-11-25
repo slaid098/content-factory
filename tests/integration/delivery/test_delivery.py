@@ -310,6 +310,34 @@ def test_deliver_returns_none_without_titles_table(tmp_path: Path) -> None:
     assert source.is_file()
 
 
+def test_fixed_profile_delivers_without_titles_table(tmp_path: Path) -> None:
+    add_profile(
+        tmp_path,
+        "dating",
+        "profile_1",
+        delivery={"title": {"mode": "fixed", "value": "Название профиля"}},
+    )
+    source = add_profile_video(
+        tmp_path,
+        "dating",
+        "profile_1",
+        filename="dating_profile_1_run_001.mp4",
+    )
+
+    archive = deliver(
+        tmp_path,
+        "ru",
+        1,
+        REQUEST_ID,
+        profile="dating/profile_1",
+        retention_hours=24,
+    )
+
+    assert archive is not None
+    assert _zip_sidecar(archive.read_bytes())["title"] == "Название профиля"
+    assert not source.exists()
+
+
 def test_deliver_returns_none_with_broken_database(tmp_path: Path) -> None:
     source = touch_mp4(tmp_path / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"))
     db_path = tmp_path / "db" / "db.sqlite3"
@@ -1412,6 +1440,170 @@ def test_profile_delivery_of_videos_keeps_photos(tmp_path: Path) -> None:
     assert not video.exists()
     assert photo.is_file()
     assert photo.with_suffix(".json").is_file()
+
+
+def test_fixed_profile_delivers_untitled_video_with_profile_title_and_hashtags(
+    tmp_path: Path,
+) -> None:
+    add_profile(
+        tmp_path,
+        "dating",
+        "profile_1",
+        delivery={
+            "title": {"mode": "fixed", "value": "Давай знакомиться ✨"},
+            "hashtags": ["#знакомиться", "#dating"],
+        },
+    )
+    source = add_profile_video(
+        tmp_path,
+        "dating",
+        "profile_1",
+        filename="dating_profile_1_run_001.mp4",
+        data=b"video",
+    )
+
+    archive = deliver(
+        tmp_path,
+        "ru",
+        10,
+        REQUEST_ID,
+        profile="dating/profile_1",
+        retention_hours=24,
+    )
+
+    assert archive is not None
+    data = archive.read_bytes()
+    assert _zip_entries(data) == ["001.mp4", "001.json"]
+    assert _zip_sidecar(data) == {
+        "type": "video",
+        "language": "ru",
+        "profile_id": "dating/profile_1",
+        "title": "Давай знакомиться ✨",
+        "hashtags": ["#знакомиться", "#dating"],
+    }
+    assert not source.exists()
+
+
+def test_fixed_profile_ignores_stored_title(tmp_path: Path) -> None:
+    add_profile(
+        tmp_path,
+        "dating",
+        "profile_1",
+        delivery={"title": {"mode": "fixed", "value": "Название профиля"}},
+    )
+    add_profile_video(
+        tmp_path,
+        "dating",
+        "profile_1",
+        filename="dating_profile_1_run_001.mp4",
+    )
+    add_title(tmp_path / "db" / "db.sqlite3", "dating_profile_1_run_001", "Старое название")
+
+    archive = deliver(
+        tmp_path,
+        "ru",
+        10,
+        REQUEST_ID,
+        profile="dating/profile_1",
+        retention_hours=24,
+    )
+
+    assert archive is not None
+    assert _zip_sidecar(archive.read_bytes())["title"] == "Название профиля"
+
+
+def test_generated_profile_without_title_is_not_delivered(tmp_path: Path) -> None:
+    add_profile(tmp_path, "dating", "profile_1")
+    source = add_profile_video(
+        tmp_path,
+        "dating",
+        "profile_1",
+        filename="dating_profile_1_run_001.mp4",
+    )
+
+    assert (
+        deliver(
+            tmp_path,
+            "ru",
+            1,
+            REQUEST_ID,
+            profile="dating/profile_1",
+            retention_hours=24,
+        )
+        is None
+    )
+    assert source.is_file()
+    assert not _archive_path(tmp_path).exists()
+
+
+def test_generated_profile_writes_title_and_hashtags(tmp_path: Path) -> None:
+    add_profile(
+        tmp_path,
+        "dating",
+        "profile_1",
+        delivery={"hashtags": ["#dating"]},
+    )
+    add_profile_video(
+        tmp_path,
+        "dating",
+        "profile_1",
+        filename="dating_profile_1_run_001.mp4",
+    )
+    add_title(tmp_path / "db" / "db.sqlite3", "dating_profile_1_run_001", "Название видео")
+
+    archive = deliver(
+        tmp_path,
+        "ru",
+        10,
+        REQUEST_ID,
+        profile="dating/profile_1",
+        retention_hours=24,
+    )
+
+    assert archive is not None
+    assert _zip_sidecar(archive.read_bytes()) == {
+        "type": "video",
+        "language": "ru",
+        "profile_id": "dating/profile_1",
+        "title": "Название видео",
+        "hashtags": ["#dating"],
+    }
+
+
+def test_photo_profile_with_delivery_keeps_text_only_sidecar(tmp_path: Path) -> None:
+    add_profile(
+        tmp_path,
+        "dating",
+        "profile_1",
+        delivery={
+            "title": {"mode": "fixed", "value": "Название профиля"},
+            "hashtags": ["#dating"],
+        },
+    )
+    photo = touch_photo(
+        tmp_path / CONTENT_DIR / "dating" / "ru" / "dating_profile_1_post_001.jpg",
+        b"photo",
+        text="Текст поста",
+    )
+
+    archive = deliver(
+        tmp_path,
+        "ru",
+        10,
+        REQUEST_ID,
+        profile="dating/profile_1",
+        content_type=ContentType.PHOTO,
+        retention_hours=24,
+    )
+
+    assert archive is not None
+    assert _zip_sidecar(archive.read_bytes()) == {
+        "type": "photo",
+        "language": "ru",
+        "profile_id": "dating/profile_1",
+        "text": "Текст поста",
+    }
+    assert not photo.exists()
 
 
 @pytest.mark.parametrize("sidecar", [None, "{}"])

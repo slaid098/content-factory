@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from content_factory.schemas.profiles.delivery import DeliveryInfo
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +25,7 @@ class ProfileInfo:
     height: int
     audio: bool
     dir: Path
+    delivery: DeliveryInfo = field(default_factory=DeliveryInfo)
 
 
 __all__ = ["ProfileInfo"]
