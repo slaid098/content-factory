@@ -22,7 +22,7 @@ class ProfileLastRun(BaseModel):
 
 
 class ProfileResponse(BaseModel):
-    """One generator profile with its stock and effective refill settings."""
+    """One generator profile with its video and photo stock and refill settings."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -37,6 +37,7 @@ class ProfileResponse(BaseModel):
     height: int
     audio: bool
     stock: int = Field(ge=0)
+    photo_stock: int = Field(ge=0)
     target: int
     refill_at: int
     refill_enabled: bool

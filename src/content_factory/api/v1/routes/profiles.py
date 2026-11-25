@@ -148,10 +148,14 @@ def update_profile(
     responses={
         **_AUTH_RESPONSES,
         status.HTTP_200_OK: {
-            "description": "JPEG frame from the newest profile video",
-            "content": {"image/jpeg": {}},
+            "description": "JPEG frame of the newest video or the newest photo post",
+            "content": {
+                "image/jpeg": {},
+                "image/png": {},
+                "image/webp": {},
+            },
         },
-        status.HTTP_404_NOT_FOUND: {"description": "Profile is missing or has no video yet"},
+        status.HTTP_404_NOT_FOUND: {"description": "Profile is missing or has no media yet"},
         status.HTTP_422_UNPROCESSABLE_ENTITY: {"description": "Unsafe profile id"},
         status.HTTP_503_SERVICE_UNAVAILABLE: {"description": "Preview cannot be built"},
     },
@@ -161,7 +165,7 @@ def get_profile_preview(
     name: Annotated[str, PathParam(min_length=1, max_length=100)],
     settings: Annotated[Settings, Depends(require_delivery_token)],
 ) -> Response:
-    """Return a cached JPEG preview of the newest profile video."""
+    """Return a preview of the newest profile video or its newest photo post."""
     profile_id = _profile_id(category, name)
     try:
         preview = preview_for_profile(settings.data_dir, profile_id)
@@ -178,9 +182,12 @@ def get_profile_preview(
             detail="preview not found",
         )
     return FileResponse(
-        preview,
-        media_type="image/jpeg",
-        headers={"Cache-Control": "max-age=60"},
+        preview.path,
+        media_type=preview.media_type,
+        headers={
+            "Cache-Control": "max-age=60",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

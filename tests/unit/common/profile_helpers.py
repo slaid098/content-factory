@@ -14,6 +14,7 @@ from content_factory.constants import CONTENT_DIR, DB_DIR, DB_FILENAME, PROFILES
 from content_factory.db.connection import connect
 from content_factory.db.profiles import upsert_refill
 from content_factory.schemas.profiles.refill import ProfileRefill
+from content_factory.services.stock.layout import photo_sidecar
 
 _FINISHED = datetime(2026, 5, 1, 12, 30, tzinfo=UTC)
 _STARTED = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
@@ -59,6 +60,34 @@ def add_profile_video(
     path = directory / (filename or f"{category}_{name}_run_001.mp4")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
+    if mtime is not None:
+        os.utime(path, (mtime, mtime))
+    return path
+
+
+def add_profile_photo(
+    data_dir: Path,
+    category: str = "dating",
+    name: str = "profile_1",
+    *,
+    niche: str | None = None,
+    language: str = "ru",
+    filename: str | None = None,
+    data: bytes = b"\xff\xd8photo",
+    mtime: float | None = None,
+    sidecar: bool = True,
+) -> Path:
+    """Create one generated photo post named after its profile slug.
+
+    A readable text sidecar is written by default, because the stock index
+    counts only photos whose sidecar can be read.
+    """
+    directory = data_dir / CONTENT_DIR / (niche or category) / language
+    path = directory / (filename or f"{category}_{name}_run_001.jpg")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    if sidecar:
+        photo_sidecar(path).write_text(json.dumps({"text": "текст поста"}), encoding="utf-8")
     if mtime is not None:
         os.utime(path, (mtime, mtime))
     return path
