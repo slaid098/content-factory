@@ -54,12 +54,18 @@ def _client() -> TestClient:
     return TestClient(create_app())
 
 
-def _body(request_id: UUID = REQUEST_ID, **overrides: object) -> dict[str, object]:
+def _body(
+    request_id: UUID = REQUEST_ID,
+    *,
+    language: str | None = "ru",
+    **overrides: object,
+) -> dict[str, object]:
     body: dict[str, object] = {
-        "language": "ru",
         "count": 1,
         "request_id": str(request_id),
     }
+    if language is not None:
+        body["language"] = language
     body.update(overrides)
     return body
 
@@ -412,7 +418,11 @@ def test_build_slot_is_exclusive_across_processes(data_dir: Path) -> None:
         with pytest.raises(DeliveryBusyError):
             start_delivery_job(
                 data_dir,
-                DeliveryRequest(language="ru", count=1, request_id=REQUEST_ID),
+                DeliveryRequest(
+                    language="ru",
+                    count=1,
+                    request_id=REQUEST_ID,
+                ).resolve(None),
                 retention_hours=24,
             )
     finally:
@@ -428,7 +438,7 @@ def test_build_slot_is_exclusive_across_processes(data_dir: Path) -> None:
 
 def test_unusable_lock_dir_maps_to_json_delivery_error(data_dir: Path) -> None:
     (data_dir / DB_DIR).write_text("not a directory", encoding="utf-8")
-    request = DeliveryRequest(language="ru", count=1, request_id=REQUEST_ID)
+    request = DeliveryRequest(language="ru", count=1, request_id=REQUEST_ID).resolve(None)
 
     with pytest.raises(DeliveryError):
         start_delivery_job(data_dir, request, retention_hours=24)
@@ -556,6 +566,42 @@ def test_link_by_profile_uses_request_language(
     assert not source.exists()
     sidecar = data_dir / ARCHIVE_DIR / "en" / f"{REQUEST_ID}.json"
     assert sidecar.is_file()
+    assert not (data_dir / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.json").exists()
+
+
+def test_link_by_profile_without_language_uses_profile_language(
+    data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_profile(data_dir, "dating", "profile_1", language="en")
+    source = add_profile_video(
+        data_dir,
+        "dating",
+        "profile_1",
+        language="en",
+        data=b"english",
+    )
+    add_title(data_dir / "db" / "db.sqlite3", "dating_profile_1_run_001", "English title")
+    url = "https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip"
+    monkeypatch.setattr(
+        "content_factory.services.delivery.jobs.upload_archive",
+        lambda _archive: url,
+    )
+    client = _client()
+
+    response = _post(client, language=None, profile="dating/profile_1")
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["language"] == "en"
+    assert body["status"] == "building"
+    final = _wait(client, REQUEST_ID_TEXT, "ready", language="en")
+
+    assert final["language"] == "en"
+    assert final["url"] == url
+    assert final["files"] == 1
+    assert not source.exists()
+    assert (data_dir / ARCHIVE_DIR / "en" / f"{REQUEST_ID}.json").is_file()
     assert not (data_dir / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.json").exists()
 
 

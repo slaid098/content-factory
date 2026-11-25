@@ -24,19 +24,19 @@ class ContentType(StrEnum):
 
 
 class DeliveryRequest(BaseModel):
-    """One delivery address: a language, optionally narrowed to a profile.
+    """One delivery address: a language or a profile, plus the media type.
 
-    ``language`` is required and always selects the stock. A ``profile`` such
-    as ``dating/profile_1`` adds the rows of that profile of the same language;
-    the explicit profile ``general`` means no profile. ``type`` is the media
-    type of the stock and defaults to video; photos exist only in a profile,
-    because General is video by language. A ``query`` topic belongs to
+    A ``profile`` such as ``dating/profile_1`` already carries the language in
+    the registry, so ``language`` is optional there; the explicit profile
+    ``general`` means no profile and keeps ``language`` required. ``type`` is
+    the media type of the stock and defaults to video; photos exist only in a
+    profile, because General is video by language. A ``query`` topic belongs to
     supplier videos and is allowed only for videos without a profile.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    language: str = Field(pattern=LANGUAGE_CODE_RE.pattern)
+    language: str | None = Field(default=None, pattern=LANGUAGE_CODE_RE.pattern)
     profile: str | None = Field(default=None, min_length=1, max_length=200)
     type: ContentType = ContentType.VIDEO
     count: int = Field(ge=1, le=300)
@@ -52,6 +52,8 @@ class DeliveryRequest(BaseModel):
     @model_validator(mode="after")
     def _check_address(self) -> DeliveryRequest:
         """Reject a request the two delivery modes cannot serve."""
+        if self.profile is None and self.language is None:
+            raise ValueError("language обязателен без profile")
         if self.type is ContentType.PHOTO and self.profile is None:
             raise ValueError("type=photo требует profile: General — только видео")
         if self.profile is not None and self.query is not None:
@@ -59,6 +61,52 @@ class DeliveryRequest(BaseModel):
         if self.type is ContentType.PHOTO and self.query is not None:
             raise ValueError("query нельзя сочетать с type=photo")
         return self
+
+    def resolve(self, profile_language: str | None) -> ResolvedDeliveryRequest:
+        """Fill the address language from the request or from its profile.
+
+        The client language wins over the registry language of the profile, so
+        a profile can never be delivered under another language. General has no
+        profile and therefore no fallback.
+
+        Args:
+            profile_language: Registry language of ``profile``, or ``None``
+                when the request is General.
+
+        Returns:
+            The request with a mandatory language, ready for the service layer.
+
+        Raises:
+            ValueError: Neither the request nor the profile provides a language.
+        """
+        language = self.language if self.language is not None else profile_language
+        if language is None:
+            raise ValueError("language обязателен без profile")
+        return ResolvedDeliveryRequest(
+            language=language,
+            profile=self.profile,
+            type=self.type,
+            count=self.count,
+            request_id=self.request_id,
+            query=self.query,
+        )
+
+
+class ResolvedDeliveryRequest(BaseModel):
+    """A delivery address whose language is already resolved.
+
+    Built only by :meth:`DeliveryRequest.resolve`; the delivery service never
+    deals with an optional language.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    language: str = Field(pattern=LANGUAGE_CODE_RE.pattern)
+    profile: str | None = Field(default=None, min_length=1, max_length=200)
+    type: ContentType = ContentType.VIDEO
+    count: int = Field(ge=1, le=300)
+    request_id: UUID
+    query: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class DeliveryJobInfo(BaseModel):

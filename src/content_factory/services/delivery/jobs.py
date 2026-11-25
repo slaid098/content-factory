@@ -29,8 +29,8 @@ from content_factory.exceptions.errors import (
 from content_factory.schemas.content.delivery import (
     ContentType,
     DeliveryJobInfo,
-    DeliveryRequest,
     DeliveryStatus,
+    ResolvedDeliveryRequest,
 )
 from content_factory.services.delivery.service import count_archive_files
 from content_factory.services.delivery.service import deliver as _deliver
@@ -86,7 +86,7 @@ def upload_archive(archive: Path) -> str:
 
 def start_delivery_job(
     data_dir: Path,
-    request: DeliveryRequest,
+    request: ResolvedDeliveryRequest,
     *,
     retention_hours: int,
     now: datetime | None = None,
@@ -101,7 +101,7 @@ def start_delivery_job(
 
     Args:
         data_dir: Root of the runtime data directory.
-        request: Validated delivery request.
+        request: Delivery request with an already resolved language.
         retention_hours: Link and sidecar lifetime in hours.
         now: Moment used to create the sidecar; defaults to UTC now.
 
@@ -123,7 +123,7 @@ def start_delivery_job(
 
 def _start_under_lock(
     data_dir: Path,
-    request: DeliveryRequest,
+    request: ResolvedDeliveryRequest,
     moment: datetime,
     retention_hours: int,
 ) -> DeliveryJobInfo:
@@ -227,7 +227,7 @@ def _acquire_slot(data_dir: Path) -> FileLock | None:
 
 def _busy_or_existing(
     data_dir: Path,
-    request: DeliveryRequest,
+    request: ResolvedDeliveryRequest,
     language: str,
     moment: datetime,
 ) -> DeliveryJobInfo:
@@ -244,7 +244,7 @@ def _busy_or_existing(
 
 def _resume_or_conflict(
     data_dir: Path,
-    request: DeliveryRequest,
+    request: ResolvedDeliveryRequest,
     language: str,
     moment: datetime,
 ) -> DeliveryJobInfo | None:
@@ -280,7 +280,7 @@ def _fail_stale(data_dir: Path, job: DeliveryJobInfo) -> DeliveryJobInfo:
 def _run_delivery_job(
     slot: FileLock,
     data_dir: Path,
-    request: DeliveryRequest,
+    request: ResolvedDeliveryRequest,
     created_at: datetime,
     retention_hours: int,
 ) -> None:
@@ -313,7 +313,7 @@ def _run_delivery_job(
 
 def _build_and_publish(
     data_dir: Path,
-    request: DeliveryRequest,
+    request: ResolvedDeliveryRequest,
     created_at: datetime,
     retention_hours: int,
 ) -> DeliveryJobInfo:
@@ -364,7 +364,7 @@ def _build_and_publish(
 
 def _build_archive(
     data_dir: Path,
-    request: DeliveryRequest,
+    request: ResolvedDeliveryRequest,
     created_at: datetime,
     retention_hours: int,
 ) -> Path | None:
@@ -388,7 +388,7 @@ def _read_archive_metrics(archive: Path) -> tuple[int, int]:
 
 
 def _publish_or_fallback(
-    request: DeliveryRequest,
+    request: ResolvedDeliveryRequest,
     created_at: datetime,
     retention_hours: int,
     archive: Path,
@@ -417,7 +417,7 @@ def _publish_or_fallback(
 
 
 def _published_state(
-    request: DeliveryRequest,
+    request: ResolvedDeliveryRequest,
     created_at: datetime,
     retention_hours: int,
     archive: Path,
@@ -439,7 +439,7 @@ def _published_state(
 
 
 def _ready_local(
-    request: DeliveryRequest,
+    request: ResolvedDeliveryRequest,
     created_at: datetime,
     retention_hours: int,
     size: int,
@@ -464,7 +464,7 @@ def _ready_local(
 
 
 def _job_state(
-    request: DeliveryRequest,
+    request: ResolvedDeliveryRequest,
     created_at: datetime,
     retention_hours: int,
     *,
@@ -510,7 +510,7 @@ def _remove_archive(archive: Path, request_id: UUID) -> None:
 
 def _record_failure(
     data_dir: Path,
-    request: DeliveryRequest,
+    request: ResolvedDeliveryRequest,
     created_at: datetime,
     retention_hours: int,
 ) -> None:
