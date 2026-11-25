@@ -51,5 +51,5 @@ def create_app() -> FastAPI:
     app.include_router(queries_router, prefix="/api/v1", tags=["content"])
     app.include_router(settings_router, prefix="/api/v1", tags=["content"])
     app.include_router(ui_router)
-    app.mount("/ui", StaticFiles(directory=UI_DIR), name="ui")
+    app.mount("/ui", StaticFiles(directory=UI_DIR, check_dir=False), name="ui")
     return app

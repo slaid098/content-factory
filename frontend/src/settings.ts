@@ -1,50 +1,64 @@
 /** Runtime settings: read, preview the diff, then apply with a backup. */
 
-import { ApiError, MESSAGES, requestJson } from "./api.js";
-import { el, setMessage, toggle } from "./dom.js";
-import { languageName } from "./format.js";
+import { el, setMessage, toggle } from "./dom";
+import { errorMessage } from "./lib/errors";
+import { languageName } from "./lib/format";
+import { ApiError, MESSAGES, requestJson } from "./lib/http";
 
 const SETTINGS_URL = "/api/v1/content/settings";
 const PREVIEW_URL = "/api/v1/content/settings/preview";
 
+export interface SettingsElements {
+  form: HTMLFormElement;
+  languages: HTMLElement;
+  batch: HTMLInputElement;
+  interval: HTMLInputElement;
+  maxDuration: HTMLInputElement;
+  maxQueries: HTMLInputElement;
+  filterMax: HTMLInputElement;
+  workers: HTMLInputElement;
+  deliveryMax: HTMLInputElement;
+  preview: HTMLButtonElement;
+  apply: HTMLButtonElement;
+  status: HTMLElement;
+  diff: HTMLElement;
+  diffText: HTMLElement;
+  backup: HTMLElement;
+  message: HTMLElement;
+  refresh: HTMLButtonElement;
+}
+
+export interface SettingsViewOptions {
+  onLimits: (settings: Record<string, unknown>) => void;
+}
+
+export interface SettingsView {
+  load: (force?: boolean) => Promise<Record<string, unknown> | null>;
+}
+
+interface LanguageRow {
+  code: string;
+  enabled: HTMLInputElement;
+  target: HTMLInputElement;
+}
+
 /**
  * Build the settings form and its preview/apply flow.
- * @param {{
- *   form: HTMLFormElement,
- *   languages: HTMLElement,
- *   batch: HTMLInputElement,
- *   interval: HTMLInputElement,
- *   maxDuration: HTMLInputElement,
- *   maxQueries: HTMLInputElement,
- *   filterMax: HTMLInputElement,
- *   workers: HTMLInputElement,
- *   deliveryMax: HTMLInputElement,
- *   preview: HTMLButtonElement,
- *   apply: HTMLButtonElement,
- *   status: HTMLElement,
- *   diff: HTMLElement,
- *   diffText: HTMLElement,
- *   backup: HTMLElement,
- *   message: HTMLElement,
- *   refresh: HTMLButtonElement,
- * }} elements
- * @param {{onLimits: (settings: Record<string, unknown>) => void}} options
  */
-export function createSettingsView(elements, options) {
-  /** @type {Array<{code: string, enabled: HTMLInputElement, target: HTMLInputElement}>} */
-  let rows = [];
+export function createSettingsView(
+  elements: SettingsElements,
+  options: SettingsViewOptions,
+): SettingsView {
+  let rows: LanguageRow[] = [];
   let loaded = false;
   let busy = false;
   let previewValid = false;
-  /** @type {string | null} */
-  let previewPayload = null;
+  let previewPayload: string | null = null;
 
   /**
    * Load settings once, or again when ``force`` is set.
-   * @param {boolean} [force]
-   * @returns {Promise<Record<string, unknown> | null>}
    */
-  async function load(force = false) {
+  async function load(force = false): Promise<Record<string, unknown> | null> {
     if (busy) {
       return null;
     }
@@ -64,7 +78,7 @@ export function createSettingsView(elements, options) {
       return settings;
     } catch (error) {
       loaded = false;
-      setMessage(elements.message, error.message);
+      setMessage(elements.message, errorMessage(error));
       setStatus("Настройки недоступны.", true);
       return null;
     } finally {
@@ -72,10 +86,7 @@ export function createSettingsView(elements, options) {
     }
   }
 
-  /**
-   * @param {SubmitEvent} event
-   */
-  async function apply(event) {
+  async function apply(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     if (!previewValid || busy) {
       if (!previewValid) {
@@ -83,14 +94,14 @@ export function createSettingsView(elements, options) {
       }
       return;
     }
-    let payload;
-    let current;
+    let payload: Record<string, unknown>;
+    let current: string;
     try {
       payload = buildPayload();
       current = JSON.stringify(payload);
     } catch (error) {
       resetDiff();
-      setStatus(error.message, true);
+      setStatus(errorMessage(error), true);
       return;
     }
     if (current !== previewPayload) {
@@ -131,21 +142,21 @@ export function createSettingsView(elements, options) {
       }
     } catch (error) {
       setStatus("Применить не удалось.", true);
-      setMessage(elements.message, error.message);
+      setMessage(elements.message, errorMessage(error));
     } finally {
       setBusy(false);
     }
   }
 
-  async function preview() {
+  async function preview(): Promise<void> {
     if (busy) {
       return;
     }
-    let payload;
+    let payload: Record<string, unknown>;
     try {
       payload = buildPayload();
     } catch (error) {
-      setStatus(error.message, true);
+      setStatus(errorMessage(error), true);
       resetDiff();
       return;
     }
@@ -180,27 +191,24 @@ export function createSettingsView(elements, options) {
     } catch (error) {
       resetDiff();
       setStatus("Проверка не удалась.", true);
-      setMessage(elements.message, error.message);
+      setMessage(elements.message, errorMessage(error));
     } finally {
       setBusy(false);
     }
   }
 
-  /**
-   * @param {Record<string, unknown>} settings
-   */
-  function fillForm(settings) {
+  function fillForm(settings: Record<string, unknown>): void {
     const languages = Array.isArray(settings.languages) ? settings.languages : [];
     rows = [];
     const cards = languages.map((item) => {
       const source = asObject(item);
       const code = String(source.code ?? "");
       const row = el("label", "settings-language");
-      const enabled = /** @type {HTMLInputElement} */ (el("input"));
+      const enabled = el("input");
       enabled.type = "checkbox";
       enabled.className = "settings-enabled";
       enabled.checked = Boolean(source.enabled);
-      const target = /** @type {HTMLInputElement} */ (el("input"));
+      const target = el("input");
       target.type = "number";
       target.inputMode = "numeric";
       target.min = "0";
@@ -234,10 +242,7 @@ export function createSettingsView(elements, options) {
     elements.deliveryMax.value = String(Number(delivery.max_count) || 1);
   }
 
-  /**
-   * @returns {Record<string, unknown>}
-   */
-  function buildPayload() {
+  function buildPayload(): Record<string, unknown> {
     return {
       languages: rows.map((row) => ({
         code: row.code,
@@ -256,10 +261,7 @@ export function createSettingsView(elements, options) {
     };
   }
 
-  /**
-   * @returns {string | null}
-   */
-  function serializedForm() {
+  function serializedForm(): string | null {
     try {
       return JSON.stringify(buildPayload());
     } catch {
@@ -267,17 +269,14 @@ export function createSettingsView(elements, options) {
     }
   }
 
-  function resetDiff() {
+  function resetDiff(): void {
     previewValid = false;
     previewPayload = null;
     hideDiff();
     elements.apply.disabled = true;
   }
 
-  /**
-   * @param {boolean} value
-   */
-  function setBusy(value) {
+  function setBusy(value: boolean): void {
     busy = value;
     elements.preview.disabled = value;
     elements.refresh.disabled = value;
@@ -285,24 +284,17 @@ export function createSettingsView(elements, options) {
     elements.form.setAttribute("aria-busy", String(value));
   }
 
-  /**
-   * @param {string} diff
-   */
-  function showDiff(diff) {
+  function showDiff(diff: string): void {
     elements.diffText.textContent = diff;
     toggle(elements.diff, true);
   }
 
-  function hideDiff() {
+  function hideDiff(): void {
     elements.diffText.textContent = "";
     toggle(elements.diff, false);
   }
 
-  /**
-   * @param {string} text
-   * @param {boolean} isError
-   */
-  function setStatus(text, isError) {
+  function setStatus(text: string, isError: boolean): void {
     elements.status.textContent = text;
     elements.status.classList.toggle("is-error", isError);
   }
@@ -329,14 +321,7 @@ export function createSettingsView(elements, options) {
   return { load };
 }
 
-/**
- * @param {HTMLInputElement} input
- * @param {string} label
- * @param {number} min
- * @param {number} max
- * @returns {number}
- */
-function readInt(input, label, min, max) {
+function readInt(input: HTMLInputElement, label: string, min: number, max: number): number {
   const value = Number(input.value);
   if (!Number.isInteger(value)) {
     throw new Error(`Поле «${label}» должно быть целым числом.`);
@@ -347,12 +332,7 @@ function readInt(input, label, min, max) {
   return value;
 }
 
-/**
- * @param {HTMLInputElement} input
- * @param {string} label
- * @returns {string}
- */
-function readText(input, label) {
+function readText(input: HTMLInputElement, label: string): string {
   const value = input.value.trim();
   if (!value) {
     throw new Error(`Поле «${label}» не может быть пустым.`);
@@ -360,19 +340,11 @@ function readText(input, label) {
   return value;
 }
 
-/**
- * @param {unknown} value
- * @returns {Record<string, unknown>}
- */
-function asObject(value) {
-  return value && typeof value === "object" ? /** @type {Record<string, unknown>} */ (value) : {};
+function asObject(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
 }
 
-/**
- * @param {unknown} value
- * @returns {Record<string, unknown>}
- */
-function asSettings(value) {
+function asSettings(value: unknown): Record<string, unknown> {
   const body = asObject(value);
   if (!Array.isArray(body.languages)) {
     throw new ApiError(MESSAGES.badResponse, 0);

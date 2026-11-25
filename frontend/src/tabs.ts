@@ -1,18 +1,26 @@
 /** Accessible tabs: one visible panel at a time, arrow-key navigation. */
 
+export interface TabsOptions {
+  tabs: HTMLElement[];
+  panels: HTMLElement[];
+  onChange: (panelId: string) => void;
+}
+
+export interface TabsView {
+  show: (panelId: string) => void;
+}
+
 /**
  * Wire the tab buttons and panels of the page.
- * @param {{tabs: HTMLElement[], panels: HTMLElement[], onChange: (panelId: string) => void}} options
  */
-export function createTabs(options) {
+export function createTabs(options: TabsOptions): TabsView {
   const { tabs, panels, onChange } = options;
 
-  /**
-   * @param {number} index
-   * @param {boolean} focus
-   */
-  function activate(index, focus) {
+  function activate(index: number, focus: boolean): void {
     const tab = tabs[index];
+    if (!tab) {
+      return;
+    }
     const panelId = tab.getAttribute("aria-controls");
     for (const [position, item] of tabs.entries()) {
       const selected = position === index;
@@ -54,8 +62,7 @@ export function createTabs(options) {
     });
   }
 
-  /** @param {string} panelId */
-  function show(panelId) {
+  function show(panelId: string): void {
     const index = tabs.findIndex((tab) => tab.getAttribute("aria-controls") === panelId);
     if (index >= 0) {
       activate(index, false);

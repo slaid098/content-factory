@@ -1,8 +1,10 @@
 /** Generator profiles: preview, stock, refill settings and the newest batch. */
 
-import { ApiError, requestJson } from "./api.js";
-import { el, setMessage, setText, toggle } from "./dom.js";
-import { formatCount, formatDateTime, languageName, statusLabel } from "./format.js";
+import { el, setMessage, setText, toggle } from "./dom";
+import { formatDateTime } from "./lib/datetime";
+import { errorMessage } from "./lib/errors";
+import { formatCount, languageName, statusLabel } from "./lib/format";
+import { ApiError, requestJson } from "./lib/http";
 
 const PROFILES_URL = "/api/v1/content/profiles";
 const EMPTY_TEXT = "Профилей пока нет.";
@@ -13,66 +15,70 @@ const TARGET_MIN = 1;
 const TARGET_MAX = 1000;
 const REFILL_MIN = 0;
 
-/**
- * @typedef {Object} LastRun
- * @property {string} status
- * @property {string} finishedAt
- * @property {number} generated
- * @property {number} failed
- * @property {string} error
- */
+interface LastRun {
+  status: string;
+  finishedAt: string;
+  generated: number;
+  failed: number;
+  error: string;
+}
 
-/**
- * @typedef {Object} Profile
- * @property {string} id
- * @property {string} category
- * @property {string} name
- * @property {string} language
- * @property {string} niche
- * @property {number} width
- * @property {number} height
- * @property {boolean} audio
- * @property {number} stock
- * @property {number} target
- * @property {number} refillAt
- * @property {boolean} refillEnabled
- * @property {number | null} targetOverride
- * @property {number | null} refillAtOverride
- * @property {string} previewUrl
- * @property {LastRun | null} lastRun
- */
+interface Profile {
+  id: string;
+  category: string;
+  name: string;
+  language: string;
+  niche: string;
+  width: number;
+  height: number;
+  audio: boolean;
+  stock: number;
+  target: number;
+  refillAt: number;
+  refillEnabled: boolean;
+  targetOverride: number | null;
+  refillAtOverride: number | null;
+  previewUrl: string;
+  lastRun: LastRun | null;
+}
 
-/**
- * @typedef {Object} CardController
- * @property {HTMLElement} node
- * @property {(profile: Profile) => void} apply
- * @property {(value: boolean) => void} setBusy
- * @property {(text: string, isError: boolean) => void} setStatus
- */
+interface CardController {
+  node: HTMLElement;
+  apply: (profile: Profile) => void;
+  setBusy: (value: boolean) => void;
+  setStatus: (text: string, isError: boolean) => void;
+}
+
+export interface ProfilesElements {
+  list: HTMLElement;
+  message: HTMLElement;
+  empty: HTMLElement;
+  refresh: HTMLButtonElement;
+}
+
+export interface ProfilesView {
+  load: () => Promise<void>;
+}
 
 /**
  * Build the profiles panel.
- * @param {{list: HTMLElement, message: HTMLElement, empty: HTMLElement, refresh: HTMLButtonElement}} elements
  */
-export function createProfilesView(elements) {
-  /** @type {Profile[]} */
-  let profiles = [];
-  /** @type {Map<string, CardController>} */
-  const cards = new Map();
+export function createProfilesView(elements: ProfilesElements): ProfilesView {
+  let profiles: Profile[] = [];
+  const cards = new Map<string, CardController>();
   // Ids with an in-flight PATCH: they stay locked and block a concurrent refresh.
-  /** @type {Set<string>} */
-  const pending = new Set();
+  const pending = new Set<string>();
   let snapshot = "";
   // Every PATCH start invalidates a list read that began earlier and may be stale.
   let stateVersion = 0;
   let loading = false;
 
-  function updateRefresh() {
+  function updateRefresh(): void {
     elements.refresh.disabled = loading || pending.size > 0;
   }
 
   /** Reload every profile unless one is being saved right now. */
-  async function load() {
+  async function load(): Promise<void> {
     if (loading || pending.size > 0) {
       return;
     }
@@ -90,7 +96,7 @@ export function createProfilesView(elements) {
       render();
     } catch (error) {
       if (version === stateVersion) {
-        setMessage(elements.message, error.message);
+        setMessage(elements.message, errorMessage(error));
       }
     } finally {
       loading = false;
@@ -99,7 +105,7 @@ export function createProfilesView(elements) {
     }
   }
 
-  function render() {
+  function render(): void {
     const next = JSON.stringify(profiles);
     if (next === snapshot) {
       return;
@@ -119,12 +125,8 @@ export function createProfilesView(elements) {
 
   /**
    * Apply one PATCH result to the live card and keep the snapshot in step.
-   * @param {string} id
-   * @param {Profile} profile
-   * @param {string} text
-   * @param {boolean} isError
    */
-  function applyResult(id, profile, text, isError) {
+  function applyResult(id: string, profile: Profile, text: string, isError: boolean): void {
     const live = cards.get(id);
     if (live) {
       live.apply(profile);
@@ -139,10 +141,8 @@ export function createProfilesView(elements) {
 
   /**
    * Send one partial update; a pending id blocks a second request.
-   * @param {string} id
-   * @param {Record<string, unknown>} payload
    */
-  async function saveProfile(id, payload) {
+  async function saveProfile(id: string, payload: Record<string, unknown>): Promise<void> {
     const controller = cards.get(id);
     const current = profiles.find((item) => item.id === id);
     if (!controller || !current || pending.has(id)) {
@@ -178,23 +178,19 @@ export function createProfilesView(elements) {
     }
   }
 
-  /**
-   * @param {Profile} initial
-   * @returns {CardController}
-   */
-  function buildCard(initial) {
+  function buildCard(initial: Profile): CardController {
     const id = initial.id;
     let profile = initial;
     const card = el("li", "profile-card");
     const media = el("div", "profile-media");
-    const image = /** @type {HTMLImageElement} */ (el("img", "profile-preview"));
+    const image = el("img", "profile-preview");
     const fallback = el("p", "profile-preview-fallback", PREVIEW_FALLBACK);
     const head = el("div", "profile-head");
     const badges = el("p", "profile-badges");
     const facts = el("p", "profile-facts");
     const targetInput = numberInput("Цель", TARGET_MIN, TARGET_MAX);
     const refillInput = numberInput("Порог", REFILL_MIN, TARGET_MAX);
-    const enabled = /** @type {HTMLInputElement} */ (el("input"));
+    const enabled = el("input");
     const status = el("p", "status profile-status");
     const lastRun = el("div", "profile-last-run");
 
@@ -231,7 +227,7 @@ export function createProfilesView(elements) {
     status.setAttribute("aria-live", "polite");
     card.append(media, head, facts, switchLabel, fields, status, lastRun);
 
-    function fill() {
+    function fill(): void {
       fillInputs();
       renderFacts();
       renderLastRun();
@@ -242,7 +238,7 @@ export function createProfilesView(elements) {
       }
     }
 
-    function fillInputs() {
+    function fillInputs(): void {
       targetInput.value = overrideValue(profile.targetOverride);
       targetInput.placeholder = effectiveValue(profile.target, profile.targetOverride);
       refillInput.value = overrideValue(profile.refillAtOverride);
@@ -250,7 +246,7 @@ export function createProfilesView(elements) {
       enabled.checked = profile.refillEnabled;
     }
 
-    function renderFacts() {
+    function renderFacts(): void {
       facts.replaceChildren(
         el("span", "", `Сток ${formatCount(profile.stock)} / цель ${formatCount(profile.target)}`),
         el("span", "profile-sep", "·"),
@@ -258,7 +254,7 @@ export function createProfilesView(elements) {
       );
     }
 
-    function renderLastRun() {
+    function renderLastRun(): void {
       toggle(lastRun, profile.lastRun !== null);
       if (profile.lastRun === null) {
         lastRun.replaceChildren();
@@ -282,40 +278,24 @@ export function createProfilesView(elements) {
       lastRun.replaceChildren(...parts);
     }
 
-    /**
-     * @param {Profile} next
-     */
-    function apply(next) {
+    function apply(next: Profile): void {
       profile = next;
       fill();
     }
 
-    /**
-     * @param {boolean} value
-     */
-    function setBusy(value) {
+    function setBusy(value: boolean): void {
       enabled.disabled = value;
       targetInput.disabled = value;
       refillInput.disabled = value;
       card.setAttribute("aria-busy", String(value));
     }
 
-    /**
-     * @param {string} text
-     * @param {boolean} isError
-     */
-    function setStatus(text, isError) {
+    function setStatus(text: string, isError: boolean): void {
       setText(status, text);
       status.classList.toggle("is-error", isError);
     }
 
-    /**
-     * @param {string} field
-     * @param {HTMLInputElement} input
-     * @param {number} min
-     * @param {number} max
-     */
-    function saveNumber(field, input, min, max) {
+    function saveNumber(field: string, input: HTMLInputElement, min: number, max: number): void {
       if (pending.has(id)) {
         return;
       }
@@ -355,22 +335,13 @@ export function createProfilesView(elements) {
   return { load };
 }
 
-/**
- * @param {unknown} response
- * @returns {Profile[]}
- */
-function normalizeProfiles(response) {
+function normalizeProfiles(response: unknown): Profile[] {
   const body = asObject(response);
   const rows = Array.isArray(body.profiles) ? body.profiles : [];
   return rows.map((row) => normalizeProfile(row, null));
 }
 
-/**
- * @param {unknown} value
- * @param {Profile | null} fallback
- * @returns {Profile}
- */
-function normalizeProfile(value, fallback) {
+function normalizeProfile(value: unknown, fallback: Profile | null): Profile {
   const body = asObject(value);
   const lastRun =
     body.last_run === undefined
@@ -395,51 +366,32 @@ function normalizeProfile(value, fallback) {
         ? (fallback?.refillEnabled ?? false)
         : Boolean(body.refill_enabled),
     targetOverride: overrideValueOf(body.target_override, fallback?.targetOverride ?? null),
-    refillAtOverride: overrideValueOf(
-      body.refill_at_override,
-      fallback?.refillAtOverride ?? null,
-    ),
+    refillAtOverride: overrideValueOf(body.refill_at_override, fallback?.refillAtOverride ?? null),
     previewUrl: text(body.preview_url, fallback?.previewUrl ?? ""),
     lastRun,
   };
 }
 
-/**
- * @param {unknown} value
- * @returns {LastRun}
- */
-function normalizeLastRun(value) {
+function normalizeLastRun(value: unknown): LastRun {
   const body = asObject(value);
   return {
     status: text(body.status, ""),
     finishedAt:
-      body.finished_at === null || body.finished_at === undefined
-        ? ""
-        : String(body.finished_at),
+      body.finished_at === null || body.finished_at === undefined ? "" : String(body.finished_at),
     generated: numberValue(body.generated, 0),
     failed: numberValue(body.failed, 0),
     error: text(body.error, ""),
   };
 }
 
-/**
- * @param {Profile} profile
- * @returns {string}
- */
-function profileUrl(profile) {
+function profileUrl(profile: Profile): string {
   const category = encodeURIComponent(profile.category);
   const name = encodeURIComponent(profile.name);
   return `${PROFILES_URL}/${category}/${name}`;
 }
 
-/**
- * @param {string} label
- * @param {number} min
- * @param {number} max
- * @returns {HTMLInputElement}
- */
-function numberInput(label, min, max) {
-  const input = /** @type {HTMLInputElement} */ (el("input"));
+function numberInput(label: string, min: number, max: number): HTMLInputElement {
+  const input = el("input");
   input.type = "number";
   input.inputMode = "numeric";
   input.min = String(min);
@@ -449,77 +401,40 @@ function numberInput(label, min, max) {
   return input;
 }
 
-/**
- * @param {number | null} value
- * @returns {string}
- */
-function overrideValue(value) {
+function overrideValue(value: number | null): string {
   return value === null ? "" : String(value);
 }
 
-/**
- * @param {number} effective
- * @param {number | null} override
- * @returns {string}
- */
-function effectiveValue(effective, override) {
+function effectiveValue(effective: number, override: number | null): string {
   const value = formatCount(effective);
   return override === null ? `${value} (глобально)` : value;
 }
 
-/**
- * @param {string} value
- * @param {number} limit
- * @returns {string}
- */
-function truncate(value, limit) {
+function truncate(value: string, limit: number): string {
   return value.length <= limit ? value : `${value.slice(0, limit - 1)}…`;
 }
 
-/**
- * @param {unknown} error
- * @returns {string}
- */
-function patchMessage(error) {
+function patchMessage(error: unknown): string {
   if (error instanceof ApiError && error.status === 404) {
     return NOT_FOUND_TEXT;
   }
-  return `Не сохранено: ${error.message}`;
+  return `Не сохранено: ${errorMessage(error)}`;
 }
 
-/**
- * @param {unknown} value
- * @returns {Record<string, unknown>}
- */
-function asObject(value) {
-  return value && typeof value === "object" ? /** @type {Record<string, unknown>} */ (value) : {};
+function asObject(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
 }
 
-/**
- * @param {unknown} value
- * @param {string} fallback
- * @returns {string}
- */
-function text(value, fallback) {
+function text(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback;
 }
 
-/**
- * @param {unknown} value
- * @param {number} fallback
- * @returns {number}
- */
-function numberValue(value, fallback) {
+function numberValue(value: unknown, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-/**
- * @param {unknown} value
- * @param {number | null} fallback
- * @returns {number | null}
- */
-function overrideValueOf(value, fallback) {
+function overrideValueOf(value: unknown, fallback: number | null): number | null {
   if (value === null) {
     return null;
   }

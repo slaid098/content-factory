@@ -11,17 +11,15 @@ export const MESSAGES = {
   disabled: "Выдача выключена на сервере.",
   invalid: "Сервер отклонил данные. Проверьте поля формы.",
   badResponse: "Сервер вернул неожиданный ответ.",
-};
+} as const;
 
 export const READ_TIMEOUT_MS = 15000;
 export const DELIVERY_TIMEOUT_MS = 300000;
 
 export class ApiError extends Error {
-  /**
-   * @param {string} message
-   * @param {number} status
-   */
-  constructor(message, status = 0) {
+  readonly status: number;
+
+  constructor(message: string, status = 0) {
     super(message);
     this.name = "ApiError";
     this.status = status;
@@ -30,15 +28,16 @@ export class ApiError extends Error {
 
 /**
  * Request a JSON body from a same-origin API route.
- * @param {string} url
- * @param {RequestInit} [options]
- * @param {number} [timeoutMs]
- * @returns {Promise<unknown>}
  */
-export async function requestJson(url, options = {}, timeoutMs = READ_TIMEOUT_MS) {
+export async function requestJson(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs = READ_TIMEOUT_MS,
+): Promise<unknown> {
   const response = await request(url, options, timeoutMs);
   try {
-    return await response.json();
+    const data: unknown = await response.json();
+    return data;
   } catch {
     throw new ApiError(MESSAGES.badResponse, response.status);
   }
@@ -46,12 +45,12 @@ export async function requestJson(url, options = {}, timeoutMs = READ_TIMEOUT_MS
 
 /**
  * Fetch a same-origin URL and turn every failure into an ApiError.
- * @param {string} url
- * @param {RequestInit} [options]
- * @param {number} [timeoutMs]
- * @returns {Promise<Response>}
  */
-export async function request(url, options = {}, timeoutMs = READ_TIMEOUT_MS) {
+export async function request(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs = READ_TIMEOUT_MS,
+): Promise<Response> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -82,10 +81,8 @@ export async function request(url, options = {}, timeoutMs = READ_TIMEOUT_MS) {
 
 /**
  * Map an unsuccessful response to a message the page can show as is.
- * @param {Response} response
- * @returns {Promise<ApiError>}
  */
-async function statusError(response) {
+async function statusError(response: Response): Promise<ApiError> {
   if (response.status === 401) {
     return new ApiError(MESSAGES.unauthorized, 401);
   }
@@ -107,17 +104,19 @@ async function statusError(response) {
 
 /**
  * Read a human-readable ``detail`` from an error JSON body.
- * @param {Response} response
- * @returns {Promise<string>}
  */
-async function errorDetail(response) {
+async function errorDetail(response: Response): Promise<string> {
   try {
-    const data = await response.json();
-    if (data && typeof data.detail === "string") {
+    const data: unknown = await response.json();
+    if (isRecord(data) && typeof data.detail === "string") {
       return data.detail;
     }
   } catch {
     return "";
   }
   return "";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

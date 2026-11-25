@@ -78,9 +78,22 @@ Baseline — отчёт schema 3 и в репозиторий не коммит�
 
 ## Запуск
 
+UI собирается Vite из `frontend/` в `src/content_factory/api/ui` (каталог
+генерируемый и не коммитится), поэтому перед первым запуском и после правок
+страницы:
+
 ```bash
+cd frontend
+npm ci
+npm run build
+cd ..
 uvicorn main:app --host 127.0.0.1 --port 8000
 ```
+
+Для разработки UI — `npm run dev`: Vite проксирует `/api` на
+`http://127.0.0.1:8000`, собранный бандл при этом не нужен. Проверки
+фронтенда: `npm run lint`, `npm run typecheck`, `npm run test`,
+`npm run test:e2e` (Playwright, нужен Chromium).
 
 В контейнере команда переопределяется на `0.0.0.0:8000`, но порт публикуется
 только на loopback хоста (`127.0.0.1:8000:8000`). Без compose образ по

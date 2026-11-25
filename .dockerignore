@@ -14,3 +14,11 @@ __pycache__
 .ruff_cache
 .coverage
 htmlcov
+
+# UI собирается в Docker из frontend/; готовый бандл в контекст не нужен.
+frontend/node_modules
+frontend/dist
+frontend/coverage
+frontend/playwright-report
+frontend/test-results
+src/content_factory/api/ui

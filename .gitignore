@@ -23,6 +23,13 @@ backups/
 # Состояние деплоя: тег предыдущего образа для отката.
 .deploy-image-tag
 
+# Frontend: dependencies, test reports and generated UI bundle
+frontend/node_modules/
+frontend/coverage/
+frontend/playwright-report/
+frontend/test-results/
+src/content_factory/api/ui/
+
 # Secrets
 .env
 .env.*
