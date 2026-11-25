@@ -93,11 +93,42 @@ def test_settings_reject_malformed_dsn(value: str) -> None:
 
 
 def test_settings_reject_password_in_query_without_echoing_it() -> None:
-    with pytest.raises(ConfigError, match="userinfo") as info:
+    with pytest.raises(ConfigError, match="query") as info:
         Settings(database_url="postgresql://user@localhost/db?password=100%25secret")
 
     assert "100%25secret" not in str(info.value)
     assert "100%secret" not in str(info.value)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "sslpassword=100%secret",
+        "sslpassword=100%25secret",
+        "%73slpassword=100%25secret",
+        "password%3D100%25secret",
+        "=100%25secret",
+    ],
+)
+def test_settings_reject_sslpassword_and_encoded_query_keys(query: str) -> None:
+    with pytest.raises(ConfigError, match="query") as info:
+        Settings(database_url=f"postgresql://user@localhost/db?{query}")
+
+    assert query not in str(info.value)
+    assert "100%25secret" not in str(info.value)
+    assert "100%secret" not in str(info.value)
+
+
+def test_settings_accept_safe_query_parameters() -> None:
+    dsn = (
+        "postgresql://user:secret@localhost:5432/db"
+        "?sslmode=require&application_name=content_factory&connect_timeout=5"
+    )
+
+    settings = Settings(database_url=dsn)
+
+    assert settings.database_url is not None
+    assert settings.database_url.get_secret_value() == dsn
 
 
 @pytest.mark.parametrize(
@@ -167,6 +198,25 @@ def test_sanitize_masks_query_password_raw_and_decoded() -> None:
 
     assert "100%25secret" not in sanitized
     assert "100%secret" not in sanitized
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "sslpassword=100%25secret",
+        "%73slpassword=100%25secret",
+        "password%3D100%25secret",
+    ],
+)
+def test_sanitize_masks_sslpassword_and_encoded_query_secrets(query: str) -> None:
+    dsn = f"postgresql://user@localhost/db?{query}"
+    text = f'invalid query parameter: "{query}"; conninfo {dsn}'
+
+    sanitized = sanitize_database_text(text, dsn)
+
+    assert "100%25secret" not in sanitized
+    assert "100%secret" not in sanitized
+    assert "***" in sanitized
 
 
 def test_settings_hide_database_url() -> None:
@@ -286,6 +336,42 @@ def test_postgres_failure_hides_a_query_password_after_a_fragment(
     assert failure is not None
     assert "100%secret" not in str(failure)
     assert "100%secret" not in formatted
+    assert failure.__cause__ is None
+    assert failure.__context__ is None
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "sslpassword=100%25secret",
+        "%73slpassword=100%25secret",
+        "password%3D100%25secret",
+    ],
+)
+def test_postgres_failure_hides_password_like_query_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+    query: str,
+) -> None:
+    psycopg = pytest.importorskip("psycopg")
+    dsn = f"postgresql://user@localhost/db?{query}"
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise psycopg.OperationalError(f'invalid query parameter: "{query}"')
+
+    monkeypatch.setattr(psycopg, "connect", fail)
+
+    failure: DatabaseError | None = None
+    try:
+        _PostgresConnection.open(dsn)
+    except DatabaseError as ex:
+        failure = ex
+        formatted = traceback.format_exc()
+    else:  # pragma: no cover - the fake driver always fails
+        pytest.fail("ожидалась DatabaseError")
+    assert failure is not None
+    for secret in ("100%25secret", "100%secret"):
+        assert secret not in str(failure)
+        assert secret not in formatted
     assert failure.__cause__ is None
     assert failure.__context__ is None
 

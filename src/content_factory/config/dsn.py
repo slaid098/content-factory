@@ -15,8 +15,12 @@ from content_factory.exceptions.errors import ConfigError
 _POSTGRES_SCHEMES = frozenset({"postgresql", "postgres"})
 _SECOND_SCHEME = re.compile(r"(?i)^[a-z][a-z0-9+.\-]*://")
 _CREDENTIALS = re.compile(r"(?i)(?P<scheme>[a-z][a-z0-9+.\-]*://)[^/\s]+@")
-_PASSWORD_FIELD = re.compile(r"(?i)\bpassword\s*=\s*(?:'[^']*'|\"[^\"]*\"|[^\s;]+)")
-_QUERY_TARGET_PARAMETERS = frozenset({"dbname", "host", "hostaddr", "port", "service"})
+_PASSWORD_FIELD = re.compile(
+    r"(?i)\b(?P<name>(?:ssl)?password)(?:%3D|\s*=\s*)"
+    r"(?:'[^']*'|\"[^\"]*\"|[^\s;&]+)"
+)
+_QUERY_PARAMETERS = frozenset({"sslmode", "application_name", "connect_timeout"})
+_SECRET_QUERY_KEYS = frozenset({"password", "sslpassword"})
 _MASK = "***"
 
 
@@ -62,17 +66,11 @@ def normalize_database_url(value: str) -> str:
         _ = parts.port
     except ValueError as ex:
         raise ConfigError("CONTENT_FACTORY_DATABASE_URL содержит неверный порт") from ex
-    query_parameters = {name.lower() for name, _ in parse_qsl(parts.query, keep_blank_values=True)}
-    if "password" in query_parameters:
+    query_parameters = {name for name, _ in parse_qsl(parts.query, keep_blank_values=True)}
+    if any(name not in _QUERY_PARAMETERS for name in query_parameters):
         raise ConfigError(
-            "CONTENT_FACTORY_DATABASE_URL: пароль передавайте в userinfo, а не в query"
-        )
-    retargeting = query_parameters & _QUERY_TARGET_PARAMETERS
-    if retargeting:
-        names = ", ".join(sorted(retargeting))
-        raise ConfigError(
-            f"CONTENT_FACTORY_DATABASE_URL: параметры {names} в query не поддерживаются; "
-            "укажите хост и имя базы в адресе"
+            "CONTENT_FACTORY_DATABASE_URL: в query разрешены только "
+            "sslmode, application_name и connect_timeout"
         )
     return parts._replace(scheme=scheme).geturl()
 
@@ -142,7 +140,7 @@ def sanitize_database_text(text: str, dsn: str | None = None) -> str:
     for secret in secrets:
         sanitized = sanitized.replace(secret, _MASK)
     sanitized = _CREDENTIALS.sub(lambda match: f"{match.group('scheme')}{_MASK}@", sanitized)
-    return _PASSWORD_FIELD.sub(f"password={_MASK}", sanitized)
+    return _PASSWORD_FIELD.sub(lambda match: f"{match.group('name')}={_MASK}", sanitized)
 
 
 def _dsn_variants(dsn: str | None) -> tuple[str, ...]:
@@ -162,25 +160,32 @@ def _password_of(dsn: str) -> str | None:
 
 
 def _query_passwords(value: str) -> set[str]:
-    """Return raw and decoded ``password`` values of a DSN query string.
+    """Return raw and decoded secrets of password-like query parameters.
 
-    The regex parser tolerates percent-encoding errors and ``#`` fragments
-    that libpq rejects or reads as part of the conninfo: sanitizing must work
-    on a malformed DSN too, so the whole remainder after the first ``?`` is
-    split into parameters.
+    The parser tolerates percent-encoding errors and ``#`` fragments that
+    libpq rejects or reads as part of the conninfo: sanitizing must work on a
+    malformed DSN too, so the whole remainder after the first ``?`` is parsed,
+    including keys and separators that are percent-encoded.
     """
     _, separator, query = value.partition("?")
     if not separator:
         return set()
     passwords: set[str] = set()
     for chunk in re.split(r"[&;]", query):
-        name, has_value, raw = chunk.partition("=")
-        if not has_value or unquote(name).lower() != "password" or not raw:
-            continue
-        passwords.add(raw)
-        decoded = unquote(raw)
-        if decoded:
-            passwords.add(decoded)
+        decoded_chunk = unquote(chunk)
+        for form in {chunk, decoded_chunk}:
+            name, has_value, raw = form.partition("=")
+            if not has_value or not raw:
+                continue
+            if unquote(name).strip().lower() not in _SECRET_QUERY_KEYS:
+                continue
+            passwords.add(raw)
+            decoded = unquote(raw)
+            if decoded:
+                passwords.add(decoded)
+        if "=" not in chunk and "=" in decoded_chunk:
+            passwords.add(chunk)
+            passwords.add(decoded_chunk)
     return passwords
 
 

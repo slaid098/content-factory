@@ -76,6 +76,36 @@ def test_cli_hides_a_query_password_behind_a_fragment(
     assert "фрагмент" in error
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        "sslpassword=100%25secret",
+        "%73slpassword=100%25secret",
+        "password%3D100%25secret",
+    ],
+)
+def test_cli_hides_password_like_query_secrets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    query: str,
+) -> None:
+    monkeypatch.setenv("CONTENT_FACTORY_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv(
+        "CONTENT_FACTORY_DATABASE_URL",
+        f"postgresql://user@127.0.0.1:1/content_factory?{query}",
+    )
+    get_settings.cache_clear()
+
+    assert main() == 1
+
+    error = capsys.readouterr().err
+    assert query not in error
+    assert "100%25secret" not in error
+    assert "100%secret" not in error
+    assert "query" in error
+
+
 def test_redact_masks_userinfo_case_insensitively() -> None:
     assert _redact("POSTGRESQL://user:secret@example.test:5432/db") == (
         "postgresql://***@example.test:5432/db"

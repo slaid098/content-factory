@@ -12,7 +12,11 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from tests.integration.db.postgres_guard import TEST_DSN_ENV, require_test_database
+from tests.integration.db.postgres_guard import (
+    TEST_DSN_ENV,
+    clear_libpq_environment,
+    require_test_database,
+)
 
 from content_factory.config.settings import get_settings
 from content_factory.constants import DB_DIR, DB_FILENAME
@@ -36,6 +40,7 @@ def postgres_url() -> str:
     url = os.environ.get(TEST_DSN_ENV)
     if not url:
         pytest.skip(f"{TEST_DSN_ENV} не задан: тесты PostgreSQL пропущены")
+    clear_libpq_environment()
     require_test_database(url)
     return url
 
@@ -47,6 +52,7 @@ def pg(
     tmp_path: Path,
 ) -> Iterator[Path]:
     """Point the service at PostgreSQL and empty its operational tables."""
+    clear_libpq_environment()
     require_test_database(postgres_url)
     monkeypatch.setenv("CONTENT_FACTORY_DATABASE_URL", postgres_url)
     get_settings.cache_clear()

@@ -17,9 +17,10 @@ DSN с другой схемой отклоняется на старте с `Co
 создаётся, не проверяется и не читается.
 
 DSN должен явно указывать хост и имя базы, а пароль — только в userinfo:
-`postgresql://user:password@host:5432/db`. Параметры libpq, меняющие цель
-(`host`, `port`, `dbname`, `hostaddr`, `service`), фрагмент `#` и пароль в
-query не поддерживаются; `ConfigError` на старте не повторяет значение DSN.
+`postgresql://user:password@host:5432/db`. В query разрешены только
+`sslmode`, `application_name` и `connect_timeout`; остальные параметры
+(включая `password`, `sslpassword` и их percent-encoded формы) и фрагмент
+`#` отклоняются. `ConfigError` на старте не повторяет значение DSN.
 
 Продукт, выдача, формат стока и архива, API и `run.json` от бэкенда не
 зависят.

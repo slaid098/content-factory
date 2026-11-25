@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
-from tests.integration.db.postgres_guard import require_test_database
+from tests.integration.db.postgres_guard import (
+    clear_libpq_environment,
+    require_test_database,
+)
 
 from content_factory.db import connection as connection_module
 from content_factory.db.connection import connect
@@ -27,6 +31,8 @@ def test_migrations_apply_from_scratch_and_again(
     postgres_url: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("PGHOSTADDR", "127.0.0.2")
+    clear_libpq_environment()
     require_test_database(postgres_url)
     connection = connect(pg)
     try:
@@ -113,8 +119,58 @@ def test_guard_rejects_a_hostless_dsn_even_with_pghost(
 
 
 def test_guard_accepts_the_ci_and_local_dsns() -> None:
+    clear_libpq_environment()
     require_test_database(
         "postgresql://content_factory:content_factory@localhost:5432/content_factory_test"
     )
     require_test_database("postgresql://postgres@127.0.0.1:55432/content_factory_test")
     require_test_database("postgresql://postgres@[::1]:55432/content_factory_test")
+
+
+@pytest.mark.parametrize("query", ["host=localhost,,", "hostaddr=127.0.0.1,,"])
+def test_guard_rejects_empty_host_components(query: str) -> None:
+    with pytest.raises(pytest.fail.Exception, match="пустые компоненты"):
+        require_test_database(f"postgresql://u@localhost/content_factory_test?{query}")
+
+
+def test_guard_rejects_a_non_local_pghostaddr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PGHOSTADDR", "127.0.0.2")
+
+    with pytest.raises(pytest.fail.Exception, match="PGHOSTADDR"):
+        require_test_database("postgresql://u@localhost/content_factory_test")
+
+
+@pytest.mark.parametrize("name", ["PGSERVICE", "PGSERVICEFILE"])
+def test_guard_rejects_service_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+) -> None:
+    monkeypatch.setenv(name, "production")
+
+    with pytest.raises(pytest.fail.Exception, match=name):
+        require_test_database("postgresql://u@localhost/content_factory_test")
+
+
+def test_guard_rejects_an_empty_service_parameter() -> None:
+    with pytest.raises(pytest.fail.Exception, match="service"):
+        require_test_database("postgresql://u@localhost/content_factory_test?service=")
+
+
+def test_clear_environment_drops_libpq_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in (
+        "PGHOST",
+        "PGHOSTADDR",
+        "PGSERVICE",
+        "PGSERVICEFILE",
+        "PGDATABASE",
+    ):
+        monkeypatch.setenv(name, "prod.example")
+
+    clear_libpq_environment()
+
+    for name in ("PGHOST", "PGHOSTADDR", "PGSERVICE", "PGSERVICEFILE", "PGDATABASE"):
+        assert name not in os.environ

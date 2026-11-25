@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from urllib.parse import urlsplit
 
 import psycopg
@@ -12,6 +13,19 @@ TEST_DSN_ENV = "CONTENT_FACTORY_TEST_DATABASE_URL"
 
 _POSTGRES_SCHEMES = frozenset({"postgresql", "postgres"})
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_LIBPQ_OVERRIDES = (
+    "PGHOST",
+    "PGHOSTADDR",
+    "PGSERVICE",
+    "PGSERVICEFILE",
+    "PGDATABASE",
+)
+
+
+def clear_libpq_environment() -> None:
+    """Drop libpq variables that could fill or override the test DSN slots."""
+    for name in _LIBPQ_OVERRIDES:
+        os.environ.pop(name, None)
 
 
 def database_name(url: str) -> str:
@@ -23,13 +37,25 @@ def database_name(url: str) -> str:
     return str(values.get("dbname", ""))
 
 
+def _check_host_list(key: str, value: str) -> None:
+    """Fail unless every component of a libpq host list is an explicit local host."""
+    hosts = value.split(",")
+    if any(not host.strip() for host in hosts):
+        pytest.fail(f"{TEST_DSN_ENV}: {key} не должен содержать пустые компоненты")
+    if any(host.strip().lower() not in _LOCAL_HOSTS for host in hosts):
+        pytest.fail(
+            f"{TEST_DSN_ENV}: {key} должен указывать только на localhost, 127.0.0.1 или ::1"
+        )
+
+
 def require_test_database(url: str) -> None:
     """Fail instead of running destructive SQL against a non-test database.
 
     The effective libpq ``dbname``, ``host`` and ``hostaddr`` are read from
     the whole URI, so a query parameter or fragment cannot hide a production
-    target from the guard. A missing host is rejected: libpq would otherwise
-    take ``PGHOST`` or ``PGSERVICE`` from the environment.
+    target from the guard. An explicit local host is required: libpq would
+    otherwise take ``PGHOST``, ``PGHOSTADDR`` or ``PGSERVICE`` from the
+    environment. Empty host-list components and service settings are rejected.
     """
     try:
         scheme = urlsplit(url).scheme.lower()
@@ -47,24 +73,28 @@ def require_test_database(url: str) -> None:
             f"{TEST_DSN_ENV} должен указывать на базу с именем, оканчивающимся "
             f"на _test; сейчас: {name or 'имя не найдено'}"
         )
-    if str(values.get("service", "")):
+    if "service" in values:
         pytest.fail(f"{TEST_DSN_ENV} не должен использовать service: цель не видна в DSN")
-    hosts = [
-        host.strip().lower()
-        for key in ("host", "hostaddr")
-        for host in str(values.get(key, "")).split(",")
-        if host.strip()
-    ]
-    if not hosts:
+    targets = {
+        key: value for key in ("host", "hostaddr") if (value := str(values.get(key, "")).strip())
+    }
+    if not targets:
         pytest.fail(
             f"{TEST_DSN_ENV} должен явно указывать host или hostaddr: "
             "иначе libpq возьмёт хост из PGHOST или PGSERVICE"
         )
-    if any(host not in _LOCAL_HOSTS for host in hosts):
-        pytest.fail(
-            f"{TEST_DSN_ENV}: host и hostaddr должны указывать только "
-            "на localhost, 127.0.0.1 или ::1"
-        )
+    for key, value in targets.items():
+        _check_host_list(key, value)
+    for name in ("PGSERVICE", "PGSERVICEFILE"):
+        if os.environ.get(name):
+            pytest.fail(f"{TEST_DSN_ENV}: {name} не должен задавать цель тестовой базы")
+    if env_hostaddr := os.environ.get("PGHOSTADDR", "").strip():
+        _check_host_list("PGHOSTADDR", env_hostaddr)
 
 
-__all__ = ["TEST_DSN_ENV", "database_name", "require_test_database"]
+__all__ = [
+    "TEST_DSN_ENV",
+    "clear_libpq_environment",
+    "database_name",
+    "require_test_database",
+]
