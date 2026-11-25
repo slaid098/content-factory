@@ -5,7 +5,10 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from content_factory.db.stock import (
+    _add_content_type_column,
     count_by_profile,
     ensure_schema,
     list_available,
@@ -374,6 +377,29 @@ def test_ensure_schema_adds_content_type_to_a_legacy_table() -> None:
             ("content/general/ru/a.mp4",),
         ).fetchone()
         assert row == ("video",)
+    finally:
+        connection.close()
+
+
+def test_add_content_type_column_tolerates_a_concurrent_migration() -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.execute(_LEGACY_SCHEMA)
+
+        _add_content_type_column(connection)
+        _add_content_type_column(connection)
+
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(stock_items)")}
+        assert "content_type" in columns
+    finally:
+        connection.close()
+
+
+def test_add_content_type_column_reraises_other_operational_errors() -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="no such table"):
+            _add_content_type_column(connection)
     finally:
         connection.close()
 

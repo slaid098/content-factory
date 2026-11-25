@@ -70,10 +70,23 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
 
 
 def _ensure_content_type_column(connection: sqlite3.Connection) -> None:
-    """Add the content type column to a database that does not have it."""
+    """Add the content type column to a database that does not have it.
+
+    Two processes can both see a legacy table and race to add the column; the
+    loser gets ``duplicate column name`` and treats it as already migrated.
+    """
     columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(stock_items)")}
     if "content_type" not in columns:
+        _add_content_type_column(connection)
+
+
+def _add_content_type_column(connection: sqlite3.Connection) -> None:
+    """Add the column, tolerating a concurrent migration of the same table."""
+    try:
         connection.execute(_ADD_CONTENT_TYPE)
+    except sqlite3.OperationalError as ex:
+        if "duplicate column name" not in str(ex).lower():
+            raise
 
 
 def upsert_item(
