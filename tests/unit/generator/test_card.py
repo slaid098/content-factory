@@ -277,7 +277,7 @@ def test_sidecar_publication_failure_removes_the_published_jpeg(
         raise OSError("copy failed")
 
     monkeypatch.setattr(publish.os, "link", link)
-    monkeypatch.setattr(publish.shutil, "copy2", copy)
+    monkeypatch.setattr(publish.shutil, "copyfileobj", copy)
 
     produced = _producer().produce(
         SimpleNamespace(name="dating/profile_2"), 1, tmp_path, _settings(tmp_path)
@@ -286,6 +286,42 @@ def test_sidecar_publication_failure_removes_the_published_jpeg(
     assert produced.failed == 1
     stock_dir = _stock_dir(tmp_path)
     assert list(stock_dir.glob(f"{_post_name(1)}.*")) == []
+
+
+def test_sidecar_failure_does_not_remove_a_replaced_jpeg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, log_records: list[Any]
+) -> None:
+    _photo_profile(tmp_path)
+    real_link = publish.os.link
+    foreign = "чужой файл"
+
+    def link(source: Path, destination: Path, *args: object, **kwargs: object) -> None:
+        if str(destination).endswith(".json"):
+            jpg = Path(destination).with_suffix(".jpg")
+            jpg.unlink()
+            jpg.write_text(foreign, encoding="utf-8")
+            raise OSError("sidecar link failed")
+        real_link(source, destination, *args, **kwargs)
+
+    def copy(source: Path, destination: Path, *args: object, **kwargs: object) -> None:
+        del source, destination, args, kwargs
+        raise OSError("copy failed")
+
+    monkeypatch.setattr(publish.os, "link", link)
+    monkeypatch.setattr(publish.shutil, "copyfileobj", copy)
+
+    produced = _producer().produce(
+        SimpleNamespace(name="dating/profile_2"), 1, tmp_path, _settings(tmp_path)
+    )
+
+    assert produced.failed == 1
+    stock = _stock_dir(tmp_path) / f"{_post_name(1)}.jpg"
+    assert stock.read_text(encoding="utf-8") == foreign
+    assert not stock.with_suffix(".json").exists()
+    assert any(
+        record["level"].name == "WARNING" and "заменён" in record["message"]
+        for record in log_records
+    )
 
 
 def test_publish_photo_places_the_jpeg_and_its_sidecar(tmp_path: Path) -> None:
@@ -325,3 +361,128 @@ def test_check_image_rejects_another_size_and_broken_files(tmp_path: Path) -> No
     empty = tmp_path / "empty.jpg"
     empty.write_bytes(b"")
     assert "пуст" in str(check_image(empty, 544, 960))
+
+
+def test_check_image_rejects_a_png_named_jpg(tmp_path: Path) -> None:
+    path = tmp_path / "post.jpg"
+    Image.new("RGB", (544, 960), "white").save(path, format="PNG")
+
+    reason = check_image(path, 544, 960)
+
+    assert reason is not None
+    assert "JPEG" in reason
+
+
+def test_check_image_reports_a_decompression_bomb(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "bomb.jpg"
+    path.write_bytes(b"jpeg")
+
+    def bomb(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise Image.DecompressionBombError("too many pixels")
+
+    monkeypatch.setattr(card_module.Image, "open", bomb)
+
+    reason = check_image(path, 544, 960)
+
+    assert reason is not None
+    assert "большое" in reason
+
+
+def test_png_payload_fails_the_image_check_without_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _photo_profile(tmp_path)
+
+    def save_png(profile: Any, overlay: Any, renderer: Any, target: Path) -> None:
+        del overlay, renderer
+        target.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (profile.width, profile.height), "white").save(target, format="PNG")
+
+    monkeypatch.setattr(card_module, "_render_jpeg", save_png)
+
+    produced = _producer().produce(
+        SimpleNamespace(name="dating/profile_2"), 1, tmp_path, _settings(tmp_path)
+    )
+
+    assert produced.failed == 1
+    assert not _stock_dir(tmp_path).exists()
+    report = json.loads((_run_dir(tmp_path) / "run.json").read_text(encoding="utf-8"))
+    assert report["status"] == "failed"
+    assert report["finished_at"] is not None
+    assert "JPEG" in report["items"][0]["error"]
+
+
+def test_decompression_bomb_fails_the_item_and_finalizes_the_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _photo_profile(tmp_path)
+
+    def bomb(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise Image.DecompressionBombError("too many pixels")
+
+    monkeypatch.setattr(card_module, "check_image", bomb)
+
+    produced = _producer().produce(
+        SimpleNamespace(name="dating/profile_2"), 1, tmp_path, _settings(tmp_path)
+    )
+
+    assert produced.generated == 0
+    assert produced.failed == 1
+    assert not _stock_dir(tmp_path).exists()
+    report = json.loads((_run_dir(tmp_path) / "run.json").read_text(encoding="utf-8"))
+    assert report["status"] == "failed"
+    assert report["finished_at"] is not None
+    assert report["totals"] == {"generated": 0, "failed": 1, "bytes": 0}
+
+
+def test_oversized_caption_fails_before_render_and_leaves_no_stock(tmp_path: Path) -> None:
+    _photo_profile(tmp_path)
+    writer = _Writer(f"<result><block>{'а' * 5000}</block></result>")
+    renders: list[str] = []
+
+    def render(profile: Any, overlay: Any) -> Image.Image:
+        renders.append("render")
+        return _renderer(profile, overlay)
+
+    produced = _producer(writer=writer, renderer=render).produce(
+        SimpleNamespace(name="dating/profile_2"), 1, tmp_path, _settings(tmp_path)
+    )
+
+    assert produced.failed == 1
+    assert renders == []
+    assert not _stock_dir(tmp_path).exists()
+    assert not (_run_dir(tmp_path) / "final" / f"{_post_name(1)}.jpg").exists()
+    report = json.loads((_run_dir(tmp_path) / "run.json").read_text(encoding="utf-8"))
+    assert report["status"] == "failed"
+    assert report["finished_at"] is not None
+    assert "больше" in report["items"][0]["error"]
+
+
+def test_lone_surrogate_caption_fails_without_crashing(tmp_path: Path) -> None:
+    _photo_profile(tmp_path)
+    writer = _Writer("<result><block>Привет \ud800</block></result>")
+
+    produced = _producer(writer=writer).produce(
+        SimpleNamespace(name="dating/profile_2"), 1, tmp_path, _settings(tmp_path)
+    )
+
+    assert produced.generated == 0
+    assert produced.failed == 1
+    assert not _stock_dir(tmp_path).exists()
+    report = json.loads((_run_dir(tmp_path) / "run.json").read_text(encoding="utf-8"))
+    assert report["status"] == "failed"
+    assert report["finished_at"] is not None
+    assert report["items"][0]["error"] == "текст поста не кодируется в UTF-8"
+
+
+def test_write_sidecar_rejects_unencodable_text_before_creating_a_file(tmp_path: Path) -> None:
+    target = tmp_path / "post.jpg"
+
+    with pytest.raises(GeneratorError, match="UTF-8"):
+        card_module._write_sidecar(target, "Привет \ud800")
+
+    assert not target.with_suffix(".json").exists()

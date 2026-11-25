@@ -69,10 +69,11 @@ def publish_photo(profile: _Profile, final: Path, data_root: Path) -> Path:
     destination = _stock_path(profile, final.name, data_root)
     sidecar_destination = _stock_path(profile, sidecar.name, data_root)
     _place(final, destination)
+    created = _stat_or_none(destination)
     try:
         _place(sidecar, sidecar_destination)
     except GeneratorError:
-        _remove(destination)
+        _remove_if_same(destination, created)
         raise
     return destination
 
@@ -108,9 +109,12 @@ def _stock_path(profile: _Profile, name: str, data_root: Path) -> Path:
 
 
 def _place(source: Path, destination: Path) -> None:
-    """Link *source* to *destination*, falling back to a copy.
+    """Link *source* to *destination*, falling back to an exclusive copy.
 
-    A failed copy removes the partial destination it may have created.
+    A destination created by the copy fallback is removed when copying fails,
+    so a failed publication never leaves a partial file. An existing
+    destination is never overwritten, even when the hard link fails for a
+    reason other than a name clash.
 
     Raises:
         GeneratorError: The destination exists or neither linking nor copying
@@ -121,11 +125,71 @@ def _place(source: Path, destination: Path) -> None:
     except FileExistsError as ex:
         raise GeneratorError(_publish_error(destination)) from ex
     except OSError:
+        _copy_exclusive(source, destination)
+
+
+def _copy_exclusive(source: Path, destination: Path) -> None:
+    """Copy *source* into a destination created exclusively by this call.
+
+    ``open("xb")`` refuses an existing name, so the copy fallback cannot
+    overwrite a file that appeared after the earlier free-name check.
+
+    Raises:
+        GeneratorError: The destination exists or cannot be read or written.
+    """
+    try:
+        src = source.open("rb")
+    except OSError as ex:
+        raise GeneratorError(_publish_error(destination)) from ex
+    try:
         try:
-            shutil.copy2(source, destination)
-        except OSError as ex:
-            _remove(destination)
+            dst = destination.open("xb")
+        except FileExistsError as ex:
             raise GeneratorError(_publish_error(destination)) from ex
+        except OSError as ex:
+            raise GeneratorError(_publish_error(destination)) from ex
+        try:
+            created: os.stat_result | None = None
+            with dst:
+                created = os.fstat(dst.fileno())
+                shutil.copyfileobj(src, dst)
+        except OSError as ex:
+            _remove_if_same(destination, created)
+            raise GeneratorError(_publish_error(destination)) from ex
+    finally:
+        src.close()
+
+
+def _stat_or_none(path: Path) -> os.stat_result | None:
+    """Return the stat of a just-created file, logging instead of failing."""
+    try:
+        return path.stat()
+    except OSError as ex:
+        logger.bind(path=str(path), error=ex, error_type=type(ex).__name__).warning(
+            "Не удалось проверить опубликованный файл {}", path
+        )
+        return None
+
+
+def _remove_if_same(path: Path, expected: os.stat_result | None) -> None:
+    """Remove *path* only while it is still the file this call created."""
+    if expected is None:
+        return
+    try:
+        current = path.stat()
+    except FileNotFoundError:
+        return
+    except OSError as ex:
+        logger.bind(path=str(path), error=ex, error_type=type(ex).__name__).warning(
+            "Не удалось проверить файл стока перед откатом {}", path
+        )
+        return
+    if (current.st_dev, current.st_ino) != (expected.st_dev, expected.st_ino):
+        logger.bind(path=str(path)).warning(
+            "Файл стока {} заменён другим — откат его не удаляет", path
+        )
+        return
+    _remove(path)
 
 
 def _remove(path: Path) -> None:

@@ -427,13 +427,37 @@ def test_publish_stock_reports_copy_failure(
         raise OSError("permission denied")
 
     monkeypatch.setattr(publish.os, "link", fail)
-    monkeypatch.setattr(publish.shutil, "copy2", fail)
+    monkeypatch.setattr(publish.shutil, "copyfileobj", fail)
 
     with pytest.raises(GeneratorError, match="не удалось положить в сток"):
         publish.publish_stock(profile, final, tmp_path)
 
     assert final.is_file()
     assert not (tmp_path / "content" / "dating" / "ru" / "final.mp4").exists()
+
+
+def test_publish_stock_copy_fallback_never_overwrites_an_existing_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+    final = tmp_path / "generated" / "final.mp4"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"new")
+    destination = tmp_path / "content" / "dating" / "ru" / "final.mp4"
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(b"old")
+
+    def fail_link(*args: object, **kwargs: object) -> None:
+        raise OSError("cross-device link")
+
+    monkeypatch.setattr(publish.os, "link", fail_link)
+
+    with pytest.raises(GeneratorError, match="не удалось положить в сток"):
+        publish.publish_stock(profile, final, tmp_path)
+
+    assert destination.read_bytes() == b"old"
+    assert final.read_bytes() == b"new"
 
 
 @pytest.mark.parametrize("niche", ["../escape", "Dating", "dating/ru"])

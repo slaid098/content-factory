@@ -41,6 +41,7 @@ from content_factory.services.production.registry import CARD_PRODUCER
 
 _FINAL_DIR = "final"
 _JPEG_QUALITY = 90
+_MAX_CAPTION_BYTES = 4096
 
 
 class _Writer(Protocol):
@@ -167,20 +168,17 @@ class CardProducer:
             size = 0
             try:
                 overlay = generate_overlay(loaded, writer)
+                caption = _checked_caption(overlay)
                 _render_jpeg(loaded, overlay, renderer, final)
-                _write_sidecar(final, _caption(overlay))
+                _write_sidecar(final, caption)
                 reason = _qa_reason(step, final, loaded.width, loaded.height)
                 if reason is not None:
                     raise QaError(reason)
                 size = final.stat().st_size
                 publish_photo(loaded, final, data_dir)
-            except (GeneratorError, OSError) as ex:
+            except (GeneratorError, OSError, UnicodeError, Image.DecompressionBombError) as ex:
                 failed += 1
-                item.status = RunStatus.FAILED
-                item.error = str(ex)
-                logger.bind(file=item.file, error=str(ex), error_type=type(ex).__name__).error(
-                    "Фото не собрано"
-                )
+                _mark_failed(item, ex)
             else:
                 generated += 1
                 total_bytes += size
@@ -202,6 +200,15 @@ def _close_report(report: RunReport, generated: int, failed: int, total_bytes: i
     report.totals = RunTotals(generated=generated, failed=failed, bytes=total_bytes)
     report.status = RunStatus.DONE if failed == 0 else RunStatus.FAILED
     report.finished_at = datetime.now(UTC)
+
+
+def _mark_failed(item: RunItem, error: Exception) -> None:
+    """Mark one item failed and log the reason without stopping the run."""
+    item.status = RunStatus.FAILED
+    item.error = str(error)
+    logger.bind(file=item.file, error=str(error), error_type=type(error).__name__).error(
+        "Фото не собрано"
+    )
 
 
 def _step(steps: tuple[ProductionStep, ...]) -> ProductionStep:
@@ -285,10 +292,36 @@ def _caption(overlay: _CardText) -> str:
     return "\n".join(line for block in overlay.blocks for line in block.lines)
 
 
+def _checked_caption(overlay: _CardText) -> str:
+    """Return the caption only when it is valid UTF-8 within the size limit.
+
+    Raises:
+        GeneratorError: The caption contains a lone surrogate or is longer
+            than ``_MAX_CAPTION_BYTES`` UTF-8 bytes.
+    """
+    caption = _caption(overlay)
+    try:
+        size = len(caption.encode("utf-8"))
+    except UnicodeEncodeError as ex:
+        raise GeneratorError("текст поста не кодируется в UTF-8") from ex
+    if size > _MAX_CAPTION_BYTES:
+        raise GeneratorError(f"текст поста больше {_MAX_CAPTION_BYTES} байт UTF-8: {size}")
+    return caption
+
+
 def _write_sidecar(final: Path, caption: str) -> None:
-    """Write ``{"text": caption}`` next to the photo."""
-    payload = json.dumps({"text": caption}, ensure_ascii=False, indent=2) + "\n"
-    final.with_suffix(".json").write_text(payload, encoding="utf-8")
+    """Serialize and encode ``{"text": caption}`` before opening the file.
+
+    Raises:
+        GeneratorError: The caption cannot be encoded as UTF-8.
+    """
+    try:
+        payload = (json.dumps({"text": caption}, ensure_ascii=False, indent=2) + "\n").encode(
+            "utf-8"
+        )
+    except UnicodeEncodeError as ex:
+        raise GeneratorError("текст поста не кодируется в UTF-8") from ex
+    final.with_suffix(".json").write_bytes(payload)
 
 
 def _qa_reason(
@@ -321,8 +354,12 @@ def check_image(path: Path, width: int, height: int) -> str | None:
         if path.stat().st_size <= 0:
             return f"файл пуст: {path}"
         with Image.open(path) as image:
+            if image.format != "JPEG":
+                return f"не JPEG ({image.format}): {path}"
             image.load()
             size = image.size
+    except Image.DecompressionBombError:
+        return f"слишком большое изображение: {path}"
     except (OSError, ValueError):
         return f"не удалось открыть JPEG: {path}"
     if size != (width, height):
