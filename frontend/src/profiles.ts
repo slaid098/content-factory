@@ -476,22 +476,32 @@ function createPreviewDialog(options: PreviewDialogOptions): PreviewDialog {
       return;
     }
     const active = document.activeElement;
-    if (event.shiftKey && (active === first || !overlay.contains(active))) {
+    const outside = active === overlay || !overlay.contains(active);
+    if (event.shiftKey && (active === first || outside)) {
       event.preventDefault();
       last.focus();
-    } else if (!event.shiftKey && active === last) {
+    } else if (!event.shiftKey && (active === last || outside)) {
       event.preventDefault();
       first.focus();
     }
+  }
+
+  function onFocusIn(event: FocusEvent): void {
+    const target = event.target;
+    if (target instanceof Node && target !== overlay && overlay.contains(target)) {
+      return;
+    }
+    closeButton.focus();
   }
 
   function hideDialog(): void {
     if (overlay.hidden) {
       return;
     }
+    document.removeEventListener("keydown", onKeydown);
+    document.removeEventListener("focusin", onFocusIn);
     overlay.hidden = true;
     document.body.classList.remove("has-profile-dialog");
-    document.removeEventListener("keydown", onKeydown);
     const closedId = profileId ?? "";
     const origin = trigger;
     profileId = null;
@@ -516,6 +526,7 @@ function createPreviewDialog(options: PreviewDialogOptions): PreviewDialog {
     overlay.hidden = false;
     document.body.classList.add("has-profile-dialog");
     document.addEventListener("keydown", onKeydown);
+    document.addEventListener("focusin", onFocusIn);
     closeButton.focus();
   }
 

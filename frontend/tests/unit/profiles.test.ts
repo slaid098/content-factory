@@ -357,6 +357,33 @@ describe("createProfilesView", () => {
     expect(document.activeElement).toBe(button);
   });
 
+  it("keeps focus inside the dialog and restores it to the thumbnail", async () => {
+    mockFetch(() => jsonResponse({ profiles: [profile()] }));
+    const view = createView();
+    await view.load();
+
+    const trigger = mediaButton();
+    trigger.focus();
+    trigger.click();
+
+    const close = dialog().querySelector<HTMLButtonElement>(".profile-dialog-close");
+    expect(close).not.toBeNull();
+    expect(document.activeElement).toBe(close);
+
+    dialog().focus();
+    expect(document.activeElement).toBe(close);
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", cancelable: true }));
+    expect(document.activeElement).toBe(close);
+
+    node<HTMLButtonElement>("profiles-refresh").focus();
+    expect(document.activeElement).toBe(close);
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(dialog().hidden).toBe(true);
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it("reuses the same dialog for every card", async () => {
     mockFetch(() =>
       jsonResponse({
