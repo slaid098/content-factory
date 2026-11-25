@@ -153,6 +153,28 @@ def test_guard_rejects_service_environment(
         require_test_database("postgresql://u@localhost/content_factory_test")
 
 
+def test_guard_rejects_a_pgport_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PGPORT", "5433")
+
+    with pytest.raises(pytest.fail.Exception, match="PGPORT"):
+        require_test_database("postgresql://u@localhost/content_factory_test")
+
+
+def test_clear_environment_allows_the_ci_dsn_after_pgport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PGPORT", "5433")
+
+    clear_libpq_environment()
+
+    assert "PGPORT" not in os.environ
+    require_test_database(
+        "postgresql://content_factory:content_factory@localhost:5432/content_factory_test"
+    )
+
+
 def test_guard_rejects_an_empty_service_parameter() -> None:
     with pytest.raises(pytest.fail.Exception, match="service"):
         require_test_database("postgresql://u@localhost/content_factory_test?service=")
@@ -164,6 +186,7 @@ def test_clear_environment_drops_libpq_overrides(
     for name in (
         "PGHOST",
         "PGHOSTADDR",
+        "PGPORT",
         "PGSERVICE",
         "PGSERVICEFILE",
         "PGDATABASE",
@@ -172,5 +195,5 @@ def test_clear_environment_drops_libpq_overrides(
 
     clear_libpq_environment()
 
-    for name in ("PGHOST", "PGHOSTADDR", "PGSERVICE", "PGSERVICEFILE", "PGDATABASE"):
+    for name in ("PGHOST", "PGHOSTADDR", "PGPORT", "PGSERVICE", "PGSERVICEFILE", "PGDATABASE"):
         assert name not in os.environ

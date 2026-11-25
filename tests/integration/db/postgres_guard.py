@@ -16,6 +16,7 @@ _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _LIBPQ_OVERRIDES = (
     "PGHOST",
     "PGHOSTADDR",
+    "PGPORT",
     "PGSERVICE",
     "PGSERVICEFILE",
     "PGDATABASE",
@@ -54,8 +55,9 @@ def require_test_database(url: str) -> None:
     The effective libpq ``dbname``, ``host`` and ``hostaddr`` are read from
     the whole URI, so a query parameter or fragment cannot hide a production
     target from the guard. An explicit local host is required: libpq would
-    otherwise take ``PGHOST``, ``PGHOSTADDR`` or ``PGSERVICE`` from the
-    environment. Empty host-list components and service settings are rejected.
+    otherwise take ``PGHOST``, ``PGHOSTADDR``, ``PGPORT`` or ``PGSERVICE``
+    from the environment. Empty host-list components, service settings and a
+    port from ``PGPORT`` are rejected.
     """
     try:
         scheme = urlsplit(url).scheme.lower()
@@ -88,6 +90,8 @@ def require_test_database(url: str) -> None:
     for name in ("PGSERVICE", "PGSERVICEFILE"):
         if os.environ.get(name):
             pytest.fail(f"{TEST_DSN_ENV}: {name} не должен задавать цель тестовой базы")
+    if os.environ.get("PGPORT", "").strip():
+        pytest.fail(f"{TEST_DSN_ENV}: PGPORT не должен задавать порт тестовой базы")
     if env_hostaddr := os.environ.get("PGHOSTADDR", "").strip():
         _check_host_list("PGHOSTADDR", env_hostaddr)
 
