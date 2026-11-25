@@ -17,6 +17,7 @@ from tests.unit.common.delivery_helpers import (
     add_downloaded_video,
     add_title,
     touch_mp4,
+    touch_photo,
 )
 from tests.unit.common.profile_helpers import add_profile, add_profile_video
 
@@ -213,7 +214,12 @@ def test_delivery_returns_zip_after_title_is_added_to_untitled_stock(data_dir: P
     assert second.headers["Content-Type"] == "application/zip"
     with zipfile.ZipFile(io.BytesIO(second.content)) as archive:
         assert archive.namelist() == ["001.mp4", "001.json"]
-        assert json.loads(archive.read("001.json")) == {"title": title}
+        assert json.loads(archive.read("001.json")) == {
+            "type": "video",
+            "language": "ru",
+            "profile_id": None,
+            "title": title,
+        }
     assert not source.exists()
 
 
@@ -234,7 +240,12 @@ def test_delivery_returns_zip_with_stored_title_and_removes_stock(data_dir: Path
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         assert archive.namelist() == ["001.mp4", "001.json"]
         assert archive.read("001.mp4") == b"first"
-        assert json.loads(archive.read("001.json")) == {"title": "Название из titles"}
+        assert json.loads(archive.read("001.json")) == {
+            "type": "video",
+            "language": "ru",
+            "profile_id": None,
+            "title": "Название из titles",
+        }
     assert not first.exists()
     assert second.is_file()
     archive_path = data_dir / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.zip"
@@ -520,7 +531,12 @@ def test_delivery_with_query_returns_only_matching_file(data_dir: Path) -> None:
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         assert archive.namelist() == ["001.mp4", "001.json"]
         assert archive.read("001.mp4") == b"first"
-        assert json.loads(archive.read("001.json")) == {"title": "Первое название"}
+        assert json.loads(archive.read("001.json")) == {
+            "type": "video",
+            "language": "ru",
+            "profile_id": None,
+            "title": "Первое название",
+        }
     assert not first.exists()
     assert second.is_file()
 
@@ -781,7 +797,12 @@ def test_delivery_by_profile_returns_only_its_files(data_dir: Path) -> None:
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         assert archive.namelist() == ["001.mp4", "001.json"]
         assert archive.read("001.mp4") == b"first"
-        assert json.loads(archive.read("001.json")) == {"title": "Первое"}
+        assert json.loads(archive.read("001.json")) == {
+            "type": "video",
+            "language": "ru",
+            "profile_id": "dating/profile_1",
+            "title": "Первое",
+        }
     assert not first.exists()
     assert other.is_file()
     assert supplier.is_file()
@@ -932,3 +953,88 @@ def test_delivery_by_profile_is_idempotent(data_dir: Path) -> None:
     assert second.is_file()
     with zipfile.ZipFile(io.BytesIO(repeated.content)) as archive:
         assert archive.namelist() == ["001.mp4", "001.json"]
+
+
+def test_delivery_defaults_to_video_type(data_dir: Path) -> None:
+    touch_mp4(data_dir / CONTENT_DIR / "ru" / ("a" * 64 + ".mp4"), b"video")
+    add_title(data_dir / "db" / "db.sqlite3", "a" * 64, "Название видео")
+
+    response = _post(_client())
+
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert archive.namelist() == ["001.mp4", "001.json"]
+        assert json.loads(archive.read("001.json")) == {
+            "type": "video",
+            "language": "ru",
+            "profile_id": None,
+            "title": "Название видео",
+        }
+
+
+def test_delivery_of_photo_with_profile_returns_photo_archive(data_dir: Path) -> None:
+    add_profile(data_dir, "dating", "profile_1")
+    photo = touch_photo(
+        data_dir / CONTENT_DIR / "dating" / "ru" / "dating_profile_1_post_001.jpg",
+        b"photo",
+        text="Текст поста",
+    )
+
+    response = _post(_client(), profile="dating/profile_1", type="photo")
+
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert archive.namelist() == ["001.jpg", "001.json"]
+        assert archive.read("001.jpg") == b"photo"
+        assert json.loads(archive.read("001.json")) == {
+            "type": "photo",
+            "language": "ru",
+            "profile_id": "dating/profile_1",
+            "text": "Текст поста",
+        }
+    assert not photo.exists()
+    assert not photo.with_suffix(".json").exists()
+
+
+def test_delivery_rejects_photo_without_profile(data_dir: Path) -> None:
+    photo = touch_photo(
+        data_dir / CONTENT_DIR / "general" / "ru" / "post.jpg",
+        text="Текст поста",
+    )
+
+    response = _post(_client(), type="photo")
+
+    assert response.status_code == 422
+    assert photo.is_file()
+    assert not (data_dir / ARCHIVE_DIR).exists()
+
+
+def test_delivery_rejects_photo_with_the_general_profile_alias(data_dir: Path) -> None:
+    response = _post(_client(), profile="general", type="photo")
+
+    assert response.status_code == 422
+    assert not (data_dir / ARCHIVE_DIR).exists()
+
+
+def test_delivery_rejects_unknown_content_type(data_dir: Path) -> None:
+    response = _post(_client(), type="audio")
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/v1/content/deliveries",
+        "/api/v1/content/deliveries/link",
+    ],
+)
+def test_delivery_rejects_photo_with_query(data_dir: Path, path: str) -> None:
+    response = _client().post(
+        path,
+        json=_body(profile="dating/profile_1", type="photo", query="курятник"),
+        headers=_headers(),
+    )
+
+    assert response.status_code == 422
+    assert not (data_dir / ARCHIVE_DIR).exists()

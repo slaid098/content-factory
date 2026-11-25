@@ -14,15 +14,27 @@ from content_factory.db.connection import connect_readonly
 from content_factory.db.runtime_state import read_state
 from content_factory.db.titles import load_titles
 from content_factory.schemas.config.runtime import LanguageConfig
+from content_factory.schemas.content.delivery import ContentType
 from content_factory.schemas.state.state import RuntimeState
 from content_factory.schemas.stock.layout import StockFile
 from content_factory.schemas.stock.stock import LanguageStock, StockSnapshot
-from content_factory.services.stock.layout import language_files, stock_files
+from content_factory.services.stock.layout import (
+    language_files,
+    photo_sidecar,
+    photo_text,
+    stock_files,
+)
 
 
 def count_stock(content_dir: Path, languages: Iterable[str]) -> dict[str, int]:
-    """Посчитать готовые mp4-файлы языка по всем нишам стока."""
-    return {language: len(language_files(content_dir, language)) for language in languages}
+    """Посчитать готовые видеофайлы языка по всем нишам стока.
+
+    Фото не входят в остаток: добор и цель стока считаются только по видео.
+    """
+    return {
+        language: len(language_files(content_dir, language, content_type=ContentType.VIDEO))
+        for language in languages
+    }
 
 
 def collect_stock(
@@ -43,7 +55,9 @@ def collect_stock(
     """
     enabled = {code: config for code, config in sorted(languages.items()) if config.enabled}
     content_dir = data_dir / CONTENT_DIR
-    files = {code: language_files(content_dir, code) for code in enabled}
+    files = {
+        code: language_files(content_dir, code, content_type=ContentType.VIDEO) for code in enabled
+    }
     hashes = [item.path.stem for items in files.values() for item in items]
     try:
         titles = load_titles(data_dir / DB_DIR / DB_FILENAME, hashes)
@@ -109,4 +123,11 @@ def _read_runtime_state(data_dir: Path) -> RuntimeState:
         return RuntimeState.empty()
 
 
-__all__ = ["collect_stock", "count_stock", "language_files", "stock_files"]
+__all__ = [
+    "collect_stock",
+    "count_stock",
+    "language_files",
+    "photo_sidecar",
+    "photo_text",
+    "stock_files",
+]

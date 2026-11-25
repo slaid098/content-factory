@@ -135,10 +135,10 @@ def _check_delivery_limit(request: DeliveryRequest, settings: Settings) -> None:
     response_class=Response,
     responses={
         status.HTTP_200_OK: {
-            "description": "Zip archive with NNN.mp4 and NNN.json entries",
+            "description": "Zip archive with NNN.<media> and NNN.json entries",
             "content": {"application/zip": {}},
         },
-        status.HTTP_204_NO_CONTENT: {"description": "The language has no titled mp4 files"},
+        status.HTTP_204_NO_CONTENT: {"description": "The address has no deliverable stock"},
         status.HTTP_401_UNAUTHORIZED: {"description": "Missing or invalid token"},
         status.HTTP_503_SERVICE_UNAVAILABLE: {"description": "Delivery is disabled"},
     },
@@ -147,7 +147,7 @@ def create_delivery(
     request: DeliveryRequest,
     settings: Annotated[Settings, Depends(require_delivery_token)],
 ) -> Response:
-    """Return a zip with up to ``count`` videos of one language or profile."""
+    """Return a zip with up to ``count`` videos or photos of one address."""
     _check_delivery_limit(request, settings)
     _check_delivery_profile(settings, request)
     try:
@@ -158,6 +158,7 @@ def create_delivery(
             request.request_id,
             query=request.query,
             profile=request.profile,
+            content_type=request.type,
             retention_hours=settings.delivery_retention_hours,
         )
     except ProfileError as ex:

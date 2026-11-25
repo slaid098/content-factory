@@ -13,7 +13,13 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from loguru import logger
-from tests.unit.common.delivery_helpers import REQUEST_ID, REQUEST_ID_TEXT, add_title, touch_mp4
+from tests.unit.common.delivery_helpers import (
+    REQUEST_ID,
+    REQUEST_ID_TEXT,
+    add_title,
+    touch_mp4,
+    touch_photo,
+)
 from tests.unit.common.profile_helpers import add_profile, add_profile_video
 
 from content_factory.api.app import create_app
@@ -565,3 +571,31 @@ def test_link_by_profile_without_stock_returns_empty(data_dir: Path) -> None:
     assert final["language"] == "en"
     assert final["files"] == 0
     assert other.is_file()
+
+
+def test_link_delivers_a_photo_with_its_text(
+    data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_profile(data_dir, "dating", "profile_1")
+    photo = touch_photo(
+        data_dir / CONTENT_DIR / "dating" / "ru" / "dating_profile_1_post_001.jpg",
+        b"photo",
+        text="Текст поста",
+    )
+    url = "https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip"
+    monkeypatch.setattr(
+        "content_factory.services.delivery.jobs.upload_archive",
+        lambda _archive: url,
+    )
+
+    client = _client()
+    response = _post(client, profile="dating/profile_1", type="photo")
+
+    assert response.status_code == 202
+    final = _wait(client, REQUEST_ID_TEXT, "ready")
+
+    assert final["files"] == 1
+    assert final["url"] == url
+    assert not photo.exists()
+    assert not photo.with_suffix(".json").exists()

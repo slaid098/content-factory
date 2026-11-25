@@ -7,12 +7,15 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from tests.unit.common.delivery_helpers import touch_mp4
+from tests.unit.common.delivery_helpers import touch_mp4, touch_photo
 
+from content_factory.schemas.content.delivery import ContentType
 from content_factory.schemas.stock.layout import StockFile
 from content_factory.services.stock import language_files, migrate, stock_files
 from content_factory.services.stock.layout import (
     migrate_flat_layout,
+    photo_sidecar,
+    photo_text,
     profile_slugs,
 )
 
@@ -88,6 +91,115 @@ def test_language_files_filters_one_language(tmp_path: Path) -> None:
 
     assert [item.path.name for item in language_files(content, "ru")] == ["a.mp4", "b.mp4"]
     assert language_files(content, "de") == []
+
+
+def test_stock_files_recognizes_video_and_photo_suffixes(tmp_path: Path) -> None:
+    content = tmp_path / "content"
+    directory = content / "dating" / "ru"
+    touch_mp4(directory / "a.mp4")
+    touch_mp4(directory / "b.mov")
+    touch_mp4(directory / "c.webm")
+    touch_mp4(directory / "d.mkv")
+    touch_photo(directory / "e.jpg", text="Текст")
+    touch_photo(directory / "f.jpeg")
+    touch_photo(directory / "g.png")
+    touch_photo(directory / "h.webp")
+    touch_mp4(directory / "i.gif")
+    touch_mp4(directory / "notes.txt")
+
+    files = stock_files(content, content_type=None)
+
+    assert [(item.path.name, item.content_type) for item in files] == [
+        ("a.mp4", ContentType.VIDEO),
+        ("b.mov", ContentType.VIDEO),
+        ("c.webm", ContentType.VIDEO),
+        ("d.mkv", ContentType.VIDEO),
+        ("e.jpg", ContentType.PHOTO),
+        ("f.jpeg", ContentType.PHOTO),
+        ("g.png", ContentType.PHOTO),
+        ("h.webp", ContentType.PHOTO),
+    ]
+
+
+def test_stock_files_keeps_a_video_and_a_photo_with_the_same_name(tmp_path: Path) -> None:
+    content = tmp_path / "content" / "dating" / "ru"
+    video = touch_mp4(content / "same.mp4", b"video")
+    photo = touch_photo(content / "same.jpg", b"photo", text="Текст")
+
+    files = stock_files(content.parents[1], content_type=None)
+
+    assert [(item.path, item.content_type) for item in files] == [
+        (photo, ContentType.PHOTO),
+        (video, ContentType.VIDEO),
+    ]
+
+
+def test_stock_files_skips_a_photo_with_a_broken_sidecar(
+    tmp_path: Path,
+    log_records: list[dict[str, Any]],
+) -> None:
+    directory = tmp_path / "content" / "dating" / "ru"
+    touch_photo(directory / "broken.jpg")
+    sidecar = directory / "broken.json"
+    sidecar.write_text("{not json", encoding="utf-8")
+    good = touch_photo(directory / "good.jpg", text="Текст")
+
+    files = stock_files(tmp_path / "content", content_type=ContentType.PHOTO)
+
+    assert [item.path for item in files] == [good]
+    records = [record for record in log_records if record["function"] == "_sidecar_is_readable"]
+    assert [record["level"].name for record in records] == ["WARNING"]
+    assert records[0]["extra"]["path"] == str(sidecar)
+    assert "{not json" not in records[0]["message"]
+
+
+@pytest.mark.parametrize(
+    ("sidecar", "expected"),
+    [
+        (None, ""),
+        ("{}", ""),
+        ('{"text": ""}', ""),
+        ('{"text": "Текст поста"}', "Текст поста"),
+    ],
+)
+def test_photo_text_reads_the_sidecar_or_returns_empty(
+    tmp_path: Path,
+    sidecar: str | None,
+    expected: str,
+) -> None:
+    photo = tmp_path / "post.jpg"
+    photo.write_bytes(b"photo")
+    if sidecar is not None:
+        photo_sidecar(photo).write_text(sidecar, encoding="utf-8")
+
+    assert photo_text(photo) == expected
+
+
+@pytest.mark.parametrize("sidecar", ["not json", "[]", '{"text": 1}'])
+def test_photo_text_rejects_a_malformed_sidecar(tmp_path: Path, sidecar: str) -> None:
+    photo = tmp_path / "post.jpg"
+    photo.write_bytes(b"photo")
+    photo_sidecar(photo).write_text(sidecar, encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        photo_text(photo)
+
+
+def test_language_files_filters_by_content_type(tmp_path: Path) -> None:
+    content = tmp_path / "content"
+    touch_mp4(content / "ru" / "a.mp4")
+    touch_photo(content / "ru" / "b.jpg", text="Текст")
+    touch_photo(content / "general" / "ru" / "c.png")
+
+    assert [item.path.name for item in language_files(content, "ru")] == ["a.mp4"]
+    assert [
+        item.path.name for item in language_files(content, "ru", content_type=ContentType.PHOTO)
+    ] == ["b.jpg", "c.png"]
+    assert [item.path.name for item in language_files(content, "ru", content_type=None)] == [
+        "a.mp4",
+        "b.jpg",
+        "c.png",
+    ]
 
 
 def test_profile_slugs_skips_shared_profiles(tmp_path: Path) -> None:
