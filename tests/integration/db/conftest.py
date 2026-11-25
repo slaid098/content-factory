@@ -24,6 +24,8 @@ from content_factory.db.connection import connect
 
 # Parent tables first: downloads references videos.
 ALL_TABLES = (
+    "source_cursors",
+    "source_items",
     "stock_items",
     "titles",
     "profile_settings",

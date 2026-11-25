@@ -50,9 +50,12 @@ SQL во всём сервисе пишется с плейсхолдерами 
 
 ## Схема
 
-Семь таблиц: `stock_items`, `titles`, `profile_settings`, `runtime_state`,
-`alert_cooldowns`, `videos`, `downloads`. Схема описана в
-`db/migrations/0001_initial.py` и включает:
+Девять таблиц: `stock_items`, `titles`, `profile_settings`, `runtime_state`,
+`alert_cooldowns`, `videos`, `downloads`, `source_items`, `source_cursors`.
+Первые семь описаны в `db/migrations/0001_initial.py`, пул исходников — в
+`db/migrations/0002_sources.py`.
+
+`0001_initial.py` включает:
 
 - `stock_items.content_type` (`video`/`photo`) и индекс по языку, типу и
   выдаче;
@@ -60,6 +63,20 @@ SQL во всём сервисе пишется с плейсхолдерами 
   'downloaded'`: у одного автора не больше одного скачанного видео;
 - `downloads` с внешним ключом на `videos`;
 - `schema_migrations(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`.
+
+`0002_sources.py` добавляет:
+
+- `source_items` — `id` (автоинкремент), `language`, `profile_id`, `path`
+  (UNIQUE), `sha256`, `size`, `duration`, `added_at`, `used_at`,
+  `use_count`, `missing_at` и UNIQUE `(language, profile_id, sha256)`;
+- `source_cursors` — `(language, profile_id)` как PK, `last_source_id`,
+  `updated_at`;
+- индекс `source_items(language, profile_id, missing_at, id)` для выбора
+  следующей партии.
+
+Типы колонок общие для SQLite и PostgreSQL; различается только написание
+автоинкремента первичного ключа. Миграция не читает и не меняет таблицы
+YouTube Kit.
 
 ## Миграции
 
@@ -83,7 +100,7 @@ python -m content_factory.db.migrate
 ```
 
 Команда идемпотентна и печатает применённые версии. Новая миграция — модуль
-`0002_<имя>.py` с `VERSION` и `apply(connection)`, добавленный в
+`0003_<имя>.py` с `VERSION` и `apply(connection)`, добавленный в
 `MIGRATION_MODULES`; менять уже применённую миграцию нельзя.
 
 ## Импорт SQLite → PostgreSQL
@@ -94,10 +111,14 @@ python -m content_factory.db.migrate
 python -m content_factory.db.import_sqlite --sqlite app_data/db/db.sqlite3
 ```
 
-Импорт читает все семь таблиц, пишет в текущую базу (DSN) и печатает счётчики
-по таблицам. Вставки идут с `ON CONFLICT DO NOTHING`, поэтому повторный запуск
-не создаёт дублей и не затирает уже перенесённые строки; `delivered_at` и
-`request_id` стока сохраняются. Весь импорт — одна транзакция: при ошибке
+Импорт читает все семь старых операционных таблиц, пишет в текущую базу (DSN)
+и печатает счётчики по таблицам. Таблицы пула исходников `source_items` и
+`source_cursors` в этот импорт не входят: файлы уже лежат на диске, и на
+новом бэкенде пул наполняется командой
+`python -m content_factory.services.sources.main`. Вставки идут с
+`ON CONFLICT DO NOTHING`, поэтому повторный запуск не создаёт дублей и не
+затирает уже перенесённые строки; `delivered_at` и `request_id` стока
+сохраняются. Весь импорт — одна транзакция: при ошибке
 чтения или записи база остаётся нетронутой, команда завершается ненулевым
 кодом. Файлы контента импорт не трогает, `stock_items` можно пересобрать
 сканом.

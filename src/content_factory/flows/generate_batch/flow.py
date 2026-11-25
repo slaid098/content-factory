@@ -37,6 +37,7 @@ from content_factory.services.generator import (
 )
 from content_factory.services.generator import generate_batch as run_batch
 from content_factory.services.generator.service import read_profile_cursor
+from content_factory.services.sources import plan_next
 
 if TYPE_CHECKING:
     from content_factory.config.settings import GeneratorSettings
@@ -67,19 +68,44 @@ def _has_photo_step(loaded: list[Any]) -> bool:
     return any(step.type is ContentType.PHOTO for profile in loaded for step in profile.production)
 
 
-def _dry_run(loaded: list[Any], count: int, settings: GeneratorSettings) -> list[str]:
+def _has_unique_step(loaded: list[Any]) -> bool:
+    """Return whether any profile recipe asks for the source-pool producer."""
+    return any(
+        step.producer == production.UNIQUE_PRODUCER
+        for profile in loaded
+        for step in profile.production
+    )
+
+
+def _dry_run(
+    loaded: list[Any],
+    count: int,
+    settings: GeneratorSettings,
+    data_dir: Path,
+) -> list[str]:
     """Write one plan report per profile with every recipe step."""
     started = datetime.now(UTC)
     run_id = choose_run_id(settings.output_dir, loaded, started)
-    for profile in loaded:
-        report = _dry_report(profile, count, run_id, started, settings.output_dir)
+    reports = [
+        (
+            profile,
+            _dry_report(profile, count, run_id, started, settings.output_dir, data_dir),
+        )
+        for profile in loaded
+    ]
+    for profile, report in reports:
         run_dir = settings.output_dir / profile.language / profile_slug(profile) / run_id
         write_report(run_dir, report)
     return [run_id]
 
 
 def _dry_report(
-    profile: Any, count: int, run_id: str, started: datetime, output_dir: Path
+    profile: Any,
+    count: int,
+    run_id: str,
+    started: datetime,
+    output_dir: Path,
+    data_dir: Path,
 ) -> RunReport:
     """Build the dry-run report of one profile across all recipe steps."""
     return RunReport(
@@ -95,15 +121,20 @@ def _dry_report(
         items=[
             item
             for step in profile.production
-            for item in _dry_items(profile, step, count, run_id, output_dir)
+            for item in _dry_items(profile, step, count, run_id, output_dir, data_dir)
         ],
     )
 
 
 def _dry_items(
-    profile: Any, step: ProductionStep, count: int, run_id: str, output_dir: Path
+    profile: Any,
+    step: ProductionStep,
+    count: int,
+    run_id: str,
+    output_dir: Path,
+    data_dir: Path,
 ) -> list[RunItem]:
-    """Plan one step: video cards, seeds and lengths or photo post names."""
+    """Plan one step: video cards and seeds, pool sources or photo names."""
     if step.type is ContentType.PHOTO:
         slug = profile_slug(profile)
         return [
@@ -117,6 +148,8 @@ def _dry_items(
             )
             for seq in range(1, count + 1)
         ]
+    if step.producer == production.UNIQUE_PRODUCER:
+        return _dry_sources(profile, step, count, run_id, data_dir)
     cursor = read_profile_cursor(output_dir, profile.language, profile_slug(profile))
     return [
         RunItem(
@@ -134,6 +167,34 @@ def _dry_items(
     ]
 
 
+def _dry_sources(
+    profile: Any,
+    step: ProductionStep,
+    count: int,
+    run_id: str,
+    data_dir: Path,
+) -> list[RunItem]:
+    """Plan the next pool sources without a cursor move, text or network."""
+    slug = profile_slug(profile)
+    return [
+        RunItem(
+            file=f"{slug}_{run_id}_{seq:03d}.mp4",
+            profile=profile.name,
+            source_path=source.path,
+            source_sha256=source.sha256,
+            duration=source.duration,
+            status=RunStatus.DRY_RUN,
+            producer=step.producer,
+            type=step.type,
+            qa=list(step.qa),
+        )
+        for seq, source in enumerate(
+            plan_next(data_dir, profile.language, profile.name, count),
+            start=1,
+        )
+    ]
+
+
 @flow(name="generate_batch")
 def generate_batch(
     profiles: str = "dating/profile_2", count: int = 1, dry_run: bool = False
@@ -145,8 +206,9 @@ def generate_batch(
     ``GeneratorBusyError``, а не ждёт освобождения. Producer каждого шага
     берётся из рецепта ``production`` профиля; при ``dry_run`` producer не
     вызывается, но рецепт проверяется, а план строится по каждому шагу:
-    видео — looks/seeds/frames, фото — имена файлов. Всё это попадает в
-    ``run.json``; сеть и LLM при ``dry_run`` не трогаются.
+    видео — looks/seeds/frames, ``unique`` — следующие исходники пула, фото —
+    имена файлов. Всё это попадает в ``run.json``; сеть и LLM при ``dry_run``
+    не трогаются, курсор пула не двигается.
 
     Если у всех профилей рецепт — один шаг ``vast/video``, flow вызывает
     ``run_batch`` один раз со всеми профилями: он проверяет ``count`` и планы
@@ -176,8 +238,8 @@ def generate_batch(
         loaded = [
             load_profile(name, settings.data_dir / PROFILES_DIR) for name in parse_names(profiles)
         ]
-        if dry_run and _has_photo_step(loaded):
-            run_ids = _dry_run(loaded, count, generator_settings)
+        if dry_run and (_has_photo_step(loaded) or _has_unique_step(loaded)):
+            run_ids = _dry_run(loaded, count, generator_settings, settings.data_dir)
             status, generated, failed = RunStatus.DRY_RUN.value, 0, 0
         elif dry_run:
             planned = run_batch(

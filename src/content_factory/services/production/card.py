@@ -23,7 +23,7 @@ from content_factory.schemas.generator.run import (
     RunReport,
     RunStatus,
     RunStep,
-    RunTotals,
+    TextWriter,
 )
 from content_factory.services.generator import (
     TextClient,
@@ -38,18 +38,11 @@ from content_factory.services.generator import (
 )
 from content_factory.services.production import qa as production_qa
 from content_factory.services.production.registry import CARD_PRODUCER
+from content_factory.services.production.reporting import close_report, find_step, mark_failed
 
 _FINAL_DIR = "final"
 _JPEG_QUALITY = 90
 _MAX_CAPTION_BYTES = 4096
-
-
-class _Writer(Protocol):
-    """Port of the text model used for one post caption."""
-
-    def write(self, system_prompt: str) -> str:
-        """Return the raw answer of the model for one overlay."""
-        ...
 
 
 class _Style(Protocol):
@@ -109,7 +102,7 @@ class CardProducer:
     def __init__(
         self,
         *,
-        writer: _Writer | None = None,
+        writer: TextWriter | None = None,
         renderer: _Renderer | None = None,
         now: datetime | None = None,
     ) -> None:
@@ -145,7 +138,7 @@ class CardProducer:
         """
         validate_count(count)
         loaded = load_profile(profile.name, data_dir / PROFILES_DIR)
-        step = _step(loaded.production)
+        step = find_step(loaded.production, CARD_PRODUCER, ContentType.PHOTO)
         started = self._now or datetime.now(UTC)
         run_id = choose_run_id(settings.output_dir, [loaded], started)
         run_dir = settings.output_dir / loaded.language / profile_slug(loaded) / run_id
@@ -175,14 +168,14 @@ class CardProducer:
                 OverflowError,
             ) as ex:
                 failed += 1
-                _mark_failed(item, ex)
+                mark_failed(item, ex, "Фото не собрано")
             else:
                 generated += 1
                 total_bytes += size
                 item.status = RunStatus.DONE
                 logger.bind(file=item.file).info("Фото готово")
             write_report(run_dir, report)
-        _close_report(report, generated, failed, total_bytes)
+        close_report(report, generated, failed, total_bytes)
         write_report(run_dir, report)
         return ProducedBatch(
             run_id=run_id,
@@ -196,7 +189,7 @@ def _produce_item(
     profile: Any,
     step: ProductionStep,
     item: RunItem,
-    writer: _Writer,
+    writer: TextWriter,
     renderer: _Renderer,
     final_dir: Path,
     data_dir: Path,
@@ -223,34 +216,6 @@ def _produce_item(
     size = final.stat().st_size
     publish_photo(profile, final, data_dir)
     return size
-
-
-def _close_report(report: RunReport, generated: int, failed: int, total_bytes: int) -> None:
-    """Store the counted outcome and the finish moment in the report."""
-    report.totals = RunTotals(generated=generated, failed=failed, bytes=total_bytes)
-    report.status = RunStatus.DONE if failed == 0 else RunStatus.FAILED
-    report.finished_at = datetime.now(UTC)
-
-
-def _mark_failed(item: RunItem, error: Exception) -> None:
-    """Mark one item failed and log the reason without stopping the run."""
-    item.status = RunStatus.FAILED
-    item.error = str(error)
-    logger.bind(file=item.file, error=str(error), error_type=type(error).__name__).error(
-        "Фото не собрано"
-    )
-
-
-def _step(steps: tuple[ProductionStep, ...]) -> ProductionStep:
-    """Return the recipe step of the card producer.
-
-    Raises:
-        GeneratorError: The recipe has no card step.
-    """
-    for step in steps:
-        if step.producer == CARD_PRODUCER and step.type is ContentType.PHOTO:
-            return step
-    raise GeneratorError(f"в рецепте профиля нет шага {CARD_PRODUCER}/photo")
 
 
 def _report(

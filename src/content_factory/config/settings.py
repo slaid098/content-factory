@@ -19,6 +19,7 @@ from content_factory.constants import (
     GENERATED_DIR,
     PREVIEW_DIR,
     QUERIES_DIR,
+    SOURCES_DIR,
 )
 from content_factory.exceptions.errors import ConfigError
 from content_factory.schemas.config.runtime import RuntimeConfig
@@ -252,6 +253,7 @@ def _ensure_directories(data_dir: Path) -> None:
         QUERIES_DIR,
         GENERATED_DIR,
         PREVIEW_DIR,
+        SOURCES_DIR,
     ):
         path = data_dir / name
         try:

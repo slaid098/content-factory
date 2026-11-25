@@ -12,6 +12,7 @@ from content_factory.constants.paths import (
     PREVIEW_DIR,
     PROFILES_DIR,
     QUERIES_DIR,
+    SOURCES_DIR,
 )
 
 __all__ = [
@@ -27,4 +28,5 @@ __all__ = [
     "PREVIEW_DIR",
     "PROFILES_DIR",
     "QUERIES_DIR",
+    "SOURCES_DIR",
 ]

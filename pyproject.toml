@@ -200,3 +200,18 @@ check_id = "dead_module"
 path = "src/content_factory/db/migrations/0001_initial.py"
 reason = "миграция подключается по строковому имени из реестра: имя начинается с цифры"
 
+# 0002_sources.py — та же причина: модуль миграции подключается строкой из
+# MIGRATION_MODULES, статический импорт невозможен из-за цифры в имени.
+[[tool.audit.ignore]]
+check_id = "dead_module"
+path = "src/content_factory/db/migrations/0002_sources.py"
+reason = "миграция подключается по строковому имени из реестра: имя начинается с цифры"
+
+# Хеш файла в sources/service.py повторяет восьмистрочный цикл supplier/
+# downloader.py. Поставщик по условию задачи не меняется, поэтому выносить
+# общий helper через его код нельзя; копия здесь читает файл теми же кусками.
+[[tool.audit.ignore]]
+check_id = "duplicate_code"
+path = "src/content_factory/services/sources/service.py"
+reason = "хеш-цикл совпадает с supplier/downloader.py, который по условию задачи не меняется"
+

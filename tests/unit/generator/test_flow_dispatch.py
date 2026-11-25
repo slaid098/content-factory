@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,6 +10,9 @@ from types import SimpleNamespace
 import pytest
 from tests.unit.generator.helpers import make_profile
 
+from content_factory.constants import SOURCES_DIR
+from content_factory.db.connection import connect
+from content_factory.db.sources import upsert_import
 from content_factory.exceptions.generator import GeneratorError
 from content_factory.flows.generate_batch import flow as flow_module
 from content_factory.flows.generate_batch.flow import generate_batch
@@ -299,3 +303,83 @@ def test_mixed_recipe_returns_every_step_run_id(tmp_path: Path) -> None:
     assert outcome == "run=run-video-1 run=run-photo-1 status=done generated=2 failed=0"
     assert video.calls == [("dating/profile_2", 1)]
     assert photo.calls == [("dating/profile_2", 1)]
+
+
+def _unique_recipe() -> dict[str, object]:
+    return {
+        "production": [
+            {"producer": "unique", "type": "video", "qa": ["media", "clef"]},
+        ]
+    }
+
+
+def _add_unique_source(tmp_path: Path, name: str = "a.mp4", duration: float = 5.0) -> str:
+    relative = f"{SOURCES_DIR}/ru/dating_profile_2/{name}"
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(name.encode())
+    connection = connect(tmp_path / "db" / "db.sqlite3")
+    try:
+        upsert_import(
+            connection,
+            language="ru",
+            profile_id="dating/profile_2",
+            path=relative,
+            sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+            size=path.stat().st_size,
+            duration=duration,
+            now="2026-01-01T00:00:00+00:00",
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    return relative
+
+
+def test_dry_run_plans_unique_sources_without_cursor_or_llm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_profile(tmp_path / "profiles", extra=_unique_recipe())
+    first = _add_unique_source(tmp_path, "a.mp4", duration=5.0)
+    second = _add_unique_source(tmp_path, "b.mp4", duration=7.0)
+
+    def forbidden(**kwargs: object) -> None:
+        raise AssertionError(f"dry run must not call the vast batch: {kwargs}")
+
+    monkeypatch.setattr(flow_module, "run_batch", forbidden)
+
+    outcome = generate_batch.fn(profiles="dating/profile_2", count=2, dry_run=True)
+
+    report = json.loads(
+        next((tmp_path / "generated").rglob("run.json")).read_text(encoding="utf-8")
+    )
+    assert outcome.startswith(f"run={report['run_id']} ")
+    assert "status=dry_run" in outcome
+    assert [item["source_path"] for item in report["items"]] == [first, second]
+    assert [item["duration"] for item in report["items"]] == [5.0, 7.0]
+    assert all(item["source_sha256"] for item in report["items"])
+    assert all(item["status"] == "dry_run" for item in report["items"])
+    assert all(item["producer"] == "unique" for item in report["items"])
+    assert [item["look_id"] for item in report["items"]] == [None, None]
+    connection = connect(tmp_path / "db" / "db.sqlite3")
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM source_cursors").fetchone()[0] == 0
+        rows = connection.execute("SELECT used_at, use_count FROM source_items").fetchall()
+        assert [tuple(row) for row in rows] == [(None, 0), (None, 0)]
+    finally:
+        connection.close()
+
+
+def test_dry_run_unique_pool_short_fails_before_any_report(tmp_path: Path) -> None:
+    make_profile(tmp_path / "profiles", extra=_unique_recipe())
+    _add_unique_source(tmp_path, "a.mp4")
+
+    with pytest.raises(GeneratorError, match="доступно 1 исходников, нужно 2"):
+        generate_batch.fn(profiles="dating/profile_2", count=2, dry_run=True)
+
+    assert list((tmp_path / "generated").rglob("run.json")) == []
+    connection = connect(tmp_path / "db" / "db.sqlite3")
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM source_cursors").fetchone()[0] == 0
+    finally:
+        connection.close()

@@ -16,6 +16,8 @@ from content_factory.db.connection import connect
 from content_factory.db.migrations.runner import applied_versions
 
 _TABLES = (
+    "source_cursors",
+    "source_items",
     "downloads",
     "videos",
     "alert_cooldowns",
@@ -45,14 +47,14 @@ def test_migrations_apply_from_scratch_and_again(
     connection_module._ready.clear()
     first = connect(pg)
     try:
-        assert applied_versions(first) == ("0001",)
+        assert applied_versions(first) == ("0001", "0002")
     finally:
         first.close()
 
     connection_module._ready.clear()
     second = connect(pg)
     try:
-        assert applied_versions(second) == ("0001",)
+        assert applied_versions(second) == ("0001", "0002")
     finally:
         second.close()
 

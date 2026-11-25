@@ -9,6 +9,7 @@ from content_factory.services.production.protocol import Producer
 
 VAST_PRODUCER = "vast"
 CARD_PRODUCER = "card"
+UNIQUE_PRODUCER = "unique"
 
 _ProducerFactory = Callable[[], Producer]
 
@@ -27,9 +28,17 @@ def _card() -> Producer:
     return CardProducer()
 
 
+def _unique() -> Producer:
+    """Build the producer that overlays a profile on imported sources."""
+    from content_factory.services.production.unique import UniqueProducer
+
+    return UniqueProducer()
+
+
 _BUILTINS: Mapping[str, _ProducerFactory] = {
     VAST_PRODUCER: _vast,
     CARD_PRODUCER: _card,
+    UNIQUE_PRODUCER: _unique,
 }
 
 

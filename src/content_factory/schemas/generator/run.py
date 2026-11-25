@@ -44,6 +44,14 @@ class ProfileRef(Protocol):
         ...
 
 
+class TextWriter(Protocol):
+    """Port of the text model used for one overlay."""
+
+    def write(self, system_prompt: str) -> str:
+        """Return the raw answer of the model for one overlay."""
+        ...
+
+
 class Producer(Protocol):
     """Named way to produce content of one profile."""
 
@@ -107,6 +115,8 @@ class RunItem(BaseModel):
     seed: int | None = None
     frames: int | None = None
     duration: float | None = None
+    source_path: str | None = None
+    source_sha256: str | None = None
     status: RunStatus = RunStatus.RUNNING
     error: str | None = None
     producer: str | None = None

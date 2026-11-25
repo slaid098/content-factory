@@ -1338,13 +1338,13 @@ def test_dry_run_records_the_recipe_in_run_json(tmp_path: Path) -> None:
 def test_unknown_producer_fails_before_the_rent(tmp_path: Path) -> None:
     make_profile(
         tmp_path / "profiles",
-        extra={"production": [{"producer": "unique"}]},
+        extra={"production": [{"producer": "absent"}]},
     )
 
     def fail(*args: object, **kwargs: object) -> None:
         raise AssertionError("unknown producer errors must happen before rent")
 
-    with pytest.raises(ProfileError, match="неизвестный producer 'unique'"):
+    with pytest.raises(ProfileError, match="неизвестный producer 'absent'"):
         service.generate_batch(
             profiles="dating/profile_2",
             data_dir=tmp_path,

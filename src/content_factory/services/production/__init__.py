@@ -7,13 +7,14 @@ from content_factory.services.production.qa import (
 )
 from content_factory.services.production.qa import available as available_qa
 from content_factory.services.production.qa import run as run_qa
-from content_factory.services.production.registry import VAST_PRODUCER
+from content_factory.services.production.registry import UNIQUE_PRODUCER, VAST_PRODUCER
 from content_factory.services.production.registry import available as available_producers
 from content_factory.services.production.registry import resolve as resolve_producer
 
 __all__ = [
     "QA_FINAL",
     "QA_SOURCE",
+    "UNIQUE_PRODUCER",
     "VAST_PRODUCER",
     "ProducedBatch",
     "Producer",

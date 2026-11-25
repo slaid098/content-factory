@@ -16,6 +16,7 @@ from content_factory.services.production import protocol as production_protocol
 from content_factory.services.production import qa as production_qa
 from content_factory.services.production import vast as vast_module
 from content_factory.services.production.card import CardProducer
+from content_factory.services.production.unique import UniqueProducer
 from content_factory.services.production.vast import VastProducer
 
 
@@ -29,6 +30,12 @@ def test_vast_is_the_builtin_producer() -> None:
     assert "vast" in registry.available()
     assert isinstance(registry.resolve("vast"), VastProducer)
     assert registry.resolve("vast").supported_types == frozenset({ContentType.VIDEO})
+
+
+def test_unique_is_the_builtin_source_pool_producer() -> None:
+    assert "unique" in registry.available()
+    assert isinstance(registry.resolve("unique"), UniqueProducer)
+    assert registry.resolve("unique").supported_types == frozenset({ContentType.VIDEO})
 
 
 def test_card_is_the_builtin_photo_producer() -> None:
@@ -49,7 +56,7 @@ def test_registry_can_be_injected_and_reset() -> None:
     assert local.resolve("fake") is producer
 
     local.reset()
-    assert local.available() == ("card", "vast")
+    assert local.available() == ("card", "unique", "vast")
 
 
 def test_registry_rejects_blank_and_unknown_names() -> None:
@@ -58,8 +65,8 @@ def test_registry_rejects_blank_and_unknown_names() -> None:
     with pytest.raises(ProfileError, match="пустое имя"):
         local.register("  ", lambda: VastProducer())
 
-    with pytest.raises(ProfileError, match="неизвестный producer 'unique': допустимы нет"):
-        local.resolve("unique")
+    with pytest.raises(ProfileError, match="неизвестный producer 'absent': допустимы нет"):
+        local.resolve("absent")
 
 
 def test_process_registry_restores_builtins_after_injection() -> None:
@@ -67,7 +74,7 @@ def test_process_registry_restores_builtins_after_injection() -> None:
     assert "fake" in registry.available()
 
     registry.reset()
-    assert registry.available() == ("card", "vast")
+    assert registry.available() == ("card", "unique", "vast")
 
 
 def test_qa_builtins_have_their_pipeline_stages() -> None:

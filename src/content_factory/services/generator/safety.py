@@ -15,7 +15,6 @@ from content_factory.config.settings import GeneratorSettings
 from content_factory.exceptions.generator import GeneratorError, SafetyError
 from content_factory.services.generator import media
 from content_factory.services.generator.clef import ClefClient, _ClefTransport
-from content_factory.services.generator.plan import _PlannedItem
 
 _FIRST_FRAME_RATIO = 0.02
 _LAST_FRAME_RATIO = 0.98
@@ -35,8 +34,17 @@ class _Checker(Protocol):
         """Fail before rent when Clef cannot answer one synthetic frame."""
         ...
 
-    def verify(self, item: _PlannedItem, source: Path, attempt: int) -> str | None:
+    def verify(self, item: _SourceRef, source: Path, attempt: int) -> str | None:
         """Return the defect reason of *source*, or ``None`` when it is safe."""
+        ...
+
+
+class _SourceRef(Protocol):
+    """Log context of one source checked by Clef."""
+
+    @property
+    def filename(self) -> str:
+        """File name shown in safety logs."""
         ...
 
 
@@ -63,7 +71,7 @@ class FrameChecker:
         self._client.scores(_synthetic_frame())
         logger.bind(stage="preflight").info("Preflight Clef пройден")
 
-    def verify(self, item: _PlannedItem, source: Path, attempt: int) -> str | None:
+    def verify(self, item: _SourceRef, source: Path, attempt: int) -> str | None:
         """Return the defect reason of *source*, or ``None`` when it is safe.
 
         Raises:
@@ -130,7 +138,7 @@ def frame_reason(scores: Mapping[str, float], settings: GeneratorSettings) -> st
 def verify_source(
     client: _ClefTransport,
     settings: GeneratorSettings,
-    item: _PlannedItem,
+    item: _SourceRef,
     source: Path,
     attempt: int,
 ) -> str | None:
