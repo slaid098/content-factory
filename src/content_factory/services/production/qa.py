@@ -6,6 +6,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from content_factory.exceptions.generator import GeneratorError, ProfileError
+from content_factory.services.production.protocol import LayerCheck
+from content_factory.services.production.registry import _FactoryRegistryMixin
 
 QA_SOURCE = "source"
 QA_FINAL = "final"
@@ -112,6 +114,13 @@ class Registry:
         return None
 
 
+class CheckRegistry(_FactoryRegistryMixin[LayerCheck]):
+    """Named factories of layer checks with a resettable store for tests."""
+
+    _EMPTY_ERROR = "пустое имя проверки"
+    _UNKNOWN_ERROR = "неизвестная проверка"
+
+
 _DEFAULT = Registry(_BUILTINS)
 
 
@@ -148,6 +157,7 @@ def run(names: tuple[str, ...], stage: str, handlers: Mapping[str, QaHandler]) -
 __all__ = [
     "QA_FINAL",
     "QA_SOURCE",
+    "CheckRegistry",
     "QaHandler",
     "Registry",
     "available",

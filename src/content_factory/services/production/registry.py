@@ -2,15 +2,42 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableMapping
 
 from content_factory.exceptions.generator import ProfileError
-from content_factory.services.production.protocol import Producer
+from content_factory.services.production.protocol import LayerProducer, Producer
 
 VAST_PRODUCER = "vast"
 CARD_PRODUCER = "card"
 
 _ProducerFactory = Callable[[], Producer]
+
+
+def _register[Port](
+    factories: MutableMapping[str, Callable[[], Port]],
+    name: str,
+    factory: Callable[[], Port],
+    empty_error: str,
+) -> None:
+    """Store *factory* under a clean *name* or raise *empty_error*."""
+    clean = name.strip()
+    if not clean:
+        raise ProfileError(empty_error)
+    factories[clean] = factory
+
+
+def _resolve[Port](
+    factories: Mapping[str, Callable[[], Port]],
+    name: str,
+    unknown_error: str,
+) -> Port:
+    """Build the factory stored under *name* or raise *unknown_error*."""
+    try:
+        factory = factories[name]
+    except KeyError as ex:
+        allowed = ", ".join(sorted(factories)) or "нет"
+        raise ProfileError(f"{unknown_error} {name!r}: допустимы {allowed}") from ex
+    return factory()
 
 
 def _vast() -> Producer:
@@ -77,6 +104,52 @@ class Registry:
         self._factories = dict(_BUILTINS)
 
 
+class _FactoryRegistryMixin[Port]:
+    """Named factories shared by the layered producer and check registries."""
+
+    _EMPTY_ERROR = "пустое имя"
+    _UNKNOWN_ERROR = "неизвестное имя"
+
+    def __init__(self, factories: Mapping[str, Callable[[], Port]] | None = None) -> None:
+        """Start with *factories*, or an empty registry when none are given."""
+        self._factories: dict[str, Callable[[], Port]] = dict(factories or {})
+
+    def register(self, name: str, factory: Callable[[], Port]) -> None:
+        """Register or replace the factory of *name*.
+
+        Args:
+            name: Name used by a layer.
+            factory: Zero-argument factory of the port instance.
+
+        Raises:
+            ProfileError: The name is empty.
+        """
+        _register(self._factories, name, factory, self._EMPTY_ERROR)
+
+    def resolve(self, name: str) -> Port:
+        """Build the port registered under *name*.
+
+        Raises:
+            ProfileError: No registration has that name.
+        """
+        return _resolve(self._factories, name, self._UNKNOWN_ERROR)
+
+    def available(self) -> tuple[str, ...]:
+        """Return the registered names in a stable order."""
+        return tuple(sorted(self._factories))
+
+    def reset(self) -> None:
+        """Drop every registration, including test injections."""
+        self._factories.clear()
+
+
+class ProducerRegistry(_FactoryRegistryMixin[LayerProducer]):
+    """Named factories of layered producers with a resettable store for tests."""
+
+    _EMPTY_ERROR = "пустое имя producer"
+    _UNKNOWN_ERROR = "неизвестный producer"
+
+
 _DEFAULT = Registry(_BUILTINS)
 
 
@@ -100,4 +173,4 @@ def reset() -> None:
     _DEFAULT.reset()
 
 
-__all__ = ["Registry", "available", "register", "reset", "resolve"]
+__all__ = ["ProducerRegistry", "Registry", "available", "register", "reset", "resolve"]
