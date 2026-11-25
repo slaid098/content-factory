@@ -8,12 +8,16 @@ import { ApiError, requestJson } from "./lib/http";
 
 const PROFILES_URL = "/api/v1/content/profiles";
 const EMPTY_TEXT = "Профилей пока нет.";
+const LOADING_TEXT = "Загружаем профили…";
 const NOT_FOUND_TEXT = "Профиль не найден";
-const PREVIEW_FALLBACK = "Превью появится после первого ролика";
+const PREVIEW_FALLBACK = "Превью появится после первого ролика или поста.";
+const PREVIEW_FALLBACK_SHORT = "Нет превью";
 const ERROR_LIMIT = 200;
 const TARGET_MIN = 1;
 const TARGET_MAX = 1000;
 const REFILL_MIN = 0;
+const FOCUSABLE =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 interface LastRun {
   status: string;
@@ -33,6 +37,7 @@ interface Profile {
   height: number;
   audio: boolean;
   stock: number;
+  photoStock: number;
   target: number;
   refillAt: number;
   refillEnabled: boolean;
@@ -47,11 +52,22 @@ interface CardController {
   apply: (profile: Profile) => void;
   setBusy: (value: boolean) => void;
   setStatus: (text: string, isError: boolean) => void;
+  focusPreview: () => void;
+}
+
+interface PreviewDialog {
+  open: (profile: Profile, trigger: HTMLButtonElement) => void;
+  close: () => void;
+}
+
+interface PreviewDialogOptions {
+  onClose: (profileId: string, trigger: HTMLButtonElement | null) => void;
 }
 
 export interface ProfilesElements {
   list: HTMLElement;
   message: HTMLElement;
+  loading: HTMLElement;
   empty: HTMLElement;
   refresh: HTMLButtonElement;
 }
@@ -73,6 +89,8 @@ export function createProfilesView(elements: ProfilesElements): ProfilesView {
   let stateVersion = 0;
   let loading = false;
 
+  const dialog = createPreviewDialog({ onClose: restorePreviewFocus });
+
   function updateRefresh(): void {
     elements.refresh.disabled = loading || pending.size > 0;
   }
@@ -85,6 +103,8 @@ export function createProfilesView(elements: ProfilesElements): ProfilesView {
     loading = true;
     updateRefresh();
     elements.list.setAttribute("aria-busy", "true");
+    setText(elements.loading, LOADING_TEXT);
+    toggle(elements.loading, true);
     setMessage(elements.message, "");
     const version = stateVersion;
     try {
@@ -101,6 +121,7 @@ export function createProfilesView(elements: ProfilesElements): ProfilesView {
     } finally {
       loading = false;
       elements.list.removeAttribute("aria-busy");
+      toggle(elements.loading, false);
       updateRefresh();
     }
   }
@@ -121,6 +142,14 @@ export function createProfilesView(elements: ProfilesElements): ProfilesView {
     toggle(elements.list, nodes.length !== 0);
     toggle(elements.empty, nodes.length === 0);
     setText(elements.empty, EMPTY_TEXT);
+  }
+
+  function restorePreviewFocus(profileId: string, trigger: HTMLButtonElement | null): void {
+    if (trigger?.isConnected) {
+      trigger.focus();
+      return;
+    }
+    cards.get(profileId)?.focusPreview();
   }
 
   /**
@@ -182,26 +211,37 @@ export function createProfilesView(elements: ProfilesElements): ProfilesView {
     const id = initial.id;
     let profile = initial;
     const card = el("li", "profile-card");
-    const media = el("div", "profile-media");
+    const media = el("button", "profile-media");
     const image = el("img", "profile-preview");
-    const fallback = el("p", "profile-preview-fallback", PREVIEW_FALLBACK);
+    const fallback = el("span", "profile-preview-fallback", PREVIEW_FALLBACK_SHORT);
+    const body = el("div", "profile-body");
     const head = el("div", "profile-head");
     const badges = el("p", "profile-badges");
-    const facts = el("p", "profile-facts");
+    const counters = el("div", "profile-counters");
+    const shortsValue = el("span", "profile-counter-value");
+    const shortsBar = el("div", "profile-progress");
+    const shortsFill = el("span", "profile-progress-fill");
+    const postsValue = el("span", "profile-counter-value");
     const targetInput = numberInput("Цель", TARGET_MIN, TARGET_MAX);
-    const refillInput = numberInput("Порог", REFILL_MIN, TARGET_MAX);
+    const refillInput = numberInput("Порог добора", REFILL_MIN, TARGET_MAX);
     const enabled = el("input");
     const status = el("p", "status profile-status");
     const lastRun = el("div", "profile-last-run");
 
-    image.alt = `Превью профиля ${profile.id}`;
+    media.type = "button";
+    media.setAttribute("aria-haspopup", "dialog");
+    fallback.setAttribute("role", "img");
+    fallback.title = PREVIEW_FALLBACK;
+    fallback.setAttribute("aria-label", PREVIEW_FALLBACK);
     image.setAttribute("loading", "lazy");
+    image.setAttribute("decoding", "async");
     image.addEventListener("error", () => {
-      toggle(image, false);
-      toggle(fallback, true);
+      showPreview(false);
     });
-    toggle(fallback, false);
     media.append(image, fallback);
+    media.addEventListener("click", () => {
+      dialog.open(profile, media);
+    });
 
     badges.append(
       el("span", "badge", languageName(profile.language)),
@@ -211,31 +251,84 @@ export function createProfilesView(elements: ProfilesElements): ProfilesView {
     );
     head.append(el("h3", "profile-id", profile.id), badges);
 
+    shortsBar.setAttribute("role", "progressbar");
+    shortsBar.setAttribute("aria-label", "Shorts");
+    shortsBar.setAttribute("aria-valuemin", "0");
+    shortsBar.append(shortsFill);
+    const shorts = el("div", "profile-counter");
+    const shortsHead = el("p", "profile-counter-head");
+    shortsHead.append(el("span", "profile-counter-name", "Shorts"), " ", shortsValue);
+    shorts.append(shortsHead, shortsBar);
+
+    const posts = el("div", "profile-counter");
+    const postsHead = el("p", "profile-counter-head");
+    postsHead.append(el("span", "profile-counter-name", "Посты"), " ", postsValue);
+    posts.append(postsHead, el("p", "profile-counter-note", "только учёт, вне добора"));
+    counters.append(shorts, posts);
+
     enabled.type = "checkbox";
     enabled.className = "profile-refill";
+    enabled.setAttribute("role", "switch");
     const switchLabel = el("label", "profile-switch");
-    switchLabel.append(enabled, el("span", "", "Добор"));
+    switchLabel.append(enabled, el("span", "profile-switch-label", "Добор роликов"));
 
     const targetField = el("label", "profile-field");
     targetField.append(el("span", "field-label", "Цель"), targetInput);
     const refillField = el("label", "profile-field");
-    refillField.append(el("span", "field-label", "Порог"), refillInput);
+    refillField.append(el("span", "field-label", "Порог добора"), refillInput);
     const fields = el("div", "profile-fields");
     fields.append(targetField, refillField);
 
     status.setAttribute("role", "status");
     status.setAttribute("aria-live", "polite");
-    card.append(media, head, facts, switchLabel, fields, status, lastRun);
+    body.append(head, counters, switchLabel, fields, status, lastRun);
+    card.append(media, body);
+
+    function showPreview(visible: boolean): void {
+      toggle(image, visible);
+      toggle(fallback, !visible);
+    }
 
     function fill(): void {
       fillInputs();
-      renderFacts();
+      renderPreview();
+      renderCounters();
       renderLastRun();
+    }
+
+    function renderPreview(): void {
+      media.setAttribute("aria-label", `Открыть превью профиля ${profile.id}`);
+      image.alt = `Превью профиля ${profile.id}`;
+      const ratio = profile.width > 0 && profile.height > 0 ? profile.width / profile.height : 1;
+      media.style.setProperty("--preview-ratio", String(ratio));
+      if (profile.width > 0 && profile.height > 0) {
+        image.setAttribute("width", String(profile.width));
+        image.setAttribute("height", String(profile.height));
+      } else {
+        image.removeAttribute("width");
+        image.removeAttribute("height");
+      }
+      if (!profile.previewUrl) {
+        image.removeAttribute("src");
+        showPreview(false);
+        return;
+      }
       if (image.getAttribute("src") !== profile.previewUrl) {
-        toggle(image, true);
-        toggle(fallback, false);
+        showPreview(true);
         image.src = profile.previewUrl;
       }
+    }
+
+    function renderCounters(): void {
+      const { stock, target } = profile;
+      shortsValue.textContent = `${formatCount(stock)} / ${formatCount(target)}`;
+      const capped = target > 0 ? Math.min(stock, target) : 0;
+      shortsBar.setAttribute("aria-valuemax", String(target));
+      shortsBar.setAttribute("aria-valuenow", String(capped));
+      shortsBar.setAttribute("aria-valuetext", `${formatCount(stock)} из ${formatCount(target)}`);
+      const share = target > 0 ? Math.min(100, Math.max(0, (stock / target) * 100)) : 0;
+      shortsFill.style.width = `${share}%`;
+      postsValue.textContent = formatCount(profile.photoStock);
     }
 
     function fillInputs(): void {
@@ -244,14 +337,7 @@ export function createProfilesView(elements: ProfilesElements): ProfilesView {
       refillInput.value = overrideValue(profile.refillAtOverride);
       refillInput.placeholder = effectiveValue(profile.refillAt, profile.refillAtOverride);
       enabled.checked = profile.refillEnabled;
-    }
-
-    function renderFacts(): void {
-      facts.replaceChildren(
-        el("span", "", `Сток ${formatCount(profile.stock)} / цель ${formatCount(profile.target)}`),
-        el("span", "profile-sep", "·"),
-        el("span", "", `порог ${formatCount(profile.refillAt)}`),
-      );
+      enabled.setAttribute("aria-checked", String(profile.refillEnabled));
     }
 
     function renderLastRun(): void {
@@ -314,6 +400,7 @@ export function createProfilesView(elements: ProfilesElements): ProfilesView {
     }
 
     enabled.addEventListener("change", () => {
+      enabled.setAttribute("aria-checked", String(enabled.checked));
       void saveProfile(id, { refill_enabled: enabled.checked });
     });
     targetInput.addEventListener("change", () => {
@@ -325,7 +412,7 @@ export function createProfilesView(elements: ProfilesElements): ProfilesView {
 
     fill();
     setBusy(pending.has(id));
-    return { node: card, apply, setBusy, setStatus };
+    return { node: card, apply, setBusy, setStatus, focusPreview: () => media.focus() };
   }
 
   elements.refresh.addEventListener("click", () => {
@@ -333,6 +420,123 @@ export function createProfilesView(elements: ProfilesElements): ProfilesView {
   });
 
   return { load };
+}
+
+let dialogCount = 0;
+
+/**
+ * Build the one preview dialog of the profiles tab.
+ */
+function createPreviewDialog(options: PreviewDialogOptions): PreviewDialog {
+  dialogCount += 1;
+  const titleId = `profiles-preview-title-${dialogCount}`;
+  const overlay = el("div", "profile-dialog");
+  overlay.hidden = true;
+  overlay.tabIndex = -1;
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.setAttribute("aria-labelledby", titleId);
+
+  const panel = el("div", "profile-dialog-panel");
+  const closeButton = el("button", "profile-dialog-close", "×");
+  closeButton.type = "button";
+  closeButton.setAttribute("aria-label", "Закрыть превью");
+  const title = el("h2", "profile-dialog-title");
+  title.id = titleId;
+  const media = el("div", "profile-dialog-media");
+  const image = el("img", "profile-dialog-image");
+  const fallback = el("p", "profile-dialog-fallback", PREVIEW_FALLBACK);
+  media.append(image, fallback);
+  panel.append(closeButton, title, media);
+  overlay.append(panel);
+  document.body.append(overlay);
+
+  let profileId: string | null = null;
+  let trigger: HTMLButtonElement | null = null;
+
+  image.addEventListener("error", () => {
+    image.hidden = true;
+    fallback.hidden = false;
+  });
+  closeButton.addEventListener("click", hideDialog);
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      hideDialog();
+    }
+  });
+
+  function onKeydown(event: KeyboardEvent): void {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      hideDialog();
+      return;
+    }
+    if (event.key !== "Tab") {
+      return;
+    }
+    const items = Array.from(overlay.querySelectorAll<HTMLElement>(FOCUSABLE));
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (!first || !last) {
+      event.preventDefault();
+      return;
+    }
+    const active = document.activeElement;
+    const outside = active === overlay || !overlay.contains(active);
+    if (event.shiftKey && (active === first || outside)) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && (active === last || outside)) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  function onFocusIn(event: FocusEvent): void {
+    const target = event.target;
+    if (target instanceof Node && target !== overlay && overlay.contains(target)) {
+      return;
+    }
+    closeButton.focus();
+  }
+
+  function hideDialog(): void {
+    if (overlay.hidden) {
+      return;
+    }
+    document.removeEventListener("keydown", onKeydown);
+    document.removeEventListener("focusin", onFocusIn);
+    overlay.hidden = true;
+    document.body.classList.remove("has-profile-dialog");
+    const closedId = profileId ?? "";
+    const origin = trigger;
+    profileId = null;
+    trigger = null;
+    options.onClose(closedId, origin);
+  }
+
+  function open(profile: Profile, origin: HTMLButtonElement): void {
+    profileId = profile.id;
+    trigger = origin;
+    title.textContent = `${profile.id} · ${profile.width}×${profile.height}`;
+    image.alt = `Превью профиля ${profile.id}`;
+    if (profile.previewUrl) {
+      image.hidden = false;
+      fallback.hidden = true;
+      image.src = profile.previewUrl;
+    } else {
+      image.hidden = true;
+      fallback.hidden = false;
+      image.removeAttribute("src");
+    }
+    overlay.hidden = false;
+    document.body.classList.add("has-profile-dialog");
+    document.addEventListener("keydown", onKeydown);
+    document.addEventListener("focusin", onFocusIn);
+    closeButton.focus();
+  }
+
+  return { open, close: hideDialog };
 }
 
 function normalizeProfiles(response: unknown): Profile[] {
@@ -359,6 +563,10 @@ function normalizeProfile(value: unknown, fallback: Profile | null): Profile {
     height: numberValue(body.height, fallback?.height ?? 0),
     audio: body.audio === undefined ? (fallback?.audio ?? false) : Boolean(body.audio),
     stock: numberValue(body.stock, fallback?.stock ?? 0),
+    photoStock:
+      body.photo_stock === undefined
+        ? (fallback?.photoStock ?? 0)
+        : numberValue(body.photo_stock, 0),
     target: numberValue(body.target, fallback?.target ?? 0),
     refillAt: numberValue(body.refill_at, fallback?.refillAt ?? 0),
     refillEnabled:

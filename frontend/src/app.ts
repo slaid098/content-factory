@@ -74,6 +74,7 @@ const jobs = createJobsView(
 const profiles = createProfilesView({
   list: byId("profiles-list"),
   message: byId("profiles-message"),
+  loading: byId("profiles-loading"),
   empty: byId("profiles-empty"),
   refresh: byId<HTMLButtonElement>("profiles-refresh"),
 });

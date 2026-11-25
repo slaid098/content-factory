@@ -14,6 +14,7 @@ function profile(overrides: Record<string, unknown> = {}): Record<string, unknow
     height: 1920,
     audio: true,
     stock: 4,
+    photo_stock: 14,
     target: 10,
     refill_at: 3,
     refill_enabled: false,
@@ -35,6 +36,7 @@ function createView() {
   return createProfilesView({
     list: node("profiles-list"),
     message: node("profiles-message"),
+    loading: node("profiles-loading"),
     empty: node("profiles-empty"),
     refresh: node<HTMLButtonElement>("profiles-refresh"),
   });
@@ -46,6 +48,26 @@ function card(): HTMLElement {
     throw new Error("profile card missing");
   }
   return found;
+}
+
+function mediaButton(): HTMLButtonElement {
+  const found = card().querySelector<HTMLButtonElement>(".profile-media");
+  if (!found) {
+    throw new Error("profile preview button missing");
+  }
+  return found;
+}
+
+function dialog(): HTMLElement {
+  const found = document.body.querySelector<HTMLElement>(".profile-dialog");
+  if (!found) {
+    throw new Error("profile dialog missing");
+  }
+  return found;
+}
+
+function dialogTitle(): string {
+  return dialog().querySelector(".profile-dialog-title")?.textContent ?? "";
 }
 
 function targetInput(): HTMLInputElement {
@@ -69,7 +91,7 @@ afterEach(() => {
 });
 
 describe("createProfilesView", () => {
-  it("renders a profile card with facts, overrides and the last run", async () => {
+  it("renders a profile card with counters, settings and the last run", async () => {
     mockFetch(() => jsonResponse({ profiles: [profile()] }));
     const view = createView();
 
@@ -82,20 +104,138 @@ describe("createProfilesView", () => {
     expect(card().textContent).toContain("dating");
     expect(card().textContent).toContain("1080×1920");
     expect(card().textContent).toContain("аудио");
-    expect(card().textContent).toContain("Сток 4 / цель 10");
-    expect(card().textContent).toContain("порог 3");
+    expect(card().textContent).toContain("Shorts 4 / 10");
+    expect(card().textContent).toContain("Посты 14");
+    expect(card().textContent).toContain("только учёт, вне добора");
+    expect(card().textContent).toContain("Добор роликов");
     expect(targetInput().value).toBe("12");
     expect(targetInput().placeholder).toBe("10");
     expect(refillInput().value).toBe("");
     expect(refillInput().placeholder).toBe("3 (глобально)");
     expect(switchInput().checked).toBe(false);
+    expect(switchInput().getAttribute("role")).toBe("switch");
+    expect(switchInput().getAttribute("aria-checked")).toBe("false");
     expect(card().textContent).toContain("готово");
     expect(card().textContent).toContain("партия: 5 готово");
     expect(card().textContent).toContain("1 с ошибкой");
     expect(card().textContent).toContain("завершена");
-    expect(card().querySelector<HTMLImageElement>("img")?.src).toContain(
+    expect(card().querySelector<HTMLImageElement>(".profile-preview")?.src).toContain(
       "/api/v1/content/profiles/dating/profile_1/preview.png",
     );
+  });
+
+  it("builds a compact, uncropped thumbnail from the profile dimensions", async () => {
+    mockFetch(() => jsonResponse({ profiles: [profile({ width: 544, height: 960 })] }));
+    const view = createView();
+
+    await view.load();
+
+    const image = card().querySelector<HTMLImageElement>(".profile-preview");
+    expect(image).not.toBeNull();
+    expect(image?.getAttribute("width")).toBe("544");
+    expect(image?.getAttribute("height")).toBe("960");
+    expect(image?.getAttribute("loading")).toBe("lazy");
+    expect(image?.getAttribute("decoding")).toBe("async");
+    expect(image?.alt).toBe("Превью профиля dating/profile_1");
+    expect(mediaButton().tagName).toBe("BUTTON");
+    expect(mediaButton().getAttribute("aria-label")).toBe(
+      "Открыть превью профиля dating/profile_1",
+    );
+    expect(mediaButton().getAttribute("aria-haspopup")).toBe("dialog");
+    expect(mediaButton().style.getPropertyValue("--preview-ratio")).toBe(String(544 / 960));
+  });
+
+  it("builds one slot for square, portrait and wide previews", async () => {
+    mockFetch(() =>
+      jsonResponse({
+        profiles: [
+          profile({ id: "dating/square", width: 1080, height: 1080 }),
+          profile({ id: "dating/portrait", width: 544, height: 960 }),
+          profile({ id: "dating/wide", width: 1280, height: 720 }),
+        ],
+      }),
+    );
+    const view = createView();
+
+    await view.load();
+
+    const ratios = Array.from(
+      node("profiles-list").querySelectorAll<HTMLElement>(".profile-media"),
+    ).map((media) => media.style.getPropertyValue("--preview-ratio"));
+    expect(ratios).toEqual(["1", String(544 / 960), String(1280 / 720)]);
+  });
+
+  it("shows the Shorts progress and the photo counter without a goal", async () => {
+    mockFetch(() =>
+      jsonResponse({ profiles: [profile({ stock: 4, target: 10, photo_stock: 14 })] }),
+    );
+    const view = createView();
+
+    await view.load();
+
+    const bar = card().querySelector<HTMLElement>(".profile-progress");
+    expect(bar?.getAttribute("role")).toBe("progressbar");
+    expect(bar?.getAttribute("aria-valuenow")).toBe("4");
+    expect(bar?.getAttribute("aria-valuemax")).toBe("10");
+    expect(bar?.getAttribute("aria-valuetext")).toBe("4 из 10");
+    const fill = card().querySelector<HTMLElement>(".profile-progress-fill");
+    expect(fill?.style.width).toBe("40%");
+    expect(card().textContent).toContain("Shorts 4 / 10");
+    expect(card().textContent).toContain("Посты 14");
+  });
+
+  it("clamps a stock above the target to one hundred percent", async () => {
+    mockFetch(() => jsonResponse({ profiles: [profile({ stock: 12, target: 10 })] }));
+    const view = createView();
+
+    await view.load();
+
+    const fill = card().querySelector<HTMLElement>(".profile-progress-fill");
+    expect(fill?.style.width).toBe("100%");
+    expect(card().textContent).toContain("Shorts 12 / 10");
+  });
+
+  it("shows zero counters when the target and the photo stock are zero", async () => {
+    mockFetch(() => jsonResponse({ profiles: [profile({ stock: 0, target: 0, photo_stock: 0 })] }));
+    const view = createView();
+
+    await view.load();
+
+    expect(card().textContent).toContain("Shorts 0 / 0");
+    expect(card().textContent).toContain("Посты 0");
+    const bar = card().querySelector<HTMLElement>(".profile-progress");
+    expect(bar?.getAttribute("aria-valuenow")).toBe("0");
+    expect(bar?.getAttribute("aria-valuemax")).toBe("0");
+    const fill = card().querySelector<HTMLElement>(".profile-progress-fill");
+    expect(fill?.style.width).toBe("0%");
+  });
+
+  it("defaults a missing photo stock to zero", async () => {
+    const row = profile();
+    delete row.photo_stock;
+    mockFetch(() => jsonResponse({ profiles: [row] }));
+    const view = createView();
+
+    await view.load();
+
+    expect(card().textContent).toContain("Посты 0");
+  });
+
+  it("keeps the previous photo stock when a PATCH response omits it", async () => {
+    const updated = profile({ refill_enabled: true });
+    delete updated.photo_stock;
+    mockFetch((_input, init) =>
+      init?.method === "PATCH"
+        ? jsonResponse(updated)
+        : jsonResponse({ profiles: [profile({ photo_stock: 14 })] }),
+    );
+    const view = createView();
+    await view.load();
+
+    switchInput().click();
+    await flush();
+
+    expect(card().textContent).toContain("Посты 14");
   });
 
   it("uses neutral fallbacks for missing optional data", async () => {
@@ -174,16 +314,152 @@ describe("createProfilesView", () => {
     expect(node("profiles-message").textContent).toBe("nope");
   });
 
-  it("falls back to the placeholder when the preview image fails", async () => {
+  it("marks the list busy while loading", async () => {
+    const pending = deferred<Response>();
+    mockFetch(() => pending.promise);
+    const view = createView();
+
+    const loading = view.load();
+
+    expect(node("profiles-list").getAttribute("aria-busy")).toBe("true");
+    expect(node<HTMLButtonElement>("profiles-refresh").disabled).toBe(true);
+    expect(node("profiles-loading").hidden).toBe(false);
+    expect(node("profiles-loading").textContent).toBe("Загружаем профили…");
+
+    pending.resolve(jsonResponse({ profiles: [profile()] }));
+    await loading;
+
+    expect(node("profiles-list").hasAttribute("aria-busy")).toBe(false);
+    expect(node("profiles-loading").hidden).toBe(true);
+    expect(node<HTMLButtonElement>("profiles-refresh").disabled).toBe(false);
+  });
+
+  it("keeps the preview slot stable when the image fails", async () => {
+    mockFetch(() => jsonResponse({ profiles: [profile({ width: 544, height: 960 })] }));
+    const view = createView();
+    await view.load();
+
+    const media = mediaButton();
+    const image = media.querySelector<HTMLImageElement>(".profile-preview");
+    const fallback = media.querySelector<HTMLElement>(".profile-preview-fallback");
+    const slotStyle = media.getAttribute("style");
+    expect(fallback?.hidden).toBe(true);
+
+    image?.dispatchEvent(new Event("error"));
+
+    expect(image?.hidden).toBe(true);
+    expect(fallback?.hidden).toBe(false);
+    expect(fallback?.textContent).toBe("Нет превью");
+    expect(fallback?.getAttribute("role")).toBe("img");
+    expect(fallback?.title).toBe("Превью появится после первого ролика или поста.");
+    expect(fallback?.getAttribute("aria-label")).toBe(
+      "Превью появится после первого ролика или поста.",
+    );
+    expect(mediaButton()).toBe(media);
+    expect(media.getAttribute("style")).toBe(slotStyle);
+    expect(media.style.getPropertyValue("--preview-ratio")).toBe(String(544 / 960));
+    expect(image?.getAttribute("width")).toBe("544");
+    expect(image?.getAttribute("height")).toBe("960");
+  });
+
+  it("opens one shared dialog and restores focus on Escape", async () => {
     mockFetch(() => jsonResponse({ profiles: [profile()] }));
     const view = createView();
     await view.load();
 
-    const image = card().querySelector<HTMLImageElement>("img");
-    image?.dispatchEvent(new Event("error"));
+    const button = mediaButton();
+    button.focus();
+    button.click();
 
-    expect(image?.hidden).toBe(true);
-    expect(card().querySelector<HTMLElement>(".profile-preview-fallback")?.hidden).toBe(false);
+    expect(document.body.querySelectorAll(".profile-dialog")).toHaveLength(1);
+    expect(dialog().hidden).toBe(false);
+    expect(dialog().getAttribute("role")).toBe("dialog");
+    expect(dialog().getAttribute("aria-modal")).toBe("true");
+    expect(dialogTitle()).toBe("dating/profile_1 · 1080×1920");
+    const labelledBy = dialog().getAttribute("aria-labelledby") ?? "";
+    expect(dialog().querySelector(`#${labelledBy}`)?.textContent).toBe(
+      "dating/profile_1 · 1080×1920",
+    );
+    const image = dialog().querySelector<HTMLImageElement>(".profile-dialog-image");
+    expect(image?.getAttribute("src")).toContain(
+      "/api/v1/content/profiles/dating/profile_1/preview.png",
+    );
+    const close = dialog().querySelector<HTMLButtonElement>(".profile-dialog-close");
+    expect(close?.getAttribute("aria-label")).toBe("Закрыть превью");
+    expect(document.activeElement).toBe(close);
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+
+    expect(dialog().hidden).toBe(true);
+    expect(document.activeElement).toBe(button);
+  });
+
+  it("keeps focus inside the dialog and restores it to the thumbnail", async () => {
+    mockFetch(() => jsonResponse({ profiles: [profile()] }));
+    const view = createView();
+    await view.load();
+
+    const trigger = mediaButton();
+    trigger.focus();
+    trigger.click();
+
+    const close = dialog().querySelector<HTMLButtonElement>(".profile-dialog-close");
+    expect(close).not.toBeNull();
+    expect(document.activeElement).toBe(close);
+
+    dialog().focus();
+    expect(document.activeElement).toBe(close);
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", cancelable: true }));
+    expect(document.activeElement).toBe(close);
+
+    node<HTMLButtonElement>("profiles-refresh").focus();
+    expect(document.activeElement).toBe(close);
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(dialog().hidden).toBe(true);
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("reuses the same dialog for every card", async () => {
+    mockFetch(() =>
+      jsonResponse({
+        profiles: [
+          profile(),
+          profile({ id: "dating/profile_2", name: "profile_2", width: 1080, height: 1080 }),
+        ],
+      }),
+    );
+    const view = createView();
+    await view.load();
+
+    const buttons = node("profiles-list").querySelectorAll<HTMLButtonElement>(".profile-media");
+    expect(document.body.querySelectorAll(".profile-dialog")).toHaveLength(1);
+
+    buttons[0]?.click();
+    expect(dialogTitle()).toContain("dating/profile_1");
+
+    dialog().querySelector<HTMLButtonElement>(".profile-dialog-close")?.click();
+    buttons[1]?.click();
+
+    expect(dialogTitle()).toBe("dating/profile_2 · 1080×1080");
+  });
+
+  it("closes on the backdrop and the close button but keeps clicks inside the panel", async () => {
+    mockFetch(() => jsonResponse({ profiles: [profile()] }));
+    const view = createView();
+    await view.load();
+
+    mediaButton().click();
+    dialog().querySelector<HTMLElement>(".profile-dialog-panel")?.click();
+    expect(dialog().hidden).toBe(false);
+
+    dialog().click();
+    expect(dialog().hidden).toBe(true);
+
+    mediaButton().click();
+    dialog().querySelector<HTMLButtonElement>(".profile-dialog-close")?.click();
+    expect(dialog().hidden).toBe(true);
   });
 
   it("saves the refill switch with a PATCH and updates the card", async () => {
@@ -203,6 +479,7 @@ describe("createProfilesView", () => {
     expect(bodyOf(patch?.init)).toEqual({ refill_enabled: true });
     expect(card().textContent).toContain("Сохранено.");
     expect(card().getAttribute("aria-busy")).toBe("false");
+    expect(switchInput().getAttribute("aria-checked")).toBe("true");
     expect(node<HTMLButtonElement>("profiles-refresh").disabled).toBe(false);
   });
 
@@ -342,8 +619,8 @@ describe("createProfilesView", () => {
     staleList.resolve(jsonResponse({ profiles: [profile({ stock: 99 })] }));
     await loading;
 
-    expect(card().textContent).toContain("Сток 7 / цель 10");
-    expect(card().textContent).not.toContain("Сток 99");
+    expect(card().textContent).toContain("Shorts 7 / 10");
+    expect(card().textContent).not.toContain("Shorts 99");
   });
 
   it("reloads from the refresh button", async () => {
