@@ -3,6 +3,7 @@
 from content_factory.constants.languages import LANGUAGE_CODE_RE, NICHE_CODE_RE
 from content_factory.constants.paths import (
     ARCHIVE_DIR,
+    BUFFER_DIR,
     CONFIG_DIR,
     CONFIG_FILENAME,
     CONTENT_DIR,
@@ -12,10 +13,13 @@ from content_factory.constants.paths import (
     PREVIEW_DIR,
     PROFILES_DIR,
     QUERIES_DIR,
+    SOURCES_DIR,
+    UNIQUE_DIR,
 )
 
 __all__ = [
     "ARCHIVE_DIR",
+    "BUFFER_DIR",
     "CONFIG_DIR",
     "CONFIG_FILENAME",
     "CONTENT_DIR",
@@ -27,4 +31,6 @@ __all__ = [
     "PREVIEW_DIR",
     "PROFILES_DIR",
     "QUERIES_DIR",
+    "SOURCES_DIR",
+    "UNIQUE_DIR",
 ]

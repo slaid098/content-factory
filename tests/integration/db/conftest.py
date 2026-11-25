@@ -31,6 +31,8 @@ ALL_TABLES = (
     "alert_cooldowns",
     "videos",
     "downloads",
+    "source_items",
+    "source_cursors",
 )
 
 
