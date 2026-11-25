@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Mapping
 from typing import Any
 
@@ -18,6 +19,7 @@ _DESCRIPTION_TITLE_MIN = 3
 _DESCRIPTION_TITLE_MAX = 80
 _DESCRIPTION_SUMMARY_MIN = 20
 _DESCRIPTION_SUMMARY_MAX = 300
+_FORBIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
 
 
 def read_profile_language(data: Mapping[str, Any], label: str) -> str:
@@ -132,6 +134,12 @@ def _read_description_line(
         return None
     if "\n" in value or "\r" in value:
         raise ProfileError(f"в профиле {label} {key} должен быть одной строкой")
+    if any(unicodedata.category(char) in _FORBIDDEN_CATEGORIES for char in value):
+        raise ProfileError(f"в профиле {label} {key} содержит непечатаемые символы")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as ex:
+        raise ProfileError(f"в профиле {label} {key} нельзя закодировать в UTF-8") from ex
     if not minimum <= len(value) <= maximum:
         raise ProfileError(
             f"в профиле {label} {key} должен быть длиной {minimum}..{maximum} символов"

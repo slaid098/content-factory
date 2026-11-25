@@ -168,6 +168,8 @@ def test_markdown_fence_and_extra_keys_are_accepted(tmp_path: Path) -> None:
             {"title": _VALID_TITLE, "summary": "Первая строка\nвторая"},
             ensure_ascii=False,
         ),
+        json.dumps({"title": "abc\x00def", "summary": _VALID_SUMMARY}, ensure_ascii=False),
+        json.dumps({"title": "abc\u202edef", "summary": _VALID_SUMMARY}, ensure_ascii=False),
     ],
 )
 def test_invalid_answer_retries_once_and_keeps_file(
@@ -179,6 +181,19 @@ def test_invalid_answer_retries_once_and_keeps_file(
     writer = _Writer(answer)
 
     with pytest.raises(ProfileDescriptionError):
+        _describe(tmp_path, writer)
+
+    assert len(writer.prompts) == 2
+    assert _yaml_text(profile) == before
+
+
+def test_lone_surrogate_answer_retries_once_and_keeps_file(tmp_path: Path) -> None:
+    profile = add_profile(tmp_path, "dating", "profile_1")
+    before = _yaml_text(profile)
+    answer = json.dumps({"title": "\ud800" * 3, "summary": _VALID_SUMMARY})
+    writer = _Writer(answer)
+
+    with pytest.raises(ProfileDescriptionError, match="непечатаемые"):
         _describe(tmp_path, writer)
 
     assert len(writer.prompts) == 2

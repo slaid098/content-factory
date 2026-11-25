@@ -368,10 +368,16 @@ def test_profile_without_description_fields_has_none(tmp_path: Path) -> None:
         ("title", "я"),
         ("title", "я" * 81),
         ("title", "Первая строка\nвторая"),
+        ("title", "abc\x00def"),
+        ("title", "abc\u202edef"),
+        ("title", "\ud800\ud800\ud800"),
         ("summary", 42),
         ("summary", "коротко"),
         ("summary", "я" * 301),
         ("summary", "Первая строка\nвторая"),
+        ("summary", "я" * 10 + "\x00" + "я" * 10),
+        ("summary", "я" * 10 + "\u202e" + "я" * 10),
+        ("summary", "\ud800" * 20),
     ],
 )
 def test_invalid_description_field_skips_only_that_profile(
@@ -385,3 +391,12 @@ def test_invalid_description_field_skips_only_that_profile(
     assert [profile.id for profile in list_profiles(tmp_path)] == ["dating/profile_1"]
     with pytest.raises(ProfileError, match="профиль не найден"):
         get_profile(tmp_path, "dating/profile_2")
+
+
+def test_lone_surrogate_title_is_skipped_without_crashing_the_list(tmp_path: Path) -> None:
+    _make_profile(tmp_path, "dating", "profile_1")
+    _make_profile(tmp_path, "dating", "profile_2", title="\ud800" * 3)
+
+    profiles = list_profiles(tmp_path)
+
+    assert [profile.id for profile in profiles] == ["dating/profile_1"]
