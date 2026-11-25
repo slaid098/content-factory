@@ -3,8 +3,10 @@
 The decision never touches the database or the network: the flow reads the
 settings and stock counters and hands them here, so the choice of the first
 profile and content type to refill stays a small function with its own tests.
-Video has priority over photo: a tick that finds both only starts the video
-batch, and the photo batch is left for the next tick.
+Profiles are walked in id order; within one profile video is checked before
+photo, so a photo batch never starves behind a video shortfall of another
+profile: the earlier profile gets its photo tick as soon as its own video is
+full.
 """
 
 from __future__ import annotations
@@ -28,12 +30,13 @@ def decide_refill(
 ) -> RefillDecision | None:
     """Choose the first profile and content type that need a refill.
 
-    Video is checked first over every profile in id order, then photo. A type
-    takes part only when the profile declares it in ``outputs``, the refill is
-    enabled, the available count is at or below its threshold and the goal is
-    still above that count. Effective video values merge the profile overrides
-    with the global ones; the photo pair has no global fallback. Invalid
-    per-profile settings are logged and only that profile is skipped.
+    Profiles are checked in id order, and within one profile video comes
+    before photo. A type takes part only when the profile declares it in
+    ``outputs``, the refill is enabled, the available count is at or below its
+    threshold and the goal is still above that count. Effective video values
+    merge the profile overrides with the global ones; the photo pair has no
+    global fallback. Invalid settings are logged and skip that type of the
+    profile, while its other type is still considered.
 
     Args:
         profiles: Profiles of the registry, in any order.
@@ -49,45 +52,44 @@ def decide_refill(
         The decision for the first eligible profile and type, or ``None``
         when no profile needs a refill.
     """
-    ordered = sorted(profiles, key=lambda item: item.id)
-    for content_type, available in (
-        (ContentType.VIDEO, stock),
-        (ContentType.PHOTO, photo_stock),
-    ):
-        decision = _first_profile(ordered, settings, available, content_type, global_config)
-        if decision is not None:
-            return decision
+    for profile in sorted(profiles, key=lambda item: item.id):
+        override = settings.get(profile.id)
+        if override is None or not override.enabled:
+            continue
+        for content_type, available in (
+            (ContentType.VIDEO, stock),
+            (ContentType.PHOTO, photo_stock),
+        ):
+            if content_type not in profile.outputs:
+                continue
+            decision = _decision(profile, override, available, content_type, global_config)
+            if decision is not None:
+                return decision
     return None
 
 
-def _first_profile(
-    profiles: Iterable[ProfileInfo],
-    settings: Mapping[str, ProfileRefill],
+def _decision(
+    profile: ProfileInfo,
+    override: ProfileRefill,
     available: Mapping[str, int],
     content_type: ContentType,
     global_config: GeneratorConfig,
 ) -> RefillDecision | None:
-    """Return the first profile that needs a refill of one content type."""
-    for profile in profiles:
-        override = settings.get(profile.id)
-        if override is None or not override.enabled:
-            continue
-        if content_type not in profile.outputs:
-            continue
-        limits = _limits(profile.id, override, content_type, global_config)
-        if limits is None:
-            continue
-        target, refill_at = limits
-        count = available.get(profile.id, 0)
-        if count <= refill_at and target > count:
-            return RefillDecision(
-                profile_id=profile.id,
-                count=target - count,
-                target=target,
-                refill_at=refill_at,
-                content_type=content_type,
-            )
-    return None
+    """Return the decision for one profile and type, if it needs a refill."""
+    limits = _limits(profile.id, override, content_type, global_config)
+    if limits is None:
+        return None
+    target, refill_at = limits
+    count = available.get(profile.id, 0)
+    if count > refill_at or target <= count:
+        return None
+    return RefillDecision(
+        profile_id=profile.id,
+        count=target - count,
+        target=target,
+        refill_at=refill_at,
+        content_type=content_type,
+    )
 
 
 def _limits(

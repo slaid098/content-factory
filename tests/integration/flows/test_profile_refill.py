@@ -61,11 +61,16 @@ def _set_refill(root: Path, profile_id: str, refill: ProfileRefill) -> None:
         connection.close()
 
 
-def _touch_stock(root: Path, counts: int, category: str = "dating") -> None:
+def _touch_stock(
+    root: Path,
+    counts: int,
+    category: str = "dating",
+    name: str = "profile_2",
+) -> None:
     directory = root / "content" / category / "ru"
     directory.mkdir(parents=True, exist_ok=True)
     for index in range(counts):
-        (directory / f"dating_profile_2_run_{index:03}.mp4").write_bytes(b"video")
+        (directory / f"{category}_{name}_run_{index:03}.mp4").write_bytes(b"video")
 
 
 def _touch_photos(root: Path, counts: int, category: str = "dating") -> None:
@@ -208,6 +213,36 @@ def test_mixed_profile_with_full_video_fills_photo(tmp_path: Path) -> None:
 
     assert outcome == "started:dating/profile_2"
     assert calls == [("dating/profile_2", 6, "photo")]
+
+
+def test_photo_of_first_profile_is_not_blocked_by_video_of_second(tmp_path: Path) -> None:
+    mixed = [
+        {"producer": "vast", "type": "video", "qa": ["media", "clef"]},
+        {"producer": "card", "type": "photo", "qa": ["image"]},
+    ]
+    _make_profile(tmp_path, "a", "profile_1", production=mixed)
+    _make_profile(
+        tmp_path,
+        "b",
+        "profile_1",
+        production=[{"producer": "vast", "type": "video", "qa": ["media", "clef"]}],
+    )
+    _set_refill(tmp_path, "a/profile_1", ProfileRefill(True, None, None, 10, 0))
+    _set_refill(tmp_path, "b/profile_1", ProfileRefill(True, None, None))
+    calls: list[tuple[str, int, str]] = []
+
+    first = profile_refill.fn(starter=_recorder(calls))
+
+    assert first == "started:a/profile_1"
+    assert calls == [("a/profile_1", 20, "video")]
+
+    _touch_stock(tmp_path, 20, "a", "profile_1")
+    calls.clear()
+
+    second = profile_refill.fn(starter=_recorder(calls))
+
+    assert second == "started:a/profile_1"
+    assert calls == [("a/profile_1", 10, "photo")]
 
 
 def test_photo_refill_with_zero_target_is_idle(tmp_path: Path) -> None:

@@ -21,13 +21,7 @@ from typing import Any
 import yaml
 
 from content_factory.exceptions.generator import GeneratorError, ProfileError
-from content_factory.schemas.content.delivery import ContentType
-from content_factory.schemas.generator.pipeline import (
-    ArtifactKind,
-    Layer,
-    RecipeProfile,
-    artifact_kind,
-)
+from content_factory.schemas.generator.pipeline import Layer, RecipeProfile
 from content_factory.services import production
 from content_factory.utils.profiles import (
     read_profile_language,
@@ -43,10 +37,6 @@ _DEFAULT_WORKFLOW = "video_gen_workflow.json"
 _SUPPORTED_RENDERERS = ("default",)
 _AUDIO_SUFFIXES = (".mp3", ".wav")
 _DEFAULT_MAX_TEXT_WIDTH = 0.86
-_DEFAULT_QA = ("media", "clef")
-_PHOTO_QA = ("image",)
-_VIDEO_ONLY_QA = frozenset({"media", "clef"})
-_PHOTO_ONLY_QA = frozenset({"image"})
 
 _REQUIRED_KEYS = ("count", "width", "height", "frames", "fps", "image", "gpu", "max_cost")
 _MAX_IMAGE_SIDE = 8192
@@ -96,17 +86,6 @@ class _OverlayStyle:
     block2_alpha: int | None = None
 
 
-_DEFAULT_PRODUCTION = (
-    Layer(
-        name=production.VAST_PRODUCER,
-        producer=production.VAST_PRODUCER,
-        inputs=(),
-        output=ArtifactKind.VIDEO,
-        checks=_DEFAULT_QA,
-    ),
-)
-
-
 @dataclass(frozen=True, slots=True)
 class _Profile:
     """Validated generator profile, ready to plan and render a batch."""
@@ -129,7 +108,7 @@ class _Profile:
     looks: tuple[_Look, ...]
     audio_tracks: tuple[Path, ...]
     workflow: Mapping[str, Any]
-    production: tuple[Layer, ...] = _DEFAULT_PRODUCTION
+    production: tuple[Layer, ...] = production.DEFAULT_RECIPE
     negative_prompt: str | None = None
     cfg: float | None = None
     rent: _RentOptions = _RentOptions()
@@ -215,7 +194,7 @@ def load_profile(name: str, root: Path) -> _Profile:
         looks=_read_looks(directory),
         audio_tracks=_audio_tracks(directory, data),
         workflow=_read_workflow(directory, root),
-        production=_read_production(data, name),
+        production=production.read_recipe(data, name),
         negative_prompt=_optional_text(directory / "negative_prompt.txt"),
         cfg=_optional_float(data, "cfg"),
         rent=_RentOptions(
@@ -425,99 +404,6 @@ def _read_workflow(directory: Path, root: Path) -> Mapping[str, Any]:
     if not isinstance(payload, dict):
         raise ProfileError(f"workflow должен быть JSON-объектом: {path}")
     return payload
-
-
-def _read_production(data: Mapping[str, Any], name: str) -> tuple[Layer, ...]:
-    """Read the production recipe as independent layer chains."""
-    raw = data.get("production")
-    if raw is None:
-        return _DEFAULT_PRODUCTION
-    if not isinstance(raw, list) or not raw:
-        raise ProfileError(f"в профиле {name} production должен быть непустым списком")
-    allowed_producers = production.available_producers()
-    allowed_qa = production.available_checks()
-    layers: list[Layer] = []
-    seen: set[str] = set()
-    for index, item in enumerate(raw, start=1):
-        if not isinstance(item, dict):
-            raise ProfileError(f"шаг production {index} в профиле {name} должен быть словарём")
-        producer = str(item.get("producer") or "").strip()
-        if not producer:
-            raise ProfileError(f"у шага production {index} в профиле {name} нет producer")
-        if producer in seen:
-            raise ProfileError(f"повтор producer {producer!r} в production профиля {name}")
-        if producer not in allowed_producers:
-            allowed = ", ".join(allowed_producers)
-            raise ProfileError(
-                f"неизвестный producer {producer!r} в профиле {name}: допустимы {allowed}"
-            )
-        engine = production.resolve_producer(producer)
-        content_type = _content_type(item.get("type"), name)
-        output = artifact_kind(content_type)
-        if output not in engine.supported_outputs:
-            supported = ", ".join(sorted(kind.value for kind in engine.supported_outputs))
-            raise ProfileError(
-                f"producer {producer!r} в профиле {name} не производит "
-                f"type={content_type.value!r}: поддержаны {supported}"
-            )
-        seen.add(producer)
-        layers.append(
-            Layer(
-                name=producer,
-                producer=producer,
-                inputs=(),
-                output=output,
-                checks=_qa_names(item.get("qa"), name, index, allowed_qa, content_type),
-            )
-        )
-    return tuple(layers)
-
-
-def _content_type(raw: object, name: str) -> ContentType:
-    """Parse a step type; an absent value keeps the old video default."""
-    if raw is None:
-        return ContentType.VIDEO
-    try:
-        return ContentType(str(raw).strip().lower())
-    except ValueError as ex:
-        allowed = ", ".join(item.value for item in ContentType)
-        raise ProfileError(
-            f"неизвестный type {raw!r} в профиле {name}: допустимы {allowed}"
-        ) from ex
-
-
-def _qa_names(
-    raw: object,
-    name: str,
-    index: int,
-    allowed: tuple[str, ...],
-    content_type: ContentType,
-) -> tuple[str, ...]:
-    """Read the ordered QA names of one step, rejecting blanks and repeats."""
-    if raw is None:
-        return _PHOTO_QA if content_type is ContentType.PHOTO else _DEFAULT_QA
-    if not isinstance(raw, list) or not raw:
-        raise ProfileError(
-            f"qa шага production {index} в профиле {name} должен быть непустым списком"
-        )
-    names: list[str] = []
-    incompatible = _VIDEO_ONLY_QA if content_type is ContentType.PHOTO else _PHOTO_ONLY_QA
-    for value in raw:
-        qa = str(value).strip()
-        if not qa:
-            raise ProfileError(f"пустое имя QA в профиле {name}")
-        if qa in names:
-            raise ProfileError(f"повтор QA {qa!r} в профиле {name}")
-        if qa not in allowed:
-            raise ProfileError(
-                f"неизвестная QA-проверка {qa!r} в профиле {name}: допустимы {', '.join(allowed)}"
-            )
-        if qa in incompatible:
-            raise ProfileError(
-                f"QA {qa!r} не подходит для type={content_type.value!r} в профиле {name}"
-            )
-        names.append(qa)
-    return tuple(names)
 
 
 def _read_looks(directory: Path) -> tuple[_Look, ...]:

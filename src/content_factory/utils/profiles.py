@@ -9,9 +9,7 @@ from typing import Any
 
 from content_factory.constants import LANGUAGE_CODE_RE, NICHE_CODE_RE
 from content_factory.exceptions.generator import ProfileError
-from content_factory.schemas.content.delivery import ContentType
 from content_factory.schemas.profiles.delivery import DeliveryInfo, TitleConfig, TitleMode
-from content_factory.schemas.profiles.registry import DEFAULT_OUTPUTS
 
 _HASHTAG_RE = re.compile(r"[\w][\w-]*")
 _MAX_TITLE_LENGTH = 100
@@ -87,58 +85,6 @@ def read_profile_summary(data: Mapping[str, Any], label: str) -> str | None:
         _DESCRIPTION_SUMMARY_MIN,
         _DESCRIPTION_SUMMARY_MAX,
     )
-
-
-def read_profile_outputs(data: Mapping[str, Any], label: str) -> frozenset[ContentType]:
-    """Return the content types declared by the ``production`` block.
-
-    The registry reads only the step types, so a profile without the block
-    keeps the legacy video recipe and the full recipe stays validated by
-    ``load_profile`` before any server is rented.
-
-    Args:
-        data: Parsed ``profile.yaml``.
-        label: Profile id used in error messages.
-
-    Returns:
-        Every content type at least one step produces.
-
-    Raises:
-        ProfileError: The block is empty or not a list, a step is not a
-            mapping, has no producer, repeats a producer or names an unknown
-            type.
-    """
-    raw = data.get("production")
-    if raw is None:
-        return DEFAULT_OUTPUTS
-    if not isinstance(raw, list) or not raw:
-        raise ProfileError(f"в профиле {label} production должен быть непустым списком")
-    outputs: set[ContentType] = set()
-    producers: set[str] = set()
-    for index, item in enumerate(raw, start=1):
-        if not isinstance(item, Mapping):
-            raise ProfileError(f"шаг production {index} в профиле {label} должен быть словарём")
-        producer = str(item.get("producer") or "").strip()
-        if not producer:
-            raise ProfileError(f"у шага production {index} в профиле {label} нет producer")
-        if producer in producers:
-            raise ProfileError(f"повтор producer {producer!r} в production профиля {label}")
-        producers.add(producer)
-        outputs.add(_production_type(item.get("type"), label))
-    return frozenset(outputs)
-
-
-def _production_type(raw: object, label: str) -> ContentType:
-    """Parse a step type; an absent value keeps the old video default."""
-    if raw is None:
-        return ContentType.VIDEO
-    try:
-        return ContentType(str(raw).strip().lower())
-    except ValueError as ex:
-        allowed = ", ".join(item.value for item in ContentType)
-        raise ProfileError(
-            f"неизвестный type {raw!r} в production профиля {label}: допустимы {allowed}"
-        ) from ex
 
 
 def read_profile_delivery(data: Mapping[str, Any], label: str) -> DeliveryInfo:
@@ -268,7 +214,6 @@ __all__ = [
     "read_profile_delivery",
     "read_profile_language",
     "read_profile_niche",
-    "read_profile_outputs",
     "read_profile_positive_int",
     "read_profile_summary",
     "read_profile_title",

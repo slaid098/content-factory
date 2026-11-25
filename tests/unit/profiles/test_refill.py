@@ -360,3 +360,34 @@ def test_photo_candidates_follow_profile_id_order() -> None:
     assert decision.profile_id == "a/profile_1"
     assert decision.content_type is ContentType.PHOTO
     assert decision.count == 4
+
+
+def test_photo_is_not_starved_by_video_shortage_of_another_profile() -> None:
+    profiles = [_profile("b/profile_1", _BOTH), _profile("a/profile_1", _BOTH)]
+    settings = {
+        "a/profile_1": ProfileRefill(True, None, None, 10, 0),
+        "b/profile_1": ProfileRefill(True, None, None, 10, 0),
+    }
+    video = {"a/profile_1": 0, "b/profile_1": 0}
+    photo = {"a/profile_1": 0, "b/profile_1": 0}
+
+    first = decide_refill(profiles, settings, video, photo, _GLOBAL)
+
+    assert first == RefillDecision(
+        profile_id="a/profile_1",
+        count=20,
+        target=20,
+        refill_at=2,
+        content_type=ContentType.VIDEO,
+    )
+
+    filled_video = {"a/profile_1": 20, "b/profile_1": 0}
+    second = decide_refill(profiles, settings, filled_video, photo, _GLOBAL)
+
+    assert second == RefillDecision(
+        profile_id="a/profile_1",
+        count=10,
+        target=10,
+        refill_at=0,
+        content_type=ContentType.PHOTO,
+    )

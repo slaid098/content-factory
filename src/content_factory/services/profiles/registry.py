@@ -1,9 +1,10 @@
 """Read-only registry of generator profiles.
 
-The registry deliberately does not call :func:`load_profile`: it exposes the
-fields needed to count stock and choose a refill even when a font, a prompt or
-an appearance card of the profile is broken. The generator validates those
-before it rents a server.
+The registry deliberately does not call :func:`load_profile`: fonts, prompts
+and appearance cards stay unvalidated until the generator needs them. The
+``production`` block, however, is checked by the shared recipe validator, so a
+broken producer, step type or QA check skips the profile here and the refill
+never picks a recipe that ``generate_batch`` would reject.
 
 A profile is a directory ``profiles/<category>/<name>/profile.yaml``. The
 shared ``profiles/_shared`` directory holds assets for all profiles and is not
@@ -21,13 +22,15 @@ from loguru import logger
 
 from content_factory.constants import PROFILES_DIR
 from content_factory.exceptions.generator import ProfileError
+from content_factory.schemas.content.delivery import ContentType
+from content_factory.schemas.generator.pipeline import content_type
 from content_factory.schemas.profiles.registry import ProfileInfo
+from content_factory.services import production
 from content_factory.utils.filesystem import child_directories
 from content_factory.utils.profiles import (
     read_profile_delivery,
     read_profile_language,
     read_profile_niche,
-    read_profile_outputs,
     read_profile_positive_int,
     read_profile_summary,
     read_profile_title,
@@ -144,8 +147,14 @@ def _read_info(directory: Path, category: str, name: str) -> ProfileInfo:
         delivery=read_profile_delivery(data, label),
         title=read_profile_title(data, label),
         summary=read_profile_summary(data, label),
-        outputs=read_profile_outputs(data, label),
+        outputs=_read_outputs(data, label),
     )
+
+
+def _read_outputs(data: Mapping[str, Any], label: str) -> frozenset[ContentType]:
+    """Return the content types of the validated production recipe."""
+    layers = production.read_recipe(data, label)
+    return frozenset(content_type(layer.output) for layer in layers)
 
 
 def _read_yaml(path: Path) -> Mapping[str, Any]:

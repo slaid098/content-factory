@@ -415,6 +415,10 @@ def test_production_step_without_type_outputs_video(tmp_path: Path) -> None:
         [{"type": "photo"}],
         [{"producer": "vast", "type": "audio"}],
         [{"producer": "vast"}, {"producer": "vast"}],
+        [{"producer": "unknown", "type": "video"}],
+        [{"producer": "card", "type": "video"}],
+        [{"producer": "vast", "qa": ["unknown"]}],
+        [{"producer": "card", "type": "photo", "qa": ["media"]}],
     ],
 )
 def test_invalid_production_skips_only_that_profile(
