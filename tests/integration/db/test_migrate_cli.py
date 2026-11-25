@@ -56,6 +56,26 @@ def test_cli_failure_hides_the_destination_password(
     assert "dbname=content_factory" in error
 
 
+def test_cli_hides_a_query_password_behind_a_fragment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("CONTENT_FACTORY_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv(
+        "CONTENT_FACTORY_DATABASE_URL",
+        "postgresql://user@127.0.0.1:1/content_factory?sslmode=require#&password=100%secret",
+    )
+    get_settings.cache_clear()
+
+    assert main() == 1
+
+    error = capsys.readouterr().err
+    assert "100%secret" not in error
+    assert "100%25secret" not in error
+    assert "фрагмент" in error
+
+
 def test_redact_masks_userinfo_case_insensitively() -> None:
     assert _redact("POSTGRESQL://user:secret@example.test:5432/db") == (
         "postgresql://***@example.test:5432/db"

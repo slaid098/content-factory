@@ -88,18 +88,33 @@ def test_guard_rejects_a_database_without_the_test_suffix() -> None:
     [
         "postgresql://u@localhost/content_factory_test?dbname=content_factory",
         "postgresql://u@localhost/content_factory_test?host=prod.example",
+        "postgresql://u@localhost/content_factory_test?hostaddr=10.0.0.1",
         "postgresql://u@prod.example/content_factory_test",
+        "postgresql://u@localhost/content_factory_test#?dbname=content_factory",
         "host=localhost dbname=content_factory_test",
         "postgresql://u@localhost/content_factory_test?service=production",
+        "postgresql:///content_factory_test",
+        "postgresql://u@/content_factory_test",
+        "postgresql://:5432/content_factory_test",
     ],
 )
-def test_guard_rejects_retargeting_and_keyword_dsn(url: str) -> None:
+def test_guard_rejects_retargeting_hostless_and_keyword_dsn(url: str) -> None:
     with pytest.raises(pytest.fail.Exception, match="CONTENT_FACTORY_TEST_DATABASE_URL"):
         require_test_database(url)
 
 
-def test_guard_accepts_the_ci_dsn() -> None:
+def test_guard_rejects_a_hostless_dsn_even_with_pghost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PGHOST", "prod.example")
+
+    with pytest.raises(pytest.fail.Exception, match="host"):
+        require_test_database("postgresql:///content_factory_test")
+
+
+def test_guard_accepts_the_ci_and_local_dsns() -> None:
     require_test_database(
         "postgresql://content_factory:content_factory@localhost:5432/content_factory_test"
     )
-    require_test_database("postgresql:///content_factory_test")
+    require_test_database("postgresql://postgres@127.0.0.1:55432/content_factory_test")
+    require_test_database("postgresql://postgres@[::1]:55432/content_factory_test")

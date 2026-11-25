@@ -30,10 +30,15 @@ def normalize_database_url(value: str) -> str:
         The DSN without surrounding spaces and with a lower-case scheme.
 
     Raises:
-        ConfigError: The value is not a PostgreSQL URL with a host and a
-            database name, contains whitespace or repeats the scheme prefix.
+        ConfigError: The value is not a PostgreSQL URL with an explicit host
+            and a database name, contains whitespace, a ``#`` fragment or
+            repeats the scheme prefix.
     """
     text = value.strip()
+    if "#" in text:
+        raise ConfigError(
+            "CONTENT_FACTORY_DATABASE_URL не поддерживает #: фрагменты в DSN не допускаются"
+        )
     try:
         parts = urlsplit(text)
     except ValueError as ex:
@@ -47,7 +52,11 @@ def normalize_database_url(value: str) -> str:
         )
     if _SECOND_SCHEME.match(text[len(parts.scheme) + 3 :]):
         raise ConfigError("CONTENT_FACTORY_DATABASE_URL не должен содержать второй префикс схемы")
-    if not parts.netloc or not parts.path.lstrip("/"):
+    try:
+        hostname = parts.hostname
+    except ValueError as ex:
+        raise ConfigError("CONTENT_FACTORY_DATABASE_URL содержит неверный хост") from ex
+    if not hostname or not parts.path.lstrip("/"):
         raise ConfigError("CONTENT_FACTORY_DATABASE_URL должен содержать хост и имя базы")
     try:
         _ = parts.port
@@ -155,13 +164,14 @@ def _password_of(dsn: str) -> str | None:
 def _query_passwords(value: str) -> set[str]:
     """Return raw and decoded ``password`` values of a DSN query string.
 
-    The regex parser tolerates percent-encoding errors that libpq rejects:
-    sanitizing must work on a malformed DSN too.
+    The regex parser tolerates percent-encoding errors and ``#`` fragments
+    that libpq rejects or reads as part of the conninfo: sanitizing must work
+    on a malformed DSN too, so the whole remainder after the first ``?`` is
+    split into parameters.
     """
     _, separator, query = value.partition("?")
     if not separator:
         return set()
-    query = query.partition("#")[0]
     passwords: set[str] = set()
     for chunk in re.split(r"[&;]", query):
         name, has_value, raw = chunk.partition("=")

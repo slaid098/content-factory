@@ -101,6 +101,35 @@ def test_settings_reject_password_in_query_without_echoing_it() -> None:
 
 
 @pytest.mark.parametrize(
+    "value",
+    [
+        "postgresql://user@localhost/db#?dbname=prod",
+        "postgresql://user@localhost/db#?host=prod.example",
+        "postgresql://user@localhost/db#?service=prod",
+        "postgresql://user@localhost/db#?password=100%25secret",
+    ],
+)
+def test_settings_reject_dsn_fragments(value: str) -> None:
+    with pytest.raises(ConfigError, match="фрагмент") as info:
+        Settings(database_url=value)
+
+    assert value not in str(info.value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "postgresql://:5432/content_factory_test",
+        "postgresql://user@/content_factory_test",
+        "postgresql:///content_factory_test",
+    ],
+)
+def test_settings_reject_dsn_without_host(value: str) -> None:
+    with pytest.raises(ConfigError, match="хост"):
+        Settings(database_url=value)
+
+
+@pytest.mark.parametrize(
     "query",
     [
         "dbname=another",
@@ -113,6 +142,21 @@ def test_settings_reject_password_in_query_without_echoing_it() -> None:
 def test_settings_reject_retargeting_query_parameters(query: str) -> None:
     with pytest.raises(ConfigError, match="query"):
         Settings(database_url=f"postgresql://user@localhost/db?{query}")
+
+
+@pytest.mark.parametrize(
+    "secret",
+    ["100%secret", "100%25secret"],
+)
+def test_sanitize_masks_query_password_after_a_fragment(secret: str) -> None:
+    dsn = f"postgresql://user@localhost/db?sslmode=require#&password={secret}"
+    text = f'invalid percent-encoded token: "{secret}"; conninfo {dsn}'
+
+    sanitized = sanitize_database_text(text, dsn)
+
+    assert secret not in sanitized
+    assert secret.replace("%25", "%") not in sanitized
+    assert "***" in sanitized
 
 
 def test_sanitize_masks_query_password_raw_and_decoded() -> None:
@@ -216,6 +260,32 @@ def test_postgres_failure_has_no_raw_exception_chain(
     for secret in ("userinfo-secret", "query-secret"):
         assert secret not in message
         assert secret not in formatted
+    assert failure.__cause__ is None
+    assert failure.__context__ is None
+
+
+def test_postgres_failure_hides_a_query_password_after_a_fragment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    psycopg = pytest.importorskip("psycopg")
+    dsn = "postgresql://user@localhost/db?sslmode=require#&password=100%secret"
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise psycopg.OperationalError('invalid percent-encoded token: "100%secret"')
+
+    monkeypatch.setattr(psycopg, "connect", fail)
+
+    failure: DatabaseError | None = None
+    try:
+        _PostgresConnection.open(dsn)
+    except DatabaseError as ex:
+        failure = ex
+        formatted = traceback.format_exc()
+    else:  # pragma: no cover - the fake driver always fails
+        pytest.fail("ожидалась DatabaseError")
+    assert failure is not None
+    assert "100%secret" not in str(failure)
+    assert "100%secret" not in formatted
     assert failure.__cause__ is None
     assert failure.__context__ is None
 

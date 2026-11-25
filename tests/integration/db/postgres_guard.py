@@ -26,8 +26,10 @@ def database_name(url: str) -> str:
 def require_test_database(url: str) -> None:
     """Fail instead of running destructive SQL against a non-test database.
 
-    The effective libpq ``dbname`` and ``host`` are read from the whole URI,
-    so a query parameter cannot hide a production target from the guard.
+    The effective libpq ``dbname``, ``host`` and ``hostaddr`` are read from
+    the whole URI, so a query parameter or fragment cannot hide a production
+    target from the guard. A missing host is rejected: libpq would otherwise
+    take ``PGHOST`` or ``PGSERVICE`` from the environment.
     """
     try:
         scheme = urlsplit(url).scheme.lower()
@@ -47,15 +49,22 @@ def require_test_database(url: str) -> None:
         )
     if str(values.get("service", "")):
         pytest.fail(f"{TEST_DSN_ENV} не должен использовать service: цель не видна в DSN")
-    for key in ("host", "hostaddr"):
-        hosts = str(values.get(key, ""))
-        if not hosts:
-            continue
-        for host in hosts.split(","):
-            if host and host.lower() not in _LOCAL_HOSTS:
-                pytest.fail(
-                    f"{TEST_DSN_ENV}: {key} должен указывать только на localhost, 127.0.0.1 или ::1"
-                )
+    hosts = [
+        host.strip().lower()
+        for key in ("host", "hostaddr")
+        for host in str(values.get(key, "")).split(",")
+        if host.strip()
+    ]
+    if not hosts:
+        pytest.fail(
+            f"{TEST_DSN_ENV} должен явно указывать host или hostaddr: "
+            "иначе libpq возьмёт хост из PGHOST или PGSERVICE"
+        )
+    if any(host not in _LOCAL_HOSTS for host in hosts):
+        pytest.fail(
+            f"{TEST_DSN_ENV}: host и hostaddr должны указывать только "
+            "на localhost, 127.0.0.1 или ::1"
+        )
 
 
 __all__ = ["TEST_DSN_ENV", "database_name", "require_test_database"]

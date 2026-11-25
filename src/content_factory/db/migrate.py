@@ -25,8 +25,8 @@ from content_factory.exceptions.errors import ConfigError
 
 def main() -> int:
     """Apply migrations and print the ledger; return a process exit code."""
-    db_path = _db_path()
     try:
+        db_path = _db_path()
         connection = connect(db_path)
     except (ConfigError, DatabaseError, OSError) as ex:
         sys.stderr.write(f"не удалось подключиться к базе: {sanitize_error_text(str(ex))}\n")
