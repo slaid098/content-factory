@@ -1172,3 +1172,109 @@ def test_silent_profile_does_not_require_audio(tmp_path: Path, monkeypatch) -> N
     )
 
     assert "audio" not in events
+
+
+def test_recipe_media_only_skips_the_clef_preflight_and_frames(tmp_path: Path, monkeypatch) -> None:
+    fixture_profile(
+        tmp_path / "profiles",
+        extra={"production": [{"producer": "vast", "type": "video", "qa": ["media"]}]},
+    )
+    events: list[str] = []
+    session = FakeSession(events)
+    checker = _Checker(preflight_error=SafetyError("must not be called"))
+    _fake_postprocess(monkeypatch, events)
+
+    result = service.generate_batch(
+        profiles="dating/profile_2",
+        data_dir=tmp_path,
+        settings=_settings(tmp_path, safety_enabled=True),
+        session_factory=lambda profile, settings: session,
+        client_factory=lambda connection: _Transport(events),
+        text_writer=_Writer(events),
+        store=lambda path, content: path.write_bytes(content),
+        safety_checker=checker,
+        rng=random.Random(1),
+        now=_NOW,
+    )
+
+    assert result.status == "done"
+    assert result.generated == 1
+    assert checker.preflights == 0
+    assert checker.calls == []
+    report = json.loads((result.run_dirs[0] / "run.json").read_text(encoding="utf-8"))
+    assert report["production"] == [{"producer": "vast", "type": "video", "qa": ["media"]}]
+    assert report["items"][0]["producer"] == "vast"
+    assert report["items"][0]["type"] == "video"
+    assert report["items"][0]["qa"] == ["media"]
+
+
+def test_dry_run_records_the_recipe_in_run_json(tmp_path: Path) -> None:
+    fixture_profile(
+        tmp_path / "profiles",
+        extra={
+            "production": [
+                {"producer": "vast", "type": "video", "qa": ["clef", "media"]},
+            ]
+        },
+    )
+
+    result = service.generate_batch(
+        profiles="dating/profile_2",
+        count=2,
+        dry_run=True,
+        data_dir=tmp_path,
+        settings=_settings(tmp_path),
+        rng=random.Random(1),
+        now=_NOW,
+    )
+
+    report = json.loads((result.run_dirs[0] / "run.json").read_text(encoding="utf-8"))
+    assert report["status"] == "dry_run"
+    assert report["production"] == [{"producer": "vast", "type": "video", "qa": ["clef", "media"]}]
+    assert [item["qa"] for item in report["items"]] == [["clef", "media"]] * 2
+
+
+def test_unknown_producer_fails_before_the_rent(tmp_path: Path) -> None:
+    make_profile(
+        tmp_path / "profiles",
+        extra={"production": [{"producer": "unique"}]},
+    )
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise AssertionError("unknown producer errors must happen before rent")
+
+    with pytest.raises(ProfileError, match="неизвестный producer 'unique'"):
+        service.generate_batch(
+            profiles="dating/profile_2",
+            data_dir=tmp_path,
+            settings=_settings(tmp_path),
+            session_factory=fail,
+            now=_NOW,
+        )
+
+
+def test_clef_only_recipe_skips_the_media_check(tmp_path: Path, monkeypatch) -> None:
+    fixture_profile(
+        tmp_path / "profiles",
+        extra={"production": [{"producer": "vast", "qa": ["clef"]}]},
+    )
+    events: list[str] = []
+    session = FakeSession(events)
+    _fake_postprocess(monkeypatch, events)
+
+    result = service.generate_batch(
+        profiles="dating/profile_2",
+        data_dir=tmp_path,
+        settings=_settings(tmp_path),
+        session_factory=lambda profile, settings: session,
+        client_factory=lambda connection: _Transport(events),
+        text_writer=_Writer(events),
+        store=lambda path, content: path.write_bytes(content),
+        rng=random.Random(1),
+        now=_NOW,
+    )
+
+    assert result.status == "done"
+    report = json.loads((result.run_dirs[0] / "run.json").read_text(encoding="utf-8"))
+    assert report["items"][0]["duration"] is None
+    assert "audio" not in events

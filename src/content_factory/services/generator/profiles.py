@@ -14,12 +14,16 @@ import random
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from content_factory.exceptions.generator import ProfileError
+from content_factory.exceptions.generator import GeneratorError, ProfileError
+from content_factory.schemas.content.delivery import ContentType
+from content_factory.schemas.generator.run import ProductionStep
+from content_factory.services import production
 from content_factory.utils.profiles import (
     read_profile_language,
     read_profile_niche,
@@ -33,6 +37,7 @@ _DEFAULT_WORKFLOW = "video_gen_workflow.json"
 _SUPPORTED_RENDERERS = ("default",)
 _AUDIO_SUFFIXES = (".mp3", ".wav")
 _DEFAULT_MAX_TEXT_WIDTH = 0.86
+_DEFAULT_QA = ("media", "clef")
 
 _REQUIRED_KEYS = ("count", "width", "height", "frames", "fps", "image", "gpu", "max_cost")
 _SPIN = re.compile(r"\{([^{}|]+(?:\|[^{}]+)+)\}")
@@ -80,6 +85,9 @@ class _OverlayStyle:
     block2_alpha: int | None = None
 
 
+_DEFAULT_PRODUCTION = (ProductionStep("vast", ContentType.VIDEO, _DEFAULT_QA),)
+
+
 @dataclass(frozen=True, slots=True)
 class _Profile:
     """Validated generator profile, ready to plan and render a batch."""
@@ -102,6 +110,7 @@ class _Profile:
     looks: tuple[_Look, ...]
     audio_tracks: tuple[Path, ...]
     workflow: Mapping[str, Any]
+    production: tuple[ProductionStep, ...] = _DEFAULT_PRODUCTION
     negative_prompt: str | None = None
     cfg: float | None = None
     rent: _RentOptions = _RentOptions()
@@ -184,6 +193,7 @@ def load_profile(name: str, root: Path) -> _Profile:
         looks=_read_looks(directory),
         audio_tracks=_audio_tracks(directory, data),
         workflow=_read_workflow(directory, root),
+        production=_read_production(data, name),
         negative_prompt=_optional_text(directory / "negative_prompt.txt"),
         cfg=_optional_float(data, "cfg"),
         rent=_RentOptions(
@@ -210,6 +220,80 @@ def profile_niche(profile: _Profile) -> str:
         Its niche or, for a profile without one, the profile category.
     """
     return profile.niche or profile.name.split("/", 1)[0]
+
+
+def parse_names(value: str) -> list[str]:
+    """Split the flow parameter into unique profile names.
+
+    Args:
+        value: Comma-separated profile names.
+
+    Returns:
+        Names in their original order, without blanks and repeats.
+
+    Raises:
+        ProfileError: No name is left after trimming.
+    """
+    names: list[str] = []
+    for part in str(value or "").split(","):
+        name = part.strip()
+        if name and name not in names:
+            names.append(name)
+    if not names:
+        raise ProfileError("не указан ни один профиль")
+    return names
+
+
+def profile_slug(profile: _Profile) -> str:
+    """Return the profile directory name used in output paths."""
+    return profile.name.replace("/", "_")
+
+
+def choose_run_id(output_dir: Path, loaded: list[_Profile], moment: datetime) -> str:
+    """Return a UTC run id whose directories do not exist yet.
+
+    Args:
+        output_dir: Root of the run directories.
+        loaded: Profiles of the batch, each with its language and name.
+        moment: Run start moment.
+
+    Returns:
+        A timestamp id, with a numeric suffix when the directory is taken.
+
+    Raises:
+        GeneratorError: A hundred candidates are all taken.
+    """
+    stamp = moment.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+    for suffix in range(1, 100):
+        candidate = stamp if suffix == 1 else f"{stamp}-{suffix}"
+        if not any(
+            (output_dir / profile.language / profile_slug(profile) / candidate).exists()
+            for profile in loaded
+        ):
+            return candidate
+    raise GeneratorError(f"не удалось подобрать свободный run_id для {stamp}")
+
+
+def production_step(profile: _Profile, producer: str | None = None) -> ProductionStep:
+    """Return the step a pipeline executes.
+
+    Args:
+        profile: Loaded profile with a non-empty production recipe.
+        producer: Required producer name; ``None`` takes the first step.
+
+    Returns:
+        The first step or the step of the named producer.
+
+    Raises:
+        ProfileError: The recipe has no step of the named producer.
+    """
+    if producer is None:
+        return profile.production[0]
+    for step in profile.production:
+        if step.producer == producer:
+            return step
+    names = ", ".join(step.producer for step in profile.production)
+    raise ProfileError(f"у профиля {profile.name} нет шага {producer}: есть {names}")
 
 
 def prompt_template(profile: _Profile) -> str:
@@ -307,6 +391,90 @@ def _read_workflow(directory: Path, root: Path) -> Mapping[str, Any]:
     if not isinstance(payload, dict):
         raise ProfileError(f"workflow должен быть JSON-объектом: {path}")
     return payload
+
+
+def _read_production(data: Mapping[str, Any], name: str) -> tuple[ProductionStep, ...]:
+    """Read the production recipe, defaulting to the original Vast step."""
+    raw = data.get("production")
+    if raw is None:
+        return _DEFAULT_PRODUCTION
+    if not isinstance(raw, list) or not raw:
+        raise ProfileError(f"в профиле {name} production должен быть непустым списком")
+    allowed_producers = production.available_producers()
+    allowed_qa = production.available_qa()
+    steps: list[ProductionStep] = []
+    seen: set[str] = set()
+    for index, item in enumerate(raw, start=1):
+        if not isinstance(item, dict):
+            raise ProfileError(f"шаг production {index} в профиле {name} должен быть словарём")
+        producer = str(item.get("producer") or "").strip()
+        if not producer:
+            raise ProfileError(f"у шага production {index} в профиле {name} нет producer")
+        if producer in seen:
+            raise ProfileError(f"повтор producer {producer!r} в production профиля {name}")
+        if producer not in allowed_producers:
+            allowed = ", ".join(allowed_producers)
+            raise ProfileError(
+                f"неизвестный producer {producer!r} в профиле {name}: допустимы {allowed}"
+            )
+        engine = production.resolve_producer(producer)
+        content_type = _content_type(item.get("type"), name)
+        if content_type not in engine.supported_types:
+            supported = ", ".join(sorted(item.value for item in engine.supported_types))
+            raise ProfileError(
+                f"producer {producer!r} в профиле {name} не производит "
+                f"type={content_type.value!r}: поддержаны {supported}"
+            )
+        seen.add(producer)
+        steps.append(
+            ProductionStep(
+                producer=producer,
+                type=content_type,
+                qa=_qa_names(item.get("qa"), name, index, allowed_qa),
+            )
+        )
+    return tuple(steps)
+
+
+def _content_type(raw: object, name: str) -> ContentType:
+    """Parse a step type; an absent value keeps the old video default."""
+    if raw is None:
+        return ContentType.VIDEO
+    try:
+        return ContentType(str(raw).strip().lower())
+    except ValueError as ex:
+        allowed = ", ".join(item.value for item in ContentType)
+        raise ProfileError(
+            f"неизвестный type {raw!r} в профиле {name}: допустимы {allowed}"
+        ) from ex
+
+
+def _qa_names(
+    raw: object,
+    name: str,
+    index: int,
+    allowed: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Read the ordered QA names of one step, rejecting blanks and repeats."""
+    if raw is None:
+        return _DEFAULT_QA
+    if not isinstance(raw, list) or not raw:
+        raise ProfileError(
+            f"qa шага production {index} в профиле {name} должен быть непустым списком"
+        )
+    names: list[str] = []
+    for value in raw:
+        qa = str(value).strip()
+        if not qa:
+            raise ProfileError(f"пустое имя QA в профиле {name}")
+        if qa in names:
+            raise ProfileError(f"повтор QA {qa!r} в профиле {name}")
+        if qa not in allowed:
+            raise ProfileError(
+                f"неизвестная QA-проверка {qa!r} в профиле {name}: допустимы {', '.join(allowed)}"
+            )
+        names.append(qa)
+    return tuple(names)
 
 
 def _read_looks(directory: Path) -> tuple[_Look, ...]:

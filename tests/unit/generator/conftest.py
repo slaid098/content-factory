@@ -6,6 +6,9 @@ from collections.abc import Iterator
 
 import pytest
 
+from content_factory.services.production import qa as production_qa
+from content_factory.services.production import registry as producers
+
 _ENV_NAMES = (
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
@@ -35,3 +38,13 @@ def _clean_generator_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     for name in _ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _clean_production_registries() -> Iterator[None]:
+    """Drop producer and QA injections after every test."""
+    producers.reset()
+    production_qa.reset()
+    yield
+    producers.reset()
+    production_qa.reset()
