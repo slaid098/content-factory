@@ -16,6 +16,7 @@ from content_factory.constants import DB_DIR, DB_FILENAME
 from content_factory.db.connection import connect
 from content_factory.db.sources import (
     get_cursor,
+    is_source_path,
     list_next_sources,
     mark_missing,
     mark_used,
@@ -28,7 +29,11 @@ from content_factory.schemas.generator.uniqueizer import (
     SourceItem,
 )
 from content_factory.services.uniqueizer.engine import UniqueizerEngine
-from content_factory.services.uniqueizer.layout import buffer_directory, copy_name
+from content_factory.services.uniqueizer.layout import (
+    buffer_directory,
+    copy_name,
+    source_directory,
+)
 
 
 class UniqueizerQueue:
@@ -66,6 +71,8 @@ class UniqueizerQueue:
             raise ValueError("target должен быть больше нуля")
         buffer = buffer_directory(data_dir, language, profile_id)
         buffer.mkdir(parents=True, exist_ok=True)
+        data_root = data_dir.resolve()
+        source_root = source_directory(data_dir, language, profile_id).resolve()
         ready = _count_ready(buffer)
         created = 0
         exhausted = False
@@ -78,7 +85,10 @@ class UniqueizerQueue:
                 if source is None:
                     exhausted = True
                     break
-                source_path = data_dir / source.path
+                source_path = _source_file(data_root, source_root, source.path)
+                if source_path is None:
+                    _mark_unsafe(connection, source)
+                    continue
                 if not source_path.is_file():
                     _mark_vanished(connection, source)
                     continue
@@ -102,6 +112,35 @@ class UniqueizerQueue:
             exhausted=exhausted,
             failures=tuple(failures),
         )
+
+
+def _source_file(data_root: Path, source_root: Path, stored: str) -> Path | None:
+    """Return a stored source inside the profile folder, or ``None``.
+
+    The stored path is untrusted: it can come from an older or hand-edited
+    database. Absolute paths, ``..`` segments and symlinked components are
+    rejected before the file can reach the engine.
+    """
+    if not is_source_path(stored):
+        return None
+    candidate = data_root / stored
+    if not candidate.is_relative_to(source_root) or not candidate.is_relative_to(data_root):
+        return None
+    current = candidate
+    while current != data_root:
+        if current.is_symlink():
+            return None
+        current = current.parent
+    return candidate
+
+
+def _mark_unsafe(connection: Connection, source: SourceItem) -> None:
+    """Exclude a source whose stored path leaves its profile folder."""
+    mark_missing(connection, [source.path], _now())
+    connection.commit()
+    logger.bind(path=source.path).warning(
+        "Небезопасный путь источника {} исключён из очереди", source.path
+    )
 
 
 def _next_source(

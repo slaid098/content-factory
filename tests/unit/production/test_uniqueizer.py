@@ -30,6 +30,7 @@ from content_factory.services.uniqueizer.queue import UniqueizerQueue
 _LANGUAGE = "ru"
 _PROFILE = "dating/profile_1"
 _OTHER_PROFILE = "dating/profile_2"
+_COLLIDING_PROFILE = "dating_profile/1"
 _NOW = "2026-05-01T12:00:00+00:00"
 
 
@@ -71,6 +72,23 @@ def _sqlite_backend(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _profiles(tmp_path: Path) -> None:
+    """Register the profiles used by the import and queue tests."""
+    _make_profile(tmp_path, _PROFILE)
+    _make_profile(tmp_path, _OTHER_PROFILE)
+
+
+def _make_profile(data_dir: Path, profile_id: str) -> None:
+    category, name = profile_id.split("/", 1)
+    directory = data_dir / "profiles" / category / name
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "profile.yaml").write_text(
+        f"language: {_LANGUAGE}\nniche: {category}\nwidth: 1080\nheight: 1920\n",
+        encoding="utf-8",
+    )
 
 
 def _db_path(data_dir: Path) -> Path:
@@ -150,6 +168,41 @@ def _probe(duration: float = 8.5, *, skip: frozenset[str] = frozenset()) -> Any:
         return SimpleNamespace(duration=duration)
 
     return fake_probe
+
+
+def _insert_source_row(
+    data_dir: Path,
+    path: str,
+    *,
+    language: str = _LANGUAGE,
+    profile_id: str = _PROFILE,
+) -> None:
+    connection = connect(_db_path(data_dir))
+    try:
+        connection.execute(
+            """
+            INSERT INTO source_items (
+                path, language, profile_id, sha256, size, duration,
+                added_at, used_at, missing_at, use_count
+            ) VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, NULL, 0)
+            """,
+            (path, language, profile_id, "0" * 64, 4, _NOW),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _missing_at(data_dir: Path, path: str) -> str | None:
+    connection = connect(_db_path(data_dir))
+    try:
+        row = connection.execute(
+            "SELECT missing_at FROM source_items WHERE path = ?",
+            (path,),
+        ).fetchone()
+        return None if row is None else row["missing_at"]
+    finally:
+        connection.close()
 
 
 # Importer
@@ -283,6 +336,25 @@ def test_import_isolates_languages_and_profiles(
     )
 
 
+def test_import_counts_a_path_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(importer, "probe", _probe())
+    path = _source_path(tmp_path, "clip.mp4")
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"clip")
+    _insert_source_row(
+        tmp_path,
+        path.relative_to(tmp_path).as_posix(),
+        profile_id=_OTHER_PROFILE,
+    )
+
+    result = import_profile(tmp_path, _LANGUAGE, _PROFILE)
+
+    assert (result.added, result.conflicts) == (0, 1)
+
+
 def test_import_missing_folder_returns_empty_counters(tmp_path: Path) -> None:
     result = import_profile(tmp_path, _LANGUAGE, _PROFILE)
 
@@ -319,6 +391,40 @@ def test_import_sources_skips_an_invalid_language_folder(tmp_path: Path) -> None
 
 
 def test_import_sources_skips_an_unknown_profile_slug(tmp_path: Path) -> None:
+    path = tmp_path / SOURCES_DIR / _LANGUAGE / "unknown_profile" / "clip.mp4"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"clip")
+
+    assert import_sources(tmp_path) == ()
+
+
+def test_import_rejects_an_ambiguous_profile_slug(tmp_path: Path) -> None:
+    _make_profile(tmp_path, _COLLIDING_PROFILE)
+
+    with pytest.raises(ValueError, match="неоднозначен"):
+        import_profile(tmp_path, _LANGUAGE, _PROFILE)
+    with pytest.raises(ValueError, match="неоднозначен"):
+        UniqueizerQueue().refill(_LANGUAGE, _PROFILE, 1, tmp_path, _FakeEngine())
+
+
+def test_import_rejects_a_slug_of_another_profile(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="принадлежит"):
+        import_profile(tmp_path, _LANGUAGE, _COLLIDING_PROFILE)
+
+
+def test_import_rejects_an_unregistered_profile(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="не найден"):
+        import_profile(tmp_path, _LANGUAGE, "other/profile_9")
+    with pytest.raises(ValueError, match="не найден"):
+        UniqueizerQueue().refill(_LANGUAGE, "other/profile_9", 1, tmp_path, _FakeEngine())
+
+
+def test_import_sources_skips_an_ambiguous_slug(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _make_profile(tmp_path, _COLLIDING_PROFILE)
+    monkeypatch.setattr(importer, "probe", _probe())
     path = _source_path(tmp_path, "clip.mp4")
     path.parent.mkdir(parents=True)
     path.write_bytes(b"clip")
@@ -355,9 +461,6 @@ def test_import_sources_resolves_profile_slugs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(importer, "probe", _probe())
-    profile_dir = tmp_path / "profiles" / "dating" / "profile_1"
-    profile_dir.mkdir(parents=True)
-    (profile_dir / "profile.yaml").write_text("width: 1080\nheight: 1920\n", encoding="utf-8")
     path = _source_path(tmp_path, "clip.mp4")
     path.parent.mkdir(parents=True)
     path.write_bytes(b"clip")
@@ -375,9 +478,6 @@ def test_importer_cli_prints_counters(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(importer, "probe", _probe())
-    profile_dir = tmp_path / "profiles" / "dating" / "profile_1"
-    profile_dir.mkdir(parents=True)
-    (profile_dir / "profile.yaml").write_text("width: 1080\nheight: 1920\n", encoding="utf-8")
     path = _source_path(tmp_path, "clip.mp4")
     path.parent.mkdir(parents=True)
     path.write_bytes(b"clip")
@@ -565,6 +665,50 @@ def test_refill_rejects_unsafe_scope(tmp_path: Path) -> None:
         UniqueizerQueue().refill("russian", _PROFILE, 1, tmp_path, _FakeEngine())
     with pytest.raises(ValueError, match="профил"):
         UniqueizerQueue().refill(_LANGUAGE, "../escape", 1, tmp_path, _FakeEngine())
+
+
+@pytest.mark.parametrize("bad_path", ["/etc/passwd", "../escape.mp4"])
+def test_refill_rejects_an_unsafe_stored_path(tmp_path: Path, bad_path: str) -> None:
+    _insert_source_row(tmp_path, bad_path)
+    engine = _FakeEngine()
+
+    result = UniqueizerQueue().refill(_LANGUAGE, _PROFILE, 1, tmp_path, engine)
+
+    assert (result.created, result.ready, result.exhausted) == (0, 0, True)
+    assert engine.calls == []
+    assert _missing_at(tmp_path, bad_path) is not None
+
+
+def test_refill_rejects_a_source_of_another_profile(tmp_path: Path) -> None:
+    path = _source_path(tmp_path, "clip_01.mp4", profile_id=_OTHER_PROFILE)
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"other")
+    stored = path.relative_to(tmp_path).as_posix()
+    _insert_source_row(tmp_path, stored)
+    engine = _FakeEngine()
+
+    result = UniqueizerQueue().refill(_LANGUAGE, _PROFILE, 1, tmp_path, engine)
+
+    assert (result.created, result.ready, result.exhausted) == (0, 0, True)
+    assert engine.calls == []
+    assert _missing_at(tmp_path, stored) is not None
+
+
+def test_refill_does_not_follow_a_symlinked_source(tmp_path: Path) -> None:
+    target = tmp_path / "outside.mp4"
+    target.write_bytes(b"secret")
+    link = _source_path(tmp_path, "link.mp4")
+    link.parent.mkdir(parents=True)
+    link.symlink_to(target)
+    stored = link.relative_to(tmp_path).as_posix()
+    _insert_source_row(tmp_path, stored)
+    engine = _FakeEngine()
+
+    result = UniqueizerQueue().refill(_LANGUAGE, _PROFILE, 1, tmp_path, engine)
+
+    assert (result.created, result.ready, result.exhausted) == (0, 0, True)
+    assert engine.calls == []
+    assert _missing_at(tmp_path, stored) is not None
 
 
 def test_copy_name_and_scope_validation(tmp_path: Path) -> None:

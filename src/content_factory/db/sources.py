@@ -52,11 +52,37 @@ ON CONFLICT(language, profile_id) DO UPDATE SET
 _BATCH_SIZE = 500
 
 
+def is_source_path(value: str) -> bool:
+    """Return whether *value* is a safe relative POSIX path.
+
+    A stored path must be relative, must not use backslashes and must not
+    contain empty, ``.`` or ``..`` segments. Joining such a path to the data
+    directory can never leave that directory.
+
+    Args:
+        value: Path as stored in ``source_items.path``.
+
+    Returns:
+        ``True`` for a safe relative path.
+    """
+    if not value or "\\" in value or "\x00" in value:
+        return False
+    if value.startswith("/") or (len(value) >= 2 and value[1] == ":" and value[0].isalpha()):
+        return False
+    return all(part not in {"", ".", ".."} for part in value.split("/"))
+
+
 def get_source(connection: Connection, path: str) -> SourceItem | None:
-    """Return one source row by its stored path, or ``None``."""
+    """Return one source row by its stored path, or ``None``.
+
+    Raises:
+        ValueError: The path is absolute, uses backslashes or contains
+            ``.``/``..`` segments.
+    """
+    checked = _checked_path(path)
     row = connection.execute(
         f"SELECT {_COLUMNS} FROM source_items WHERE path = ?",
-        (path,),
+        (checked,),
     ).fetchone()
     return None if row is None else _item(row)
 
@@ -142,16 +168,26 @@ def upsert_source(
         now: ISO 8601 moment used as ``added_at`` of a new row.
 
     Returns:
-        How the row changed.
+        How the row changed. A row that already holds the same path for
+        another language or profile is a conflict and stays untouched.
+
+    Raises:
+        ValueError: The path is absolute, uses backslashes or contains
+            ``.``/``..`` segments.
     """
-    existing = get_source(connection, source.path)
+    path = _checked_path(source.path)
+    existing = get_source(connection, path)
+    if existing is not None and (
+        existing.language != source.language or existing.profile_id != source.profile_id
+    ):
+        return SourceImportAction.CONFLICT
     if existing is None:
         if _hash_taken(connection, source):
             return SourceImportAction.DUPLICATE
         connection.execute(
             _INSERT,
             (
-                source.path,
+                path,
                 source.language,
                 source.profile_id,
                 source.sha256,
@@ -166,10 +202,10 @@ def upsert_source(
             return SourceImportAction.DUPLICATE
         connection.execute(
             _REFRESH_CONTENT,
-            (source.sha256, source.size, source.duration, source.path),
+            (source.sha256, source.size, source.duration, path),
         )
         return SourceImportAction.UPDATED
-    connection.execute(_REFRESH_METADATA, (source.size, source.duration, source.path))
+    connection.execute(_REFRESH_METADATA, (source.size, source.duration, path))
     if existing.missing_at is not None:
         return SourceImportAction.RETURNED
     return SourceImportAction.UNCHANGED
@@ -235,6 +271,13 @@ def set_cursor(
     connection.execute(_SET_CURSOR, (language, profile_id, last_path, now))
 
 
+def _checked_path(value: str) -> str:
+    """Return a safe stored path or raise ``ValueError``."""
+    if not is_source_path(value):
+        raise ValueError(f"небезопасный путь источника: {value!r}")
+    return value
+
+
 def _hash_taken(connection: Connection, source: SourceCandidate) -> bool:
     """Return whether another path of the profile already holds the hash."""
     row = connection.execute(
@@ -281,6 +324,7 @@ def _item(row: Row) -> SourceItem:
 __all__ = [
     "get_cursor",
     "get_source",
+    "is_source_path",
     "list_next_sources",
     "list_sources",
     "mark_missing",

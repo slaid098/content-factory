@@ -28,8 +28,7 @@ from content_factory.schemas.generator.uniqueizer import (
     SourceImportAction,
 )
 from content_factory.services.generator import probe
-from content_factory.services.profiles import list_profiles
-from content_factory.services.uniqueizer.layout import source_directory
+from content_factory.services.uniqueizer.layout import profile_slugs, source_directory
 from content_factory.utils.filesystem import child_directories
 
 _CHUNK_SIZE = 1024 * 1024
@@ -52,7 +51,8 @@ def import_profile(data_dir: Path, language: str, profile_id: str) -> ImportResu
         Counters of the pass.
 
     Raises:
-        ValueError: The language or the profile id has an invalid shape.
+        ValueError: The language or the profile id has an invalid shape, or
+            its folder slug is ambiguous.
         DatabaseError: The queue cannot be written.
     """
     directory = source_directory(data_dir, language, profile_id)
@@ -70,7 +70,12 @@ def import_profile(data_dir: Path, language: str, profile_id: str) -> ImportResu
                 skipped += 1
                 continue
             seen.add(candidate.path)
-            counters[upsert_source(connection, candidate, now)] += 1
+            action = upsert_source(connection, candidate, now)
+            counters[action] += 1
+            if action is SourceImportAction.CONFLICT:
+                logger.bind(path=candidate.path, profile_id=profile_id).warning(
+                    "Путь {} уже принадлежит другому профилю и пропущен", candidate.path
+                )
         missing = _mark_missing(connection, language, profile_id, seen, now)
         connection.commit()
     finally:
@@ -83,6 +88,7 @@ def import_profile(data_dir: Path, language: str, profile_id: str) -> ImportResu
         unchanged=counters[SourceImportAction.UNCHANGED],
         returned=counters[SourceImportAction.RETURNED],
         duplicates=counters[SourceImportAction.DUPLICATE],
+        conflicts=counters[SourceImportAction.CONFLICT],
         missing=missing,
         skipped=skipped,
     )
@@ -104,7 +110,7 @@ def import_sources(data_dir: Path) -> tuple[ImportResult, ...]:
     root = data_dir / SOURCES_DIR
     if not root.is_dir():
         return ()
-    profiles = _profile_ids(data_dir)
+    profiles = profile_slugs(data_dir)
     results: list[ImportResult] = []
     for language_dir in child_directories(root):
         if LANGUAGE_CODE_RE.fullmatch(language_dir.name) is None:
@@ -196,22 +202,6 @@ def _mark_missing(
         "Исходники профиля {} пропали с диска: {}", profile_id, marked
     )
     return marked
-
-
-def _profile_ids(data_dir: Path) -> dict[str, str]:
-    """Map each unambiguous profile slug to its profile id."""
-    groups: dict[str, list[str]] = {}
-    for profile in list_profiles(data_dir):
-        groups.setdefault(profile.id.replace("/", "_"), []).append(profile.id)
-    mapping: dict[str, str] = {}
-    for slug, ids in sorted(groups.items()):
-        if len(ids) == 1:
-            mapping[slug] = ids[0]
-        else:
-            logger.bind(slug=slug, profiles=ids).warning(
-                "Слаг {} принадлежит нескольким профилям и пропущен", slug
-            )
-    return mapping
 
 
 def _now() -> str:

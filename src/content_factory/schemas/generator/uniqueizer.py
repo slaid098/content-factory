@@ -48,6 +48,7 @@ class SourceImportAction(StrEnum):
     UNCHANGED = "unchanged"
     RETURNED = "returned"
     DUPLICATE = "duplicate"
+    CONFLICT = "conflict"
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +62,7 @@ class ImportResult:
     unchanged: int = 0
     returned: int = 0
     duplicates: int = 0
+    conflicts: int = 0
     missing: int = 0
     skipped: int = 0
 

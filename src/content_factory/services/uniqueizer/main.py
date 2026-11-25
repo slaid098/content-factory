@@ -50,8 +50,8 @@ def _line(result: ImportResult) -> str:
         f"{result.language} {result.profile_id}: "
         f"добавлено {result.added}, обновлено {result.updated}, "
         f"без изменений {result.unchanged}, вернулось {result.returned}, "
-        f"дубликатов {result.duplicates}, пропущено {result.skipped}, "
-        f"пропало {result.missing}"
+        f"дубликатов {result.duplicates}, конфликтов {result.conflicts}, "
+        f"пропущено {result.skipped}, пропало {result.missing}"
     )
 
 

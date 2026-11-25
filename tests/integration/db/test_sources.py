@@ -131,6 +131,41 @@ def test_upsert_adds_a_row(connection: Connection) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/etc/passwd",
+        "../escape.mp4",
+        "sources/ru/dating_profile_1/../../escape.mp4",
+        "sources\\ru\\clip.mp4",
+        "C:/Windows/system32",
+        "./clip.mp4",
+        "",
+    ],
+)
+def test_source_paths_must_be_safe(connection: Connection, path: str) -> None:
+    with pytest.raises(ValueError, match="путь"):
+        upsert_source(connection, _candidate(path), _NOW)
+    with pytest.raises(ValueError, match="путь"):
+        get_source(connection, path)
+
+
+def test_upsert_conflicts_with_a_path_of_another_profile(connection: Connection) -> None:
+    upsert_source(connection, _candidate(_FIRST), _NOW)
+    action = upsert_source(
+        connection,
+        _candidate(_FIRST, profile_id="dating/profile_2"),
+        _LATER,
+    )
+    connection.commit()
+
+    assert action is SourceImportAction.CONFLICT
+    item = get_source(connection, _FIRST)
+    assert item is not None
+    assert item.profile_id == "dating/profile_1"
+    assert list_sources(connection, "ru", "dating/profile_2") == []
+
+
 def test_upsert_keeps_usage_of_the_same_content(connection: Connection) -> None:
     upsert_source(connection, _candidate(_FIRST), _NOW)
     mark_used(connection, _FIRST, _LATER)
