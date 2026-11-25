@@ -79,12 +79,13 @@ def _touch_archive(
     return path
 
 
-def _body(**overrides: object) -> dict[str, object]:
+def _body(*, language: str | None = "ru", **overrides: object) -> dict[str, object]:
     body: dict[str, object] = {
-        "language": "ru",
         "count": 1,
         "request_id": REQUEST_ID_TEXT,
     }
+    if language is not None:
+        body["language"] = language
     body.update(overrides)
     return body
 
@@ -744,10 +745,17 @@ def test_download_archive_with_uppercase_request_id_uses_canonical_name(
     )
 
 
-def test_delivery_rejects_missing_language(data_dir: Path) -> None:
+def test_general_delivery_rejects_missing_language(data_dir: Path) -> None:
     response = _post(_client(), language=None)
 
     assert response.status_code == 422
+
+
+def test_general_profile_alias_rejects_missing_language(data_dir: Path) -> None:
+    response = _post(_client(), profile="general", language=None)
+
+    assert response.status_code == 422
+    assert not (data_dir / ARCHIVE_DIR).exists()
 
 
 @pytest.mark.parametrize(
@@ -806,6 +814,37 @@ def test_delivery_by_profile_returns_only_its_files(data_dir: Path) -> None:
     assert not first.exists()
     assert other.is_file()
     assert supplier.is_file()
+
+
+@pytest.mark.parametrize("language", ["ru", None])
+def test_delivery_by_profile_resolves_language(
+    data_dir: Path,
+    language: str | None,
+) -> None:
+    add_profile(data_dir, "dating", "profile_1")
+    first_hash = "dating_profile_1_run_001"
+    first = add_profile_video(
+        data_dir,
+        "dating",
+        "profile_1",
+        filename=f"{first_hash}.mp4",
+        data=b"first",
+    )
+    add_title(data_dir / "db" / "db.sqlite3", first_hash, "Первое")
+
+    response = _post(_client(), profile="dating/profile_1", language=language)
+
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert archive.namelist() == ["001.mp4", "001.json"]
+        assert archive.read("001.mp4") == b"first"
+        assert json.loads(archive.read("001.json")) == {
+            "type": "video",
+            "language": "ru",
+            "profile_id": "dating/profile_1",
+            "title": "Первое",
+        }
+    assert not first.exists()
 
 
 def test_delivery_general_profile_alias_returns_general_stock(data_dir: Path) -> None:

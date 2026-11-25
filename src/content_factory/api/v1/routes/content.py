@@ -95,25 +95,38 @@ def profile_error(ex: ProfileError, profile_id: str | None = None) -> HTTPExcept
     )
 
 
-def _check_delivery_profile(settings: Settings, request: DeliveryRequest) -> None:
-    """Reject an unsafe profile or a profile of another language.
+def _check_delivery_profile(settings: Settings, request: DeliveryRequest) -> str | None:
+    """Return the registry language of the request profile.
 
-    The registry language of a profile must match the request language, so a
-    ``dating/en`` profile cannot be delivered through a ``ru`` address. The
+    The profile language resolves the address, so a profile request may omit
+    ``language``. When the client sends a language, it must match the profile:
+    a ``dating/en`` profile cannot be delivered through a ``ru`` address. The
     client gets a fixed message without paths or registry details.
+
+    Args:
+        settings: Settings of this request.
+        request: Validated delivery request.
+
+    Returns:
+        Language of the profile, or ``None`` for a General request.
+
+    Raises:
+        HTTPException: The profile is unsafe or missing, or its language does
+            not match the sent language.
     """
     if request.profile is None:
-        return
+        return None
     require_safe_profile_id(request.profile)
     try:
         profile = get_profile(settings.data_dir, request.profile)
     except ProfileError as ex:
         raise profile_error(ex, request.profile) from ex
-    if profile.language != request.language:
+    if request.language is not None and profile.language != request.language:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="profile language does not match language",
         )
+    return profile.language
 
 
 def _check_delivery_limit(request: DeliveryRequest, settings: Settings) -> None:
@@ -149,26 +162,26 @@ def create_delivery(
 ) -> Response:
     """Return a zip with up to ``count`` videos or photos of one address."""
     _check_delivery_limit(request, settings)
-    _check_delivery_profile(settings, request)
+    resolved = request.resolve(_check_delivery_profile(settings, request))
     try:
         archive = deliver(
             settings.data_dir,
-            request.language,
-            request.count,
-            request.request_id,
-            query=request.query,
-            profile=request.profile,
-            content_type=request.type,
+            resolved.language,
+            resolved.count,
+            resolved.request_id,
+            query=resolved.query,
+            profile=resolved.profile,
+            content_type=resolved.type,
             retention_hours=settings.delivery_retention_hours,
         )
     except ProfileError as ex:
-        raise profile_error(ex, request.profile) from ex
+        raise profile_error(ex, resolved.profile) from ex
     except DeliveryError as ex:
         logger.bind(
-            request_id=str(request.request_id),
+            request_id=str(resolved.request_id),
             error=ex,
             error_type=type(ex).__name__,
-        ).error("Не удалось собрать выдачу {}", request.request_id)
+        ).error("Не удалось собрать выдачу {}", resolved.request_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="delivery failed",
@@ -178,7 +191,7 @@ def create_delivery(
     return FileResponse(
         archive,
         media_type="application/zip",
-        filename=f"delivery-{request.request_id}.zip",
+        filename=f"delivery-{resolved.request_id}.zip",
     )
 
 
@@ -200,15 +213,15 @@ def create_delivery_link(
 ) -> DeliveryJobInfo:
     """Start a background build and Filebin upload for a manual delivery."""
     _check_delivery_limit(request, settings)
-    _check_delivery_profile(settings, request)
+    resolved = request.resolve(_check_delivery_profile(settings, request))
     try:
         return start_delivery_job(
             settings.data_dir,
-            request,
+            resolved,
             retention_hours=settings.delivery_retention_hours,
         )
     except ProfileError as ex:
-        raise profile_error(ex, request.profile) from ex
+        raise profile_error(ex, resolved.profile) from ex
     except DeliveryBusyError as ex:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -216,10 +229,10 @@ def create_delivery_link(
         ) from ex
     except DeliveryError as ex:
         logger.bind(
-            request_id=str(request.request_id),
+            request_id=str(resolved.request_id),
             error=ex,
             error_type=type(ex).__name__,
-        ).error("Не удалось запустить выдачу {}", request.request_id)
+        ).error("Не удалось запустить выдачу {}", resolved.request_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="delivery failed",
