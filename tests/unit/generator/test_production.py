@@ -11,11 +11,17 @@ import pytest
 from content_factory.config.settings import GeneratorSettings
 from content_factory.exceptions.generator import GeneratorError, ProfileError
 from content_factory.schemas.content.delivery import ContentType
-from content_factory.schemas.generator.run import ProducedBatch
+from content_factory.services.production import ProducedBatch, Producer, ProfileRef, registry
+from content_factory.services.production import protocol as production_protocol
 from content_factory.services.production import qa as production_qa
-from content_factory.services.production import registry
 from content_factory.services.production import vast as vast_module
 from content_factory.services.production.vast import VastProducer
+
+
+def test_production_door_exports_the_producer_port() -> None:
+    assert Producer is production_protocol.Producer
+    assert ProfileRef is production_protocol.ProfileRef
+    assert ProducedBatch is production_protocol.ProducedBatch
 
 
 def test_vast_is_the_builtin_producer() -> None:

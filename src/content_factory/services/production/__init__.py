@@ -1,5 +1,6 @@
 """Production capsule door: producer and QA registries."""
 
+from content_factory.services.production.protocol import ProducedBatch, Producer, ProfileRef
 from content_factory.services.production.qa import (
     QA_FINAL,
     QA_SOURCE,
@@ -14,6 +15,9 @@ __all__ = [
     "QA_FINAL",
     "QA_SOURCE",
     "VAST_PRODUCER",
+    "ProducedBatch",
+    "Producer",
+    "ProfileRef",
     "available_producers",
     "available_qa",
     "resolve_producer",

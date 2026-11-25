@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 
 from content_factory.exceptions.generator import ProfileError
-from content_factory.schemas.generator.run import Producer
+from content_factory.services.production.protocol import Producer
 
 VAST_PRODUCER = "vast"
 

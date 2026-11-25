@@ -6,8 +6,8 @@ from pathlib import Path
 
 from content_factory.config.settings import GeneratorSettings
 from content_factory.schemas.content.delivery import ContentType
-from content_factory.schemas.generator.run import ProducedBatch, ProfileRef
 from content_factory.services.generator import generate_batch
+from content_factory.services.production.protocol import ProducedBatch, ProfileRef
 
 
 class VastProducer:
