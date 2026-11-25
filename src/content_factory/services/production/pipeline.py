@@ -76,13 +76,15 @@ def run_pipeline(
     outcomes: list[LayerOutcome] = []
     by_name: dict[str, LayerOutcome] = {}
     failures: list[ItemFailure] = []
+    failed: set[_ItemKey] = set()
     for item in resolved:
         if context.dry_run:
             artifacts = _plan_layer(item, context)
             item_failures: tuple[ItemFailure, ...] = ()
         else:
-            inputs = _inputs_of(item.layer, by_name)
+            inputs = _inputs_of(item.layer, by_name, failed)
             artifacts, item_failures = _run_layer(item, context, inputs)
+            artifacts = _without_failed(artifacts, failed)
         outcome = LayerOutcome(
             layer=item.layer.name,
             artifacts=artifacts,
@@ -91,9 +93,10 @@ def run_pipeline(
         outcomes.append(outcome)
         by_name[item.layer.name] = outcome
         failures.extend(item_failures)
+        failed.update((failure.profile, failure.item) for failure in item_failures)
     return PipelineResult(
         layers=tuple(outcomes),
-        artifacts=outcomes[-1].artifacts,
+        artifacts=_without_failed(outcomes[-1].artifacts, failed),
         failures=tuple(failures),
     )
 
@@ -147,12 +150,30 @@ def _validate_layer_name(layer: Layer, names: set[str]) -> None:
         raise ProfileError(f"повтор имени слоя {layer.name!r}")
 
 
-def _inputs_of(layer: Layer, outcomes: dict[str, LayerOutcome]) -> tuple[Artifact, ...]:
-    """Collect the artifacts of the declared inputs in their order."""
+def _inputs_of(
+    layer: Layer,
+    outcomes: dict[str, LayerOutcome],
+    failed: set[_ItemKey],
+) -> tuple[Artifact, ...]:
+    """Collect the artifacts of the declared inputs, dropping failed items."""
     inputs: list[Artifact] = []
     for source in layer.inputs:
-        inputs.extend(outcomes[source].artifacts)
+        inputs.extend(
+            artifact
+            for artifact in outcomes[source].artifacts
+            if (artifact.profile, artifact.item) not in failed
+        )
     return tuple(inputs)
+
+
+def _without_failed(
+    artifacts: tuple[Artifact, ...],
+    failed: set[_ItemKey],
+) -> tuple[Artifact, ...]:
+    """Drop artifacts whose item already failed in an earlier layer."""
+    return tuple(
+        artifact for artifact in artifacts if (artifact.profile, artifact.item) not in failed
+    )
 
 
 def _plan_layer(item: _ResolvedLayer, context: PipelineContext) -> tuple[Artifact, ...]:
