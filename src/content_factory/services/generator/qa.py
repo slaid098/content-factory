@@ -46,8 +46,12 @@ def check_declared(
     path: Path,
     expected_seconds: float,
     expect_audio: bool = False,
-) -> _MediaInfo | None:
-    """Run the final checks a production step declares, in list order.
+) -> _MediaInfo:
+    """Check the mandatory mp4 and then the final checks a step declares.
+
+    ``media`` is mandatory for every recipe: a step may add final checks but
+    cannot remove the mp4 check. Extra checks run in list order after it and
+    never repeat ``media``.
 
     Args:
         names: QA names of the production step.
@@ -56,22 +60,19 @@ def check_declared(
         expect_audio: The profile has music, so the final needs an audio track.
 
     Returns:
-        Facts of the file when ``media`` is declared, ``None`` otherwise.
+        Parsed facts of the checked file.
 
     Raises:
-        QaError: A declared final check rejected the file.
+        QaError: The mp4 or a declared final check rejected the file.
         GeneratorError: A declared final check has no handler.
     """
-    facts: list[_MediaInfo] = []
-
-    def media_check() -> str | None:
-        facts.append(check_video(path, expected_seconds, expect_audio))
-        return None
-
-    reason = production.run_qa(names, production.QA_FINAL, {"media": media_check})
-    if reason is not None:
-        raise QaError(reason)
-    return facts[0] if facts else None
+    info = check_video(path, expected_seconds, expect_audio)
+    extra = tuple(name for name in names if name != "media")
+    if extra:
+        reason = production.run_qa(extra, production.QA_FINAL, {})
+        if reason is not None:
+            raise QaError(reason)
+    return info
 
 
 def _check_media(info: _MediaInfo, expected_seconds: float, expect_audio: bool = False) -> None:

@@ -149,7 +149,7 @@ def generate_batch(
         for profile in loaded
     ]
     prepared = _prepare(config, loaded, count, run_id, randomizer)
-    checker = _prepare_media(config, dry_run, safety_checker, steps)
+    checker = _prepare_media(config, dry_run, safety_checker)
     data_root = root.parent
     run_dirs, generated, failed = _run_all(
         prepared,
@@ -181,15 +181,12 @@ def _prepare_media(
     config: GeneratorSettings,
     dry_run: bool,
     injected: safety._Checker | None,
-    steps: list[ProductionStep],
 ) -> safety._Checker | None:
     """Check free space and run the Clef preflight before the first rent."""
     if dry_run:
         return None
     media.ensure_free_space(config.output_dir)
     if not config.safety_enabled:
-        return None
-    if not any(production.qa_has(step.qa, production.QA_SOURCE) for step in steps):
         return None
     checker = injected or safety.FrameChecker(config)
     checker.preflight()
@@ -340,12 +337,12 @@ def _produce(
         return build_workflow(profile, item, prompt, seed=attempt_seed(item.seed, attempt))
 
     def verify(item: _PlannedItem, source: Path, attempt: int) -> str | None:
-        def clef() -> str | None:
-            return checker.verify(item, source, attempt) if checker is not None else None
+        reason = checker.verify(item, source, attempt) if checker is not None else None
+        if reason:
+            return reason
+        extra = tuple(name for name in step.qa if name != "clef")
+        return production.run_qa(extra, production.QA_SOURCE, {}) if extra else None
 
-        return production.run_qa(step.qa, production.QA_SOURCE, {"clef": clef})
-
-    verifier = verify if production.qa_has(step.qa, production.QA_SOURCE) else None
     report.status = RunStatus.GENERATING
     _write_report(run_dir, report)
     if comfy.server_count(len(items), settings) > 1:
@@ -358,7 +355,7 @@ def _produce(
             build,
             run_dir / _SOURCE_DIR,
             store=store,
-            verify=verifier,
+            verify=verify,
         )
         report.server = _server(profile, batch.servers[0]) if batch.servers else None
         results = batch.results
@@ -372,7 +369,7 @@ def _produce(
             label=profile.name,
             settings=settings,
             store=store,
-            verify=verifier,
+            verify=verify,
         )
         report.server = _server(profile, info)
     report.status = RunStatus.POSTPROCESSING
@@ -463,8 +460,7 @@ def _finish_item(
         expect_audio=bool(profile.audio_tracks),
     )
     publish_stock(profile, final, data_root)
-    if info is not None:
-        item.duration = round(info.duration, 2)
+    item.duration = round(info.duration, 2)
     item.status = RunStatus.DONE
 
 
