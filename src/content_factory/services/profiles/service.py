@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -10,7 +9,7 @@ from loguru import logger
 
 from content_factory.constants import DB_DIR, DB_FILENAME
 from content_factory.db.connection import connect
-from content_factory.db.profiles import ensure_schema as ensure_settings_schema
+from content_factory.db.errors import DatabaseError
 from content_factory.db.profiles import get_refill, upsert_refill
 from content_factory.db.stock import count_by_profile
 from content_factory.exceptions.errors import (
@@ -217,13 +216,12 @@ def _read_refill(data_dir: Path, profile_id: str) -> ProfileRefill:
     """Read the stored settings of one profile."""
     try:
         connection = connect(data_dir / DB_DIR / DB_FILENAME)
-    except (OSError, sqlite3.Error) as ex:
+    except (OSError, DatabaseError) as ex:
         _storage_failure(profile_id, ex, "прочитать")
         raise ProfileStorageError("не удалось прочитать настройки профиля") from ex
     try:
-        ensure_settings_schema(connection)
         return get_refill(connection, profile_id)
-    except sqlite3.Error as ex:
+    except DatabaseError as ex:
         _storage_failure(profile_id, ex, "прочитать")
         raise ProfileStorageError("не удалось прочитать настройки профиля") from ex
     finally:
@@ -239,14 +237,13 @@ def _write_refill(
     """Persist the settings of one profile."""
     try:
         connection = connect(data_dir / DB_DIR / DB_FILENAME)
-    except (OSError, sqlite3.Error) as ex:
+    except (OSError, DatabaseError) as ex:
         _storage_failure(profile_id, ex, "сохранить")
         raise ProfileStorageError("не удалось сохранить настройки профиля") from ex
     try:
-        ensure_settings_schema(connection)
         upsert_refill(connection, profile_id, refill, moment.isoformat())
         connection.commit()
-    except sqlite3.Error as ex:
+    except DatabaseError as ex:
         _storage_failure(profile_id, ex, "сохранить")
         raise ProfileStorageError("не удалось сохранить настройки профиля") from ex
     finally:
@@ -273,7 +270,7 @@ def _counters(
     """
     try:
         sync_stock(data_dir)
-    except (OSError, sqlite3.Error) as ex:
+    except (OSError, DatabaseError) as ex:
         logger.bind(
             path=str(data_dir / DB_DIR / DB_FILENAME),
             error=ex,
@@ -282,7 +279,7 @@ def _counters(
         return {}, {}
     try:
         connection = connect(data_dir / DB_DIR / DB_FILENAME)
-    except (OSError, sqlite3.Error) as ex:
+    except (OSError, DatabaseError) as ex:
         logger.bind(
             path=str(data_dir / DB_DIR / DB_FILENAME),
             error=ex,
@@ -290,10 +287,9 @@ def _counters(
         ).warning("Не удалось прочитать настройки профилей")
         return {}, {}
     try:
-        ensure_settings_schema(connection)
         stock = {profile.id: count_by_profile(connection, profile.id) for profile in profiles}
         refills = {profile.id: get_refill(connection, profile.id) for profile in profiles}
-    except sqlite3.Error as ex:
+    except DatabaseError as ex:
         logger.bind(
             path=str(data_dir / DB_DIR / DB_FILENAME),
             error=ex,

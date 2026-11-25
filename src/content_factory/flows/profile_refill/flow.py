@@ -14,7 +14,7 @@ from content_factory.config.settings import get_settings, prepare_data_dirs
 from content_factory.constants import CONFIG_DIR, CONFIG_FILENAME, DB_DIR, DB_FILENAME
 from content_factory.db.connection import connect
 from content_factory.db.lock import GENERATOR_LOCK, lock_path, try_acquire
-from content_factory.db.profiles import ensure_schema, get_refill
+from content_factory.db.profiles import get_refill
 from content_factory.db.stock import count_by_profile
 from content_factory.schemas.profiles.refill import RefillDecision
 from content_factory.services.profiles import decide_refill, list_profiles
@@ -39,7 +39,6 @@ def profile_refill(starter: Callable[[str, int], None] | None = None) -> str:
     profiles = list_profiles(settings.data_dir)
     connection = connect(settings.data_dir / DB_DIR / DB_FILENAME)
     try:
-        ensure_schema(connection)
         refills = {profile.id: get_refill(connection, profile.id) for profile in profiles}
         if not any(refill.enabled for refill in refills.values()):
             logger.bind().info("Добор профилей выключен: нет включённых профилей; исход disabled")

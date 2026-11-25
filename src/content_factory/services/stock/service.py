@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
@@ -10,7 +9,8 @@ from pathlib import Path
 from loguru import logger
 
 from content_factory.constants import CONTENT_DIR, DB_DIR, DB_FILENAME
-from content_factory.db.connection import connect_readonly
+from content_factory.db.connection import connect_readonly, db_exists
+from content_factory.db.errors import DatabaseError
 from content_factory.db.runtime_state import read_state
 from content_factory.db.titles import load_titles
 from content_factory.schemas.config.runtime import LanguageConfig
@@ -109,14 +109,14 @@ def _read_runtime_state(data_dir: Path) -> RuntimeState:
     """Read the loop state without creating a database file."""
     db_path = data_dir / DB_DIR / DB_FILENAME
     try:
-        if not db_path.is_file():
+        if not db_exists(db_path):
             return RuntimeState.empty()
         connection = connect_readonly(db_path)
         try:
             return read_state(connection)
         finally:
             connection.close()
-    except (OSError, sqlite3.Error, ValueError, TypeError) as ex:
+    except (OSError, DatabaseError, ValueError, TypeError) as ex:
         logger.bind(path=str(db_path), error=ex, error_type=type(ex).__name__).warning(
             "Не удалось прочитать состояние цикла"
         )

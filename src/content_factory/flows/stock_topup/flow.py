@@ -5,7 +5,6 @@ from __future__ import annotations
 from contextlib import suppress
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
 
 from loguru import logger
 from prefect import flow
@@ -32,6 +31,7 @@ from content_factory.db.runtime_state import (
     save_state,
 )
 from content_factory.schemas.config.runtime import RuntimeConfig
+from content_factory.schemas.database.port import Connection
 from content_factory.schemas.notify.alert import AlertKind
 from content_factory.schemas.state.state import RuntimeState
 from content_factory.schemas.supplier.results import ProduceResult, StopReason
@@ -39,9 +39,6 @@ from content_factory.services.notify.service import send_critical
 from content_factory.services.planner.service import plan_production
 from content_factory.services.stock.service import count_stock
 from content_factory.services.supplier.service import produce
-
-if TYPE_CHECKING:
-    import sqlite3
 
 _ZERO_RUNS_ALERT = 3
 _BITBROWSER_MARKERS = ("bitbrowser", "mcp call failed")
@@ -62,7 +59,7 @@ def stock_topup() -> str:
 
 
 def _tick(
-    connection: sqlite3.Connection,
+    connection: Connection,
     settings: Settings,
     runtime: RuntimeConfig,
     *,
@@ -106,7 +103,7 @@ def _interval_elapsed(state: RuntimeState, runtime: RuntimeConfig, now: datetime
 
 
 def _run_supplier(
-    connection: sqlite3.Connection,
+    connection: Connection,
     settings: Settings,
     runtime: RuntimeConfig,
     state: RuntimeState,
@@ -202,7 +199,7 @@ def _blocked_until(value: str | None, fallback_seconds: float, now: datetime) ->
 
 
 def _alert_result(
-    connection: sqlite3.Connection,
+    connection: Connection,
     state: RuntimeState,
     result: ProduceResult,
     settings: Settings,
@@ -257,7 +254,7 @@ def _alert_result(
 
 
 def _alert(
-    connection: sqlite3.Connection,
+    connection: Connection,
     kind: AlertKind,
     text: str,
     state: RuntimeState,

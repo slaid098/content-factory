@@ -11,9 +11,9 @@ from pathlib import Path
 import pytest
 
 from content_factory.db.connection import connect, connect_readonly
+from content_factory.db.errors import OperationalError
 from content_factory.db.lock import acquire, lock_path, locked
 from content_factory.db.runtime_state import (
-    ensure_schema,
     load_alert_times,
     load_state,
     read_state,
@@ -21,11 +21,12 @@ from content_factory.db.runtime_state import (
     save_state,
 )
 from content_factory.exceptions import LockError, LockTimeoutError, LockUnavailableError
+from content_factory.schemas.database.port import Connection
 from content_factory.schemas.state.state import RuntimeState
 
 
 @pytest.fixture
-def connection(tmp_path: Path) -> Iterator[sqlite3.Connection]:
+def connection(tmp_path: Path) -> Iterator[Connection]:
     connection = connect(tmp_path / "db" / "db.sqlite3")
     yield connection
     connection.close()
@@ -113,7 +114,7 @@ def test_connect_readonly_keeps_timeouts_and_row_factory(tmp_path: Path) -> None
         readonly.close()
 
 
-def test_load_state_without_rows_returns_empty(connection: sqlite3.Connection) -> None:
+def test_load_state_without_rows_returns_empty(connection: Connection) -> None:
     state = load_state(connection)
 
     assert state.last_production_at is None
@@ -125,7 +126,7 @@ def test_load_state_without_rows_returns_empty(connection: sqlite3.Connection) -
     assert state.updated_at.utcoffset() == timedelta(0)
 
 
-def test_save_and_load_roundtrip(connection: sqlite3.Connection) -> None:
+def test_save_and_load_roundtrip(connection: Connection) -> None:
     state = RuntimeState(
         last_production_at=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
         captcha_blocked_until=datetime(2026, 1, 2, 4, 0, tzinfo=UTC),
@@ -149,7 +150,7 @@ def test_save_and_load_roundtrip(connection: sqlite3.Connection) -> None:
     assert loaded.updated_at.utcoffset() == timedelta(0)
 
 
-def test_saving_empty_state_keeps_nulls(connection: sqlite3.Connection) -> None:
+def test_saving_empty_state_keeps_nulls(connection: Connection) -> None:
     save_state(connection, RuntimeState.empty())
 
     loaded = load_state(connection)
@@ -160,7 +161,7 @@ def test_saving_empty_state_keeps_nulls(connection: sqlite3.Connection) -> None:
     assert loaded.last_alert_kind is None
 
 
-def test_save_state_keeps_single_row(connection: sqlite3.Connection) -> None:
+def test_save_state_keeps_single_row(connection: Connection) -> None:
     save_state(connection, RuntimeState.empty())
     save_state(connection, RuntimeState.empty())
 
@@ -169,13 +170,10 @@ def test_save_state_keeps_single_row(connection: sqlite3.Connection) -> None:
     assert count == 1
 
 
-def test_ensure_schema_is_idempotent(connection: sqlite3.Connection) -> None:
-    ensure_schema(connection)
-    ensure_schema(connection)
+def test_migration_records_its_version_once(connection: Connection) -> None:
+    versions = connection.execute("SELECT version FROM schema_migrations").fetchall()
 
-    count = connection.execute("SELECT COUNT(*) FROM runtime_state").fetchone()[0]
-
-    assert count == 0
+    assert [row[0] for row in versions] == ["0001"]
 
 
 def test_empty_state_has_zero_counters() -> None:
@@ -187,7 +185,11 @@ def test_empty_state_has_zero_counters() -> None:
 
 
 def test_read_state_without_schema_returns_empty(tmp_path: Path) -> None:
-    connection = connect(tmp_path / "db" / "db.sqlite3")
+    db_path = tmp_path / "db" / "db.sqlite3"
+    db_path.parent.mkdir(parents=True)
+    sqlite3.connect(db_path).close()
+
+    connection = connect_readonly(db_path)
     try:
         state = read_state(connection)
         tables = connection.execute(
@@ -212,7 +214,7 @@ def test_connect_readonly_reads_existing_database(tmp_path: Path) -> None:
     readonly = connect_readonly(db_path)
     try:
         assert read_state(readonly).captcha_streak == 0
-        with pytest.raises(sqlite3.OperationalError):
+        with pytest.raises(OperationalError):
             readonly.execute("DELETE FROM runtime_state")
     finally:
         readonly.close()
@@ -221,7 +223,7 @@ def test_connect_readonly_reads_existing_database(tmp_path: Path) -> None:
 def test_connect_readonly_missing_database_raises(tmp_path: Path) -> None:
     db_path = tmp_path / "missing" / "db.sqlite3"
 
-    with pytest.raises(sqlite3.OperationalError):
+    with pytest.raises(OperationalError):
         connect_readonly(db_path)
 
     assert not db_path.exists()
@@ -302,12 +304,12 @@ def test_lock_keeps_another_process_out(tmp_path: Path) -> None:
 
 
 def test_load_alert_times_without_rows_returns_empty(
-    connection: sqlite3.Connection,
+    connection: Connection,
 ) -> None:
     assert load_alert_times(connection) == {}
 
 
-def test_save_alert_time_upserts_per_kind(connection: sqlite3.Connection) -> None:
+def test_save_alert_time_upserts_per_kind(connection: Connection) -> None:
     first = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
     second = datetime(2026, 5, 1, 13, 0, tzinfo=UTC)
 

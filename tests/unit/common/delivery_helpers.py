@@ -7,8 +7,7 @@ import sqlite3
 from pathlib import Path
 from uuid import UUID
 
-from content_factory.db.titles import ensure_schema
-from content_factory.services.supplier.repository import Repository
+from content_factory.db.connection import connect
 from content_factory.services.titles.text import normalize_title_key
 
 REQUEST_ID = UUID("11111111-1111-4111-8111-111111111111")
@@ -48,7 +47,7 @@ def add_downloaded_video(
     language: str = "ru",
 ) -> None:
     """Insert a downloaded video row with its TikTok description and topic."""
-    Repository(db_path).init_schema()
+    connect(db_path).close()
     identifier = video_id or f"video-{sha256[:16]}"
     author = f"author-{sha256[:8]}"
     connection = sqlite3.connect(db_path)
@@ -85,10 +84,9 @@ def add_title(
     created_at: str | None = None,
 ) -> None:
     """Insert a generated title row for delivery and statistics tests."""
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    connect(db_path).close()
     connection = sqlite3.connect(db_path)
     try:
-        ensure_schema(connection)
         connection.execute(
             """
             INSERT INTO titles (sha256, title, norm, created_at)

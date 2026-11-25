@@ -7,6 +7,22 @@ class ContentFactoryError(Exception):
     """Base exception for every content-factory failure."""
 
 
+class DatabaseError(Exception):
+    """Raised when a database operation fails.
+
+    The database port translates driver errors into this type, so callers do
+    not depend on SQLite or PostgreSQL.
+    """
+
+
+class IntegrityError(DatabaseError):
+    """Raised when a constraint rejects a write."""
+
+
+class OperationalError(DatabaseError):
+    """Raised when the database is unavailable or the connection fails."""
+
+
 class LockError(ContentFactoryError):
     """Raised when a cross-process runtime lock cannot be used."""
 

@@ -12,7 +12,7 @@ import yaml
 
 from content_factory.db.connection import connect
 from content_factory.db.lock import GENERATOR_LOCK, lock_path, try_acquire
-from content_factory.db.profiles import ensure_schema, upsert_refill
+from content_factory.db.profiles import upsert_refill
 from content_factory.flows.profile_refill.flow import profile_refill
 from content_factory.schemas.profiles.refill import ProfileRefill
 
@@ -48,7 +48,6 @@ def _make_profile(
 def _set_refill(root: Path, profile_id: str, refill: ProfileRefill) -> None:
     connection = connect(root / "db" / "db.sqlite3")
     try:
-        ensure_schema(connection)
         upsert_refill(connection, profile_id, refill, _NOW)
         connection.commit()
     finally:

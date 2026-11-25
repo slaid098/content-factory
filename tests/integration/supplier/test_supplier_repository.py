@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from content_factory.db.connection import connect
 from content_factory.exceptions.errors import SupplierError
 from content_factory.schemas.supplier.results import FilterDecision
 from content_factory.schemas.supplier.video import (
@@ -19,7 +20,6 @@ from content_factory.schemas.supplier.video import (
     Video,
     VideoMetadata,
 )
-from content_factory.services.supplier import repository
 from content_factory.services.supplier.repository import Repository
 
 
@@ -63,7 +63,7 @@ def _metadata(video_id: str, **overrides: object) -> VideoMetadata:
 
 def _repo(tmp_path: Path) -> Repository:
     repo = Repository(tmp_path / "supplier.db")
-    repo.init_schema()
+    connect(repo.db_path).close()
     return repo
 
 
@@ -73,17 +73,17 @@ def _statuses(repo: Repository) -> dict[str, int]:
     return {str(status): int(count) for status, count in rows}
 
 
-def test_init_schema_is_idempotent_and_creates_parent(tmp_path: Path) -> None:
+def test_migrations_create_parent_and_are_idempotent(tmp_path: Path) -> None:
     db_path = tmp_path / "nested" / "supplier.db"
+    connect(db_path).close()
+    connect(db_path).close()
     repo = Repository(db_path)
-    repo.init_schema()
-    repo.init_schema()
 
     assert repo.db_path == db_path
     assert _statuses(repo) == {}
 
 
-def test_init_schema_migrates_language_column(tmp_path: Path) -> None:
+def test_migrations_add_language_column(tmp_path: Path) -> None:
     db_path = tmp_path / "old.db"
     with sqlite3.connect(db_path) as conn:
         conn.executescript(
@@ -101,7 +101,7 @@ def test_init_schema_migrates_language_column(tmp_path: Path) -> None:
         )
 
     repo = Repository(db_path)
-    repo.init_schema()
+    connect(db_path).close()
 
     with sqlite3.connect(db_path) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(videos)")}
@@ -382,8 +382,6 @@ def test_database_errors_are_wrapped(
         fail,
     )
 
-    with pytest.raises(SupplierError, match="схему поставщика"):
-        repo.init_schema()
     with pytest.raises(SupplierError, match="сохранить видео"):
         repo.add_found(video)
     with pytest.raises(SupplierError, match="сохранить решение"):
@@ -430,24 +428,4 @@ def test_database_directory_errors_are_wrapped(
     monkeypatch.setattr(Path, "mkdir", fail)
 
     with pytest.raises(SupplierError, match="не удалось создать каталог"):
-        Repository(tmp_path / "nested" / "supplier.db").init_schema()
-
-
-def test_language_migration_tolerates_duplicate_column(tmp_path: Path) -> None:
-    db_path = tmp_path / "duplicate.db"
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "CREATE TABLE videos (video_id TEXT PRIMARY KEY, language TEXT NOT NULL DEFAULT '')"
-        )
-
-        repository._add_language_column(conn)
-
-    assert db_path.is_file()
-
-
-def test_language_migration_reraises_other_errors() -> None:
-    with (
-        sqlite3.connect(":memory:") as conn,
-        pytest.raises(sqlite3.OperationalError, match="no such table"),
-    ):
-        repository._add_language_column(conn)
+        Repository(tmp_path / "nested" / "supplier.db").add_found(_video("1"))

@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from content_factory.config.dsn import normalize_database_url
 from content_factory.constants import (
     ARCHIVE_DIR,
     CONFIG_DIR,
@@ -59,6 +60,7 @@ class Settings(BaseSettings):
     telegram_chat_id: str | None = Field(default=None, validation_alias="TELEGRAM_CHAT_ID")
     delivery_token: str | None = None
     delivery_retention_hours: int = Field(default=24, ge=1)
+    database_url: SecretStr | None = None
 
     @field_validator("data_dir")
     @classmethod
@@ -74,6 +76,19 @@ class Settings(BaseSettings):
     @classmethod
     def _blank_to_none(cls, value: object) -> object:
         return _blank_to_none_value(value)
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def _check_database_url(cls, value: object) -> SecretStr | None:
+        if isinstance(value, SecretStr):
+            value = value.get_secret_value()
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("CONTENT_FACTORY_DATABASE_URL должен быть строкой")
+        if not value.strip():
+            return None
+        return SecretStr(normalize_database_url(value))
 
 
 class SupplierSettings(BaseSettings):

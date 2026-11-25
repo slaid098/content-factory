@@ -2,49 +2,21 @@
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import UTC, datetime
 from typing import cast
 
+from content_factory.db.connection import Connection
 from content_factory.schemas.state.state import RuntimeState
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS runtime_state (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    last_production_at TEXT,
-    captcha_blocked_until TEXT,
-    captcha_streak INTEGER NOT NULL DEFAULT 0,
-    zero_runs INTEGER NOT NULL DEFAULT 0,
-    last_alert_at TEXT,
-    last_alert_kind TEXT,
-    updated_at TEXT NOT NULL
-)
-"""
 
-_ALERT_SCHEMA = """
-CREATE TABLE IF NOT EXISTS alert_cooldowns (
-    kind TEXT PRIMARY KEY,
-    sent_at TEXT NOT NULL
-)
-"""
-
-
-def ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create the state and alert cooldown tables when missing."""
-    conn.execute(_SCHEMA)
-    conn.execute(_ALERT_SCHEMA)
-    conn.commit()
-
-
-def load_state(conn: sqlite3.Connection) -> RuntimeState:
+def load_state(conn: Connection) -> RuntimeState:
     """Load the saved state, or an empty state when nothing was saved yet."""
-    ensure_schema(conn)
     return read_state(conn)
 
 
-def read_state(conn: sqlite3.Connection) -> RuntimeState:
+def read_state(conn: Connection) -> RuntimeState:
     """Read the saved state without creating or changing the schema."""
-    if not _state_table_exists(conn):
+    if not conn.has_table("runtime_state"):
         return RuntimeState.empty()
     row = conn.execute(
         """
@@ -67,17 +39,8 @@ def read_state(conn: sqlite3.Connection) -> RuntimeState:
     )
 
 
-def _state_table_exists(conn: sqlite3.Connection) -> bool:
-    """Return whether the state table has been created yet."""
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runtime_state'"
-    ).fetchone()
-    return row is not None
-
-
-def save_state(conn: sqlite3.Connection, state: RuntimeState) -> None:
+def save_state(conn: Connection, state: RuntimeState) -> None:
     """Upsert the single state row and refresh ``updated_at``."""
-    ensure_schema(conn)
     updated_at = datetime.now(UTC)
     conn.execute(
         """
@@ -112,16 +75,14 @@ def _format_time(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
-def load_alert_times(conn: sqlite3.Connection) -> dict[str, datetime]:
+def load_alert_times(conn: Connection) -> dict[str, datetime]:
     """Load the last successful send time of every alert kind."""
-    ensure_schema(conn)
     rows = conn.execute("SELECT kind, sent_at FROM alert_cooldowns").fetchall()
     return {row["kind"]: cast(datetime, _parse_time(row["sent_at"])) for row in rows}
 
 
-def save_alert_time(conn: sqlite3.Connection, kind: str, sent_at: datetime) -> None:
+def save_alert_time(conn: Connection, kind: str, sent_at: datetime) -> None:
     """Persist the last successful send time of one alert kind."""
-    ensure_schema(conn)
     conn.execute(
         """
         INSERT INTO alert_cooldowns (kind, sent_at) VALUES (?, ?)
@@ -135,3 +96,12 @@ def save_alert_time(conn: sqlite3.Connection, kind: str, sent_at: datetime) -> N
 def _parse_time(value: str | None) -> datetime | None:
     """Parse an ISO 8601 datetime stored in the database."""
     return datetime.fromisoformat(value) if value is not None else None
+
+
+__all__ = [
+    "load_alert_times",
+    "load_state",
+    "read_state",
+    "save_alert_time",
+    "save_state",
+]

@@ -1,40 +1,12 @@
-"""SQLite index of stock files and their delivery history."""
+"""Database index of stock files and their delivery history."""
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Iterable, Sequence
 
+from content_factory.db.connection import Connection
 from content_factory.schemas.content.delivery import ContentType
 from content_factory.schemas.stock.layout import StockFile
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS stock_items (
-    path TEXT PRIMARY KEY,
-    language TEXT NOT NULL,
-    niche TEXT NOT NULL,
-    content_type TEXT NOT NULL DEFAULT 'video',
-    profile_id TEXT,
-    size INTEGER NOT NULL,
-    created_at TEXT NOT NULL,
-    delivered_at TEXT,
-    request_id TEXT
-)
-"""
-
-_ADD_CONTENT_TYPE = "ALTER TABLE stock_items ADD COLUMN content_type TEXT NOT NULL DEFAULT 'video'"
-
-_LEGACY_LANGUAGE_INDEX_DROP = "DROP INDEX IF EXISTS idx_stock_items_language_delivered"
-
-_LANGUAGE_INDEX = """
-CREATE INDEX IF NOT EXISTS idx_stock_items_language_type_delivered
-ON stock_items(language, content_type, delivered_at)
-"""
-
-_PROFILE_INDEX = """
-CREATE INDEX IF NOT EXISTS idx_stock_items_profile_delivered
-ON stock_items(profile_id, delivered_at)
-"""
 
 _UPSERT = """
 INSERT INTO stock_items (
@@ -51,46 +23,8 @@ ON CONFLICT(path) DO UPDATE SET
 _BATCH_SIZE = 500
 
 
-def ensure_schema(connection: sqlite3.Connection) -> None:
-    """Create the stock table, migrate its columns and create lookup indexes.
-
-    A database created before content types existed gets the ``content_type``
-    column with every existing row marked as ``video``, so video delivery
-    keeps working without a reindex.
-
-    Args:
-        connection: Open connection to the operational database.
-    """
-    connection.execute(_SCHEMA)
-    _ensure_content_type_column(connection)
-    connection.execute(_LEGACY_LANGUAGE_INDEX_DROP)
-    connection.execute(_LANGUAGE_INDEX)
-    connection.execute(_PROFILE_INDEX)
-    connection.commit()
-
-
-def _ensure_content_type_column(connection: sqlite3.Connection) -> None:
-    """Add the content type column to a database that does not have it.
-
-    Two processes can both see a legacy table and race to add the column; the
-    loser gets ``duplicate column name`` and treats it as already migrated.
-    """
-    columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(stock_items)")}
-    if "content_type" not in columns:
-        _add_content_type_column(connection)
-
-
-def _add_content_type_column(connection: sqlite3.Connection) -> None:
-    """Add the column, tolerating a concurrent migration of the same table."""
-    try:
-        connection.execute(_ADD_CONTENT_TYPE)
-    except sqlite3.OperationalError as ex:
-        if "duplicate column name" not in str(ex).lower():
-            raise
-
-
 def upsert_item(
-    connection: sqlite3.Connection,
+    connection: Connection,
     item: StockFile,
     size: int,
     created_at: str,
@@ -111,7 +45,7 @@ def upsert_item(
 
 
 def upsert_items(
-    connection: sqlite3.Connection,
+    connection: Connection,
     items: Iterable[tuple[StockFile, int, str]],
 ) -> None:
     """Insert or refresh many stock files in one batch.
@@ -123,7 +57,7 @@ def upsert_items(
     connection.executemany(_UPSERT, [_params(*row) for row in items])
 
 
-def prune_missing(connection: sqlite3.Connection, existing: set[str]) -> int:
+def prune_missing(connection: Connection, existing: set[str]) -> int:
     """Delete undelivered rows whose files are absent from the last scan.
 
     Delivered rows are history and stay even when their file is gone.
@@ -150,7 +84,7 @@ def prune_missing(connection: sqlite3.Connection, existing: set[str]) -> int:
 
 
 def list_available(
-    connection: sqlite3.Connection,
+    connection: Connection,
     language: str,
     *,
     content_type: ContentType = ContentType.VIDEO,
@@ -198,7 +132,7 @@ def list_available(
 
 
 def mark_delivered(
-    connection: sqlite3.Connection,
+    connection: Connection,
     paths: Sequence[str],
     request_id: str,
     now: str,
@@ -222,7 +156,7 @@ def mark_delivered(
 
 
 def count_by_profile(
-    connection: sqlite3.Connection,
+    connection: Connection,
     profile_id: str,
     *,
     content_type: ContentType = ContentType.VIDEO,
@@ -261,3 +195,13 @@ def _params(
         size,
         created_at,
     )
+
+
+__all__ = [
+    "count_by_profile",
+    "list_available",
+    "mark_delivered",
+    "prune_missing",
+    "upsert_item",
+    "upsert_items",
+]
