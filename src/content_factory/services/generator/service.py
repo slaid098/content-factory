@@ -17,14 +17,17 @@ from content_factory.config.settings import (
     load_generator_settings,
 )
 from content_factory.constants import PROFILES_DIR
-from content_factory.exceptions.generator import GeneratorError, ProfileError
+from content_factory.exceptions.generator import GeneratorError
 from content_factory.schemas.generator.run import (
+    ProductionStep,
     RunItem,
     RunReport,
     RunServer,
     RunStatus,
+    RunStep,
 )
 from content_factory.schemas.generator.server import ServerInfo
+from content_factory.services import production
 from content_factory.services.generator import (
     comfy,
     media,
@@ -47,7 +50,13 @@ from content_factory.services.generator.plan import (
     plan_batch,
     validate_count,
 )
-from content_factory.services.generator.profiles import _Profile, load_profile
+from content_factory.services.generator.profiles import (
+    _Profile,
+    choose_run_id,
+    load_profile,
+    parse_names,
+    production_step,
+)
 from content_factory.services.generator.publish import publish_stock
 from content_factory.services.generator.report import (
     _FINAL_DIR,
@@ -92,12 +101,11 @@ def generate_batch(
 ) -> _BatchResult:
     """Produce a batch of dating videos and write ``run.json``.
 
-    Every profile is validated and every plan is built before the first
-    server is rented. The server is destroyed as soon as generation ends,
-    before the text, overlay and music steps, and the teardown is verified
-    against the Vast.ai instance list. With safety enabled, one Clef request
-    on a synthetic frame runs before the rent; every downloaded source is
-    then checked frame by frame before the text card is drawn.
+    Every profile and plan is validated before the first rent. The server is
+    destroyed as soon as generation ends, before the text, overlay and music
+    steps, and the teardown is verified against the Vast.ai instance list.
+    With safety enabled, one Clef request on a synthetic frame runs before the
+    rent; every downloaded source is then checked before the text card.
 
     Args:
         profiles: Comma-separated profile names, for example
@@ -118,8 +126,8 @@ def generate_batch(
         Run id, final status, output directories and counters.
 
     Raises:
-        GeneratorError: ``count`` is not positive or the Clef preflight
-            fails before any server is rented.
+        GeneratorError: ``count`` is not positive or the Clef preflight fails
+            before rent.
         SafetyError: Clef cannot check the synthetic preflight frame.
         ProfileError: A profile is missing or malformed, or a batch asks for
             repeats while the profile has only one card.
@@ -130,17 +138,22 @@ def generate_batch(
             "Проверка кадров Clef выключена: GENERATOR_SAFETY_ENABLED=false"
         )
     root = (data_dir or get_settings().data_dir) / PROFILES_DIR
-    names = _parse_names(profiles)
+    names = parse_names(profiles)
     validate_count(count)
     randomizer = rng or random.Random()  # noqa: S311 — variety, not secrets
     loaded = [load_profile(name, root) for name in names]
     started = now or datetime.now(UTC)
-    run_id = _choose_run_id(config.output_dir, loaded, started)
+    run_id = choose_run_id(config.output_dir, loaded, started)
+    steps = [
+        production_step(profile, None if dry_run else production.VAST_PRODUCER)
+        for profile in loaded
+    ]
     prepared = _prepare(config, loaded, count, run_id, randomizer)
     checker = _prepare_media(config, dry_run, safety_checker)
     data_root = root.parent
     run_dirs, generated, failed = _run_all(
         prepared,
+        steps,
         config,
         run_id,
         started,
@@ -182,6 +195,7 @@ def _prepare_media(
 
 def _run_all(
     prepared: list[tuple[_Profile, tuple[_PlannedItem, ...]]],
+    steps: list[ProductionStep],
     config: GeneratorSettings,
     run_id: str,
     started: datetime,
@@ -199,15 +213,24 @@ def _run_all(
     run_dirs: list[Path] = []
     generated = 0
     failed = 0
-    for profile, items in prepared:
-        run_dir = config.output_dir / profile.language / _slug(profile) / run_id
+    for (profile, items), step in zip(prepared, steps, strict=True):
+        run_dir = config.output_dir / profile.language / profiles.profile_slug(profile) / run_id
         report = _report(profile, items, run_id, started, count, dry_run)
+        report.production = [
+            RunStep(producer=item.producer, type=item.type, qa=list(item.qa))
+            for item in profile.production
+        ]
+        for item in report.items:
+            item.producer = step.producer
+            item.type = step.type
+            item.qa = list(step.qa)
         _write_report(run_dir, report)
         run_dirs.append(run_dir)
         if dry_run:
             continue
         _produce_safely(
             profile,
+            step,
             items,
             run_dir,
             report,
@@ -250,6 +273,7 @@ def _prepare(
 
 def _produce_safely(
     profile: _Profile,
+    step: ProductionStep,
     items: tuple[_PlannedItem, ...],
     run_dir: Path,
     report: RunReport,
@@ -266,6 +290,7 @@ def _produce_safely(
     try:
         _produce(
             profile,
+            step,
             items,
             run_dir,
             report,
@@ -290,6 +315,7 @@ def _produce_safely(
 
 def _produce(
     profile: _Profile,
+    step: ProductionStep,
     items: tuple[_PlannedItem, ...],
     run_dir: Path,
     report: RunReport,
@@ -308,12 +334,14 @@ def _produce(
     def build(item: _PlannedItem, attempt: int) -> dict[str, Any]:
         with prompt_lock:
             prompt = profiles.build_prompt(profile, item.look, rng)
-        return build_workflow(
-            profile,
-            item,
-            prompt,
-            seed=attempt_seed(item.seed, attempt),
-        )
+        return build_workflow(profile, item, prompt, seed=attempt_seed(item.seed, attempt))
+
+    def verify(item: _PlannedItem, source: Path, attempt: int) -> str | None:
+        reason = checker.verify(item, source, attempt) if checker is not None else None
+        if reason:
+            return reason
+        extra = tuple(name for name in step.qa if name != "clef")
+        return production.run_qa(extra, production.QA_SOURCE, {}) if extra else None
 
     report.status = RunStatus.GENERATING
     _write_report(run_dir, report)
@@ -327,7 +355,7 @@ def _produce(
             build,
             run_dir / _SOURCE_DIR,
             store=store,
-            verify=checker.verify if checker is not None else None,
+            verify=verify,
         )
         report.server = _server(profile, batch.servers[0]) if batch.servers else None
         results = batch.results
@@ -341,17 +369,18 @@ def _produce(
             label=profile.name,
             settings=settings,
             store=store,
-            verify=checker.verify if checker is not None else None,
+            verify=verify,
         )
         report.server = _server(profile, info)
     report.status = RunStatus.POSTPROCESSING
     _write_report(run_dir, report)
-    _postprocess(profile, results, run_dir, report, settings, text_writer, rng, data_root)
+    _postprocess(profile, step, results, run_dir, report, settings, text_writer, rng, data_root)
     _finalize(report, run_dir, items)
 
 
 def _postprocess(
     profile: _Profile,
+    step: ProductionStep,
     results: tuple[comfy._JobResult, ...],
     run_dir: Path,
     report: RunReport,
@@ -373,7 +402,7 @@ def _postprocess(
             _write_report(run_dir, report)
             continue
         try:
-            _finish_item(profile, item, result.path, run_dir, writer, rng, data_root)
+            _finish_item(profile, step, item, result.path, run_dir, writer, rng, data_root)
         except (GeneratorError, OSError) as ex:
             item.status = RunStatus.FAILED
             item.error = str(ex)
@@ -410,6 +439,7 @@ def _advance_cursor(output_dir: Path, profile: _Profile, item: RunItem, run_id: 
 
 def _finish_item(
     profile: _Profile,
+    step: ProductionStep,
     item: RunItem,
     source: Path,
     run_dir: Path,
@@ -423,7 +453,8 @@ def _finish_item(
     audio = rng.choice(profile.audio_tracks) if profile.audio_tracks else None
     final = run_dir / _FINAL_DIR / item.file
     overlay.mix(profile, card, source, final, audio)
-    info = qa.check_video(
+    info = qa.check_declared(
+        step.qa,
         final,
         media.video_seconds(item.frames, profile.fps),
         expect_audio=bool(profile.audio_tracks),
@@ -438,31 +469,6 @@ def _default_session(profile: _Profile, settings: GeneratorSettings) -> _ServerS
     return VastSession(profile, settings)
 
 
-def _choose_run_id(output_dir: Path, loaded: list[_Profile], moment: datetime) -> str:
-    """Return a UTC run id whose directories do not exist yet."""
-    stamp = moment.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
-    for suffix in range(1, 100):
-        candidate = stamp if suffix == 1 else f"{stamp}-{suffix}"
-        if not any(
-            (output_dir / profile.language / _slug(profile) / candidate).exists()
-            for profile in loaded
-        ):
-            return candidate
-    raise GeneratorError(f"не удалось подобрать свободный run_id для {stamp}")
-
-
-def _parse_names(value: str) -> list[str]:
-    """Split the flow parameter into unique profile names."""
-    names: list[str] = []
-    for part in str(value or "").split(","):
-        name = part.strip()
-        if name and name not in names:
-            names.append(name)
-    if not names:
-        raise ProfileError("не указан ни один профиль")
-    return names
-
-
 def _server(profile: _Profile, info: ServerInfo) -> RunServer:
     """Build the ``server`` block of ``run.json``."""
     connection = info.connection
@@ -475,14 +481,11 @@ def _server(profile: _Profile, info: ServerInfo) -> RunServer:
     )
 
 
-def _slug(profile: _Profile) -> str:
-    """Return the profile directory name used in output paths."""
-    return profile.name.replace("/", "_")
-
-
 def _cursor_path(output_dir: Path, profile: _Profile) -> Path:
     """Return the rotation cursor path of one ``language + profile`` pair."""
-    return output_dir / profile.language / _slug(profile) / rotation.ROTATION_FILENAME
+    return (
+        output_dir / profile.language / profiles.profile_slug(profile) / rotation.ROTATION_FILENAME
+    )
 
 
 __all__ = ["generate_batch", "publish_stock"]

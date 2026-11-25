@@ -18,6 +18,7 @@ from content_factory.exceptions.generator import (
     ComfyError,
     GeneratorError,
     ProfileError,
+    QaError,
     RentError,
     SafetyError,
 )
@@ -1172,3 +1173,161 @@ def test_silent_profile_does_not_require_audio(tmp_path: Path, monkeypatch) -> N
     )
 
     assert "audio" not in events
+
+
+def test_recipe_media_only_still_runs_the_clef_preflight_and_frames(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fixture_profile(
+        tmp_path / "profiles",
+        extra={"production": [{"producer": "vast", "type": "video", "qa": ["media"]}]},
+    )
+    events: list[str] = []
+    session = FakeSession(events)
+    checker = _Checker(events)
+    _fake_postprocess(monkeypatch, events)
+
+    result = service.generate_batch(
+        profiles="dating/profile_2",
+        data_dir=tmp_path,
+        settings=_settings(tmp_path, safety_enabled=True),
+        session_factory=lambda profile, settings: session,
+        client_factory=lambda connection: _Transport(events),
+        text_writer=_Writer(events),
+        store=lambda path, content: path.write_bytes(content),
+        safety_checker=checker,
+        rng=random.Random(1),
+        now=_NOW,
+    )
+
+    assert result.status == "done"
+    assert result.generated == 1
+    assert checker.preflights == 1
+    assert checker.calls == [("dating_profile_2_20260101T000000Z_001.mp4", 1)]
+    assert checker.events.index("preflight") < checker.events.index("open")
+    assert checker.events.index("verify") < checker.events.index("mix")
+    report = json.loads((result.run_dirs[0] / "run.json").read_text(encoding="utf-8"))
+    assert report["production"] == [{"producer": "vast", "type": "video", "qa": ["media"]}]
+    assert report["items"][0]["producer"] == "vast"
+    assert report["items"][0]["type"] == "video"
+    assert report["items"][0]["qa"] == ["media"]
+
+
+def test_dry_run_records_the_recipe_in_run_json(tmp_path: Path) -> None:
+    fixture_profile(
+        tmp_path / "profiles",
+        extra={
+            "production": [
+                {"producer": "vast", "type": "video", "qa": ["clef", "media"]},
+            ]
+        },
+    )
+
+    result = service.generate_batch(
+        profiles="dating/profile_2",
+        count=2,
+        dry_run=True,
+        data_dir=tmp_path,
+        settings=_settings(tmp_path),
+        rng=random.Random(1),
+        now=_NOW,
+    )
+
+    report = json.loads((result.run_dirs[0] / "run.json").read_text(encoding="utf-8"))
+    assert report["status"] == "dry_run"
+    assert report["production"] == [{"producer": "vast", "type": "video", "qa": ["clef", "media"]}]
+    assert [item["qa"] for item in report["items"]] == [["clef", "media"]] * 2
+
+
+def test_unknown_producer_fails_before_the_rent(tmp_path: Path) -> None:
+    make_profile(
+        tmp_path / "profiles",
+        extra={"production": [{"producer": "unique"}]},
+    )
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise AssertionError("unknown producer errors must happen before rent")
+
+    with pytest.raises(ProfileError, match="неизвестный producer 'unique'"):
+        service.generate_batch(
+            profiles="dating/profile_2",
+            data_dir=tmp_path,
+            settings=_settings(tmp_path),
+            session_factory=fail,
+            now=_NOW,
+        )
+
+
+def test_clef_only_recipe_still_rejects_a_broken_mp4_before_publish(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fixture_profile(
+        tmp_path / "profiles",
+        extra={"production": [{"producer": "vast", "qa": ["clef"]}]},
+    )
+    events: list[str] = []
+    session = FakeSession(events)
+    _fake_postprocess(monkeypatch, events)
+    published: list[Path] = []
+
+    def reject(path: Path, expected: float, expect_audio: bool = False) -> media._MediaInfo:
+        del expected, expect_audio
+        raise QaError(f"битый mp4: {path}")
+
+    monkeypatch.setattr(qa, "check_video", reject)
+    monkeypatch.setattr(
+        service,
+        "publish_stock",
+        lambda profile, final, data_root: published.append(final),
+    )
+
+    result = service.generate_batch(
+        profiles="dating/profile_2",
+        data_dir=tmp_path,
+        settings=_settings(tmp_path),
+        session_factory=lambda profile, settings: session,
+        client_factory=lambda connection: _Transport(events),
+        text_writer=_Writer(events),
+        store=lambda path, content: path.write_bytes(content),
+        rng=random.Random(1),
+        now=_NOW,
+    )
+
+    assert result.status == "failed"
+    assert result.generated == 0
+    assert result.failed == 1
+    assert published == []
+    report = json.loads((result.run_dirs[0] / "run.json").read_text(encoding="utf-8"))
+    assert report["items"][0]["status"] == "failed"
+    assert "битый mp4" in report["items"][0]["error"]
+
+
+def test_safety_disabled_skips_clef_even_when_the_recipe_declares_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fixture_profile(
+        tmp_path / "profiles",
+        extra={"production": [{"producer": "vast", "qa": ["clef"]}]},
+    )
+    events: list[str] = []
+    session = FakeSession(events)
+    checker = _Checker(preflight_error=SafetyError("must not be called"))
+    _fake_postprocess(monkeypatch, events)
+
+    result = service.generate_batch(
+        profiles="dating/profile_2",
+        data_dir=tmp_path,
+        settings=_settings(tmp_path),
+        session_factory=lambda profile, settings: session,
+        client_factory=lambda connection: _Transport(events),
+        text_writer=_Writer(events),
+        store=lambda path, content: path.write_bytes(content),
+        safety_checker=checker,
+        rng=random.Random(1),
+        now=_NOW,
+    )
+
+    assert result.status == "done"
+    assert result.generated == 1
+    assert checker.preflights == 0
+    assert checker.calls == []

@@ -11,6 +11,8 @@ import yaml
 from tests.unit.generator.helpers import fixture_profile, make_profile
 
 from content_factory.exceptions.generator import ProfileError
+from content_factory.schemas.content.delivery import ContentType
+from content_factory.schemas.generator.run import ProductionStep
 from content_factory.services.generator.profiles import (
     _age_text,
     _alpha,
@@ -22,6 +24,8 @@ from content_factory.services.generator.profiles import (
     _profile_name,
     build_prompt,
     load_profile,
+    parse_names,
+    production_step,
     profile_dir,
     prompt_template,
     text_prompt,
@@ -470,4 +474,80 @@ def test_card_flags_must_be_boolean(tmp_path: Path, key: str) -> None:
     _rewrite(tmp_path / "profiles", **{key: "false"})
 
     with pytest.raises(ProfileError, match=key):
+        load_profile("dating/profile_2", tmp_path / "profiles")
+
+
+def test_recipe_defaults_to_the_old_vast_step(tmp_path: Path) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+
+    assert profile.production == (ProductionStep("vast", ContentType.VIDEO, ("media", "clef")),)
+
+
+def test_recipe_keeps_the_declared_qa_order(tmp_path: Path) -> None:
+    profile = fixture_profile(
+        tmp_path / "profiles",
+        extra={
+            "production": [
+                {"producer": "vast", "type": "video", "qa": ["clef", "media"]},
+            ]
+        },
+    )
+
+    step = profile.production[0]
+    assert step.producer == "vast"
+    assert step.type is ContentType.VIDEO
+    assert step.qa == ("clef", "media")
+
+
+def test_recipe_step_defaults_to_video_and_both_checks(tmp_path: Path) -> None:
+    profile = fixture_profile(
+        tmp_path / "profiles",
+        extra={"production": [{"producer": "vast"}]},
+    )
+
+    step = profile.production[0]
+    assert step.type is ContentType.VIDEO
+    assert step.qa == ("media", "clef")
+
+
+def test_production_step_selects_by_producer(tmp_path: Path) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+
+    assert production_step(profile) is profile.production[0]
+    assert production_step(profile, "vast") is profile.production[0]
+
+    with pytest.raises(ProfileError, match="нет шага unique"):
+        production_step(profile, "unique")
+
+
+def test_profile_names_are_split_without_blanks_or_repeats() -> None:
+    assert parse_names(" dating/profile_2, dating/profile_1,dating/profile_2 ") == [
+        "dating/profile_2",
+        "dating/profile_1",
+    ]
+
+    with pytest.raises(ProfileError, match="ни один профиль"):
+        parse_names(" , ")
+
+
+@pytest.mark.parametrize(
+    ("production", "message"),
+    [
+        ([], "непустым списком"),
+        ({"producer": "vast"}, "непустым списком"),
+        (["vast"], "должен быть словарём"),
+        ([{}], "нет producer"),
+        ([{"producer": "unknown"}], "неизвестный producer"),
+        ([{"producer": "vast"}, {"producer": "vast"}], "повтор producer"),
+        ([{"producer": "vast", "qa": []}], "непустым списком"),
+        ([{"producer": "vast", "qa": ["media", "media"]}], "повтор QA"),
+        ([{"producer": "vast", "qa": ["unknown"]}], "неизвестная QA"),
+        ([{"producer": "vast", "type": "photo"}], "не производит"),
+        ([{"producer": "vast", "type": "audio"}], "неизвестный type"),
+    ],
+)
+def test_broken_recipe_fails_before_rent(tmp_path: Path, production: object, message: str) -> None:
+    make_profile(tmp_path / "profiles", extra={"production": production})
+
+    with pytest.raises(ProfileError, match=message):
         load_profile("dating/profile_2", tmp_path / "profiles")
