@@ -11,7 +11,7 @@ from content_factory.config.settings import (
     prepare_data_dirs,
 )
 from content_factory.exceptions.errors import ProfileDescriptionError
-from content_factory.services.generator.texts import TextClient
+from content_factory.services.generator import TextClient
 from content_factory.services.profiles import describe_profile, list_profiles
 
 

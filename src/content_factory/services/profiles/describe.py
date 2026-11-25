@@ -9,9 +9,8 @@ import stat
 import tempfile
 from collections.abc import Mapping
 from contextlib import suppress
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import yaml
 from loguru import logger
@@ -19,8 +18,9 @@ from loguru import logger
 from content_factory.config.settings import GeneratorSettings
 from content_factory.exceptions.errors import ProfileDescriptionError
 from content_factory.exceptions.generator import ProfileError, TextError
+from content_factory.schemas.profiles.description import ProfileDescription
 from content_factory.schemas.profiles.registry import ProfileInfo
-from content_factory.services.generator.texts import TextClient, _TextWriter
+from content_factory.services.generator import TextClient
 from content_factory.services.profiles.registry import get_profile
 from content_factory.utils.profiles import read_profile_summary, read_profile_title
 
@@ -32,12 +32,12 @@ _ATTEMPTS = 2
 _FENCE_RE = re.compile(r"^\s*```[^\n]*\n?(.*?)\n?```\s*$", re.DOTALL)
 
 
-@dataclass(frozen=True, slots=True)
-class ProfileDescription:
-    """Generated title and summary of one profile."""
+class _TextWriter(Protocol):
+    """Port of the text model used to describe a profile."""
 
-    title: str
-    summary: str
+    def write(self, system_prompt: str, user_prompt: str = "") -> str:
+        """Return the raw answer of the model for one request."""
+        ...
 
 
 def describe_profile(
@@ -227,4 +227,4 @@ def _write_profile(
                 temporary.unlink()
 
 
-__all__ = ["ProfileDescription", "describe_profile"]
+__all__ = ["describe_profile"]

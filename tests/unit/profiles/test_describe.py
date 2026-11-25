@@ -14,8 +14,9 @@ from tests.unit.common.profile_helpers import add_profile
 from content_factory.config.settings import GeneratorSettings
 from content_factory.exceptions.errors import ProfileDescriptionError
 from content_factory.exceptions.generator import TextError
+from content_factory.schemas.profiles.description import ProfileDescription
 from content_factory.services.profiles import describe as describe_module
-from content_factory.services.profiles.describe import ProfileDescription, describe_profile
+from content_factory.services.profiles.describe import describe_profile
 
 _VALID_TITLE = "Знакомства для 30+"
 _VALID_SUMMARY = "Спокойные знакомства с акцентом на серьёзные отношения."
