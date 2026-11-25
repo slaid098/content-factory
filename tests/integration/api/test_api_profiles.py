@@ -14,6 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 from tests.unit.common.profile_helpers import (
     add_profile,
+    add_profile_photo,
     add_profile_video,
     set_profile_refill,
     write_run_report,
@@ -96,6 +97,7 @@ def test_list_returns_profiles_with_stock_overrides_and_last_run(data_dir: Path)
     add_profile_video(data_dir, "dating", "profile_1", filename="dating_profile_1_001.mp4")
     add_profile_video(data_dir, "dating", "profile_1", filename="dating_profile_1_002.mp4")
     add_profile_video(data_dir, "auto", "profile_2", language="en")
+    add_profile_photo(data_dir, "dating", "profile_1")
     set_profile_refill(data_dir, "dating/profile_1", enabled=True, target=5, refill_at=1)
     write_run_report(
         data_dir / "generated",
@@ -125,6 +127,7 @@ def test_list_returns_profiles_with_stock_overrides_and_last_run(data_dir: Path)
         "height": 960,
         "audio": True,
         "stock": 1,
+        "photo_stock": 0,
         "target": 20,
         "refill_at": 2,
         "refill_enabled": False,
@@ -134,6 +137,7 @@ def test_list_returns_profiles_with_stock_overrides_and_last_run(data_dir: Path)
         "last_run": None,
     }
     assert second["stock"] == 2
+    assert second["photo_stock"] == 1
     assert second["audio"] is False
     assert second["target"] == 5
     assert second["refill_at"] == 1
@@ -196,6 +200,7 @@ def test_list_survives_broken_stock_database(data_dir: Path) -> None:
 
     assert response.status_code == 200
     assert response.json()["profiles"][0]["stock"] == 0
+    assert response.json()["profiles"][0]["photo_stock"] == 0
     assert response.json()["profiles"][0]["target"] == 20
 
 
@@ -230,6 +235,7 @@ def test_list_skips_non_utf8_run_report(
 def test_get_returns_one_profile(data_dir: Path) -> None:
     add_profile(data_dir, "dating", "profile_1")
     add_profile_video(data_dir, "dating", "profile_1")
+    add_profile_photo(data_dir, "dating", "profile_1")
 
     response = _get(_client(), f"{_PREFIX}/dating/profile_1")
 
@@ -237,6 +243,7 @@ def test_get_returns_one_profile(data_dir: Path) -> None:
     body = response.json()
     assert body["id"] == "dating/profile_1"
     assert body["stock"] == 1
+    assert body["photo_stock"] == 1
     assert body["preview_url"] == _PREFIX + "/dating/profile_1/preview"
 
 
@@ -408,7 +415,80 @@ def test_preview_rebuilds_when_source_is_newer(
     assert len(calls) == 2
 
 
-def test_preview_without_video_returns_404(data_dir: Path) -> None:
+@pytest.mark.parametrize(
+    ("suffix", "media_type"),
+    [
+        (".jpg", "image/jpeg"),
+        (".jpeg", "image/jpeg"),
+        (".png", "image/png"),
+        (".webp", "image/webp"),
+    ],
+)
+def test_preview_returns_newest_photo_with_real_media_type(
+    data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    suffix: str,
+    media_type: str,
+) -> None:
+    add_profile(data_dir, "dating", "profile_1")
+    add_profile_photo(
+        data_dir,
+        "dating",
+        "profile_1",
+        filename="dating_profile_1_old.jpg",
+        mtime=1_000,
+    )
+    add_profile_photo(
+        data_dir,
+        "dating",
+        "profile_1",
+        filename=f"dating_profile_1_new{suffix}",
+        data=b"image",
+        mtime=2_000,
+    )
+    calls: list[Path] = []
+    monkeypatch.setattr(preview, "extract_preview", _fake_extract(calls))
+
+    response = _get(_client(), f"{_PREFIX}/dating/profile_1/preview")
+
+    assert response.status_code == 200
+    assert response.headers["Content-Type"] == media_type
+    assert response.headers["Cache-Control"] == "max-age=60"
+    assert response.content == b"image"
+    assert calls == []
+    assert not (data_dir / PREVIEW_DIR).exists()
+
+
+def test_preview_prefers_video_over_a_newer_photo(
+    data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_profile(data_dir, "dating", "profile_1")
+    video = add_profile_video(data_dir, "dating", "profile_1", mtime=1_000)
+    add_profile_photo(data_dir, "dating", "profile_1", mtime=3_000)
+    calls: list[Path] = []
+    monkeypatch.setattr(preview, "extract_preview", _fake_extract(calls))
+
+    response = _get(_client(), f"{_PREFIX}/dating/profile_1/preview")
+
+    assert response.status_code == 200
+    assert response.headers["Content-Type"] == "image/jpeg"
+    assert response.content == b"\xff\xd8frame"
+    assert calls == [video]
+
+
+def test_preview_serves_photo_without_sidecar(data_dir: Path) -> None:
+    add_profile(data_dir, "dating", "profile_1")
+    add_profile_photo(data_dir, "dating", "profile_1", data=b"image", sidecar=False)
+
+    response = _get(_client(), f"{_PREFIX}/dating/profile_1/preview")
+
+    assert response.status_code == 200
+    assert response.headers["Content-Type"] == "image/jpeg"
+    assert response.content == b"image"
+
+
+def test_preview_without_media_returns_404(data_dir: Path) -> None:
     add_profile(data_dir, "dating", "profile_1")
 
     response = _get(_client(), f"{_PREFIX}/dating/profile_1/preview")
@@ -430,6 +510,7 @@ def test_preview_failure_returns_503_without_stderr(
 ) -> None:
     add_profile(data_dir, "dating", "profile_1")
     add_profile_video(data_dir, "dating", "profile_1", mtime=1_000)
+    add_profile_photo(data_dir, "dating", "profile_1", mtime=2_000)
 
     def _fail(_source: Path, _target: Path) -> None:
         raise subprocess.CalledProcessError(1, ["ffmpeg"], stderr=b"secret stderr")

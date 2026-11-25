@@ -9,12 +9,13 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from tests.unit.common.profile_helpers import add_profile_video
+from tests.unit.common.profile_helpers import add_profile_photo, add_profile_video
 
 from content_factory.constants import CONTENT_DIR, PREVIEW_DIR
 from content_factory.exceptions.errors import ProfilePreviewError
 from content_factory.schemas.profiles.registry import ProfileInfo
 from content_factory.services.profiles import preview
+from content_factory.services.profiles.preview import ProfilePreview
 
 
 def _profile(tmp_path: Path, *, language: str = "ru", niche: str = "dating") -> ProfileInfo:
@@ -126,10 +127,10 @@ def test_profile_preview_builds_cache_once_and_reuses_it(
     first = preview.profile_preview(tmp_path, _profile(tmp_path))
     second = preview.profile_preview(tmp_path, _profile(tmp_path))
 
-    assert first == _cache(tmp_path)
+    assert first == ProfilePreview(_cache(tmp_path), "image/jpeg")
     assert second == first
     assert first is not None
-    assert first.read_bytes() == b"\xff\xd8cached"
+    assert first.path.read_bytes() == b"\xff\xd8cached"
     assert calls == [source]
     assert list((tmp_path / PREVIEW_DIR).glob("*.tmp.jpg")) == []
 
@@ -153,7 +154,7 @@ def test_profile_preview_rebuilds_when_source_is_newer(
 
     result = preview.profile_preview(tmp_path, _profile(tmp_path))
 
-    assert result == cache
+    assert result == ProfilePreview(cache, "image/jpeg")
     assert cache.read_bytes() == b"\xff\xd8new"
     assert calls == [source]
 
@@ -330,7 +331,9 @@ def test_profile_preview_rebuilds_when_cache_stat_fails(
     monkeypatch.setattr(Path, "stat", _deny_cache)
     monkeypatch.setattr(preview, "extract_preview", _extract)
 
-    assert preview.profile_preview(tmp_path, _profile(tmp_path)) == cache
+    assert preview.profile_preview(tmp_path, _profile(tmp_path)) == ProfilePreview(
+        cache, "image/jpeg"
+    )
     assert calls
 
 
@@ -373,3 +376,149 @@ def test_profile_preview_breaks_tie_by_file_name(
     preview.profile_preview(tmp_path, _profile(tmp_path))
 
     assert calls == [latest]
+
+
+def test_profile_preview_falls_back_to_the_newest_photo_without_ffmpeg(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_profile_photo(tmp_path, filename="dating_profile_1_old.jpg", mtime=1_000)
+    newest = add_profile_photo(tmp_path, filename="dating_profile_1_new.jpg", mtime=2_000)
+    calls: list[Path] = []
+
+    def _extract(source_path: Path, target_path: Path) -> None:
+        calls.append(source_path)
+
+    monkeypatch.setattr(preview, "extract_preview", _extract)
+
+    result = preview.profile_preview(tmp_path, _profile(tmp_path))
+
+    assert result == ProfilePreview(newest, "image/jpeg")
+    assert calls == []
+    assert not (tmp_path / PREVIEW_DIR).exists()
+
+
+@pytest.mark.parametrize(
+    ("suffix", "media_type"),
+    [
+        (".jpg", "image/jpeg"),
+        (".jpeg", "image/jpeg"),
+        (".png", "image/png"),
+        (".webp", "image/webp"),
+    ],
+)
+def test_profile_preview_serves_photo_media_type_by_suffix(
+    tmp_path: Path,
+    suffix: str,
+    media_type: str,
+) -> None:
+    photo = add_profile_photo(
+        tmp_path,
+        filename=f"dating_profile_1_post{suffix}",
+        data=b"image",
+    )
+
+    assert preview.profile_preview(tmp_path, _profile(tmp_path)) == ProfilePreview(
+        photo, media_type
+    )
+
+
+def test_profile_preview_breaks_photo_tie_by_file_name(tmp_path: Path) -> None:
+    add_profile_photo(tmp_path, filename="dating_profile_1_aaa.jpg", mtime=2_000)
+    latest = add_profile_photo(tmp_path, filename="dating_profile_1_zzz.jpg", mtime=2_000)
+
+    assert preview.profile_preview(tmp_path, _profile(tmp_path)) == ProfilePreview(
+        latest, "image/jpeg"
+    )
+
+
+def test_profile_preview_prefers_video_over_a_newer_photo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    video = add_profile_video(tmp_path, mtime=1_000)
+    add_profile_photo(tmp_path, mtime=3_000)
+    calls: list[Path] = []
+
+    def _extract(source_path: Path, target_path: Path) -> None:
+        calls.append(source_path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(b"\xff\xd8frame")
+
+    monkeypatch.setattr(preview, "extract_preview", _extract)
+
+    result = preview.profile_preview(tmp_path, _profile(tmp_path))
+
+    assert result == ProfilePreview(_cache(tmp_path), "image/jpeg")
+    assert calls == [video]
+
+
+def test_profile_preview_does_not_fall_back_to_photo_on_video_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_profile_video(tmp_path, mtime=1_000)
+    add_profile_photo(tmp_path, mtime=3_000)
+
+    def _fail(_source: Path, _target: Path) -> None:
+        raise subprocess.CalledProcessError(1, ["ffmpeg"], stderr=b"boom")
+
+    monkeypatch.setattr(preview, "extract_preview", _fail)
+
+    with pytest.raises(ProfilePreviewError, match="preview unavailable"):
+        preview.profile_preview(tmp_path, _profile(tmp_path))
+
+
+def test_profile_preview_serves_a_photo_without_sidecar(tmp_path: Path) -> None:
+    photo = add_profile_photo(tmp_path, sidecar=False, mtime=1_000)
+
+    assert preview.profile_preview(tmp_path, _profile(tmp_path)) == ProfilePreview(
+        photo, "image/jpeg"
+    )
+
+
+def test_profile_preview_ignores_foreign_photos(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_profile_photo(tmp_path, name="profile_2", mtime=3_000)
+    directory = tmp_path / CONTENT_DIR / "dating" / "ru"
+    (directory / "supplier.jpg").write_bytes(b"x")
+    (directory / "dating_profile_1_run_001.json").write_text("{}", encoding="utf-8")
+    calls: list[Path] = []
+
+    def _extract(source_path: Path, target_path: Path) -> None:
+        calls.append(source_path)
+
+    monkeypatch.setattr(preview, "extract_preview", _extract)
+
+    assert preview.profile_preview(tmp_path, _profile(tmp_path)) is None
+    assert calls == []
+
+
+def test_profile_preview_skips_unreadable_photo_stat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    good = add_profile_photo(tmp_path, filename="dating_profile_1_good.jpg", mtime=2_000)
+    bad = add_profile_photo(tmp_path, filename="dating_profile_1_bad.jpg", mtime=3_000)
+    original_stat = Path.stat
+
+    def _deny_bad(self: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if self == bad:
+            raise PermissionError("permission denied")
+        return original_stat(self, *args, **kwargs)
+
+    original_is_file = Path.is_file
+
+    def _present(self: Path) -> bool:
+        if self == bad:
+            return True
+        return original_is_file(self)
+
+    monkeypatch.setattr(Path, "stat", _deny_bad)
+    monkeypatch.setattr(Path, "is_file", _present)
+
+    assert preview.profile_preview(tmp_path, _profile(tmp_path)) == ProfilePreview(
+        good, "image/jpeg"
+    )

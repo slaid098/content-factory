@@ -6,7 +6,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from tests.unit.common.profile_helpers import add_profile, add_profile_video, set_profile_refill
+from tests.unit.common.profile_helpers import (
+    add_profile,
+    add_profile_photo,
+    add_profile_video,
+    set_profile_refill,
+)
 
 from content_factory.db.errors import OperationalError
 from content_factory.exceptions.errors import (
@@ -17,6 +22,7 @@ from content_factory.schemas.config.runtime import GeneratorConfig
 from content_factory.schemas.database.port import Connection
 from content_factory.schemas.profiles.api import ProfileUpdateRequest
 from content_factory.services.profiles import service as profiles_service
+from content_factory.services.profiles.preview import ProfilePreview
 from content_factory.services.profiles.registry import get_profile
 
 _GLOBAL = GeneratorConfig(target=20, refill_at=2)
@@ -126,6 +132,7 @@ def test_counters_fall_back_when_connect_fails(
     )
 
     assert views[0].stock == 0
+    assert views[0].photo_stock == 0
     assert views[0].target == 20
     assert views[0].refill_enabled is False
 
@@ -136,7 +143,7 @@ def test_counters_fall_back_when_read_fails(
 ) -> None:
     add_profile(tmp_path)
 
-    def _fail(_connection: Connection, _profile_id: str) -> int:
+    def _fail(_connection: Connection, _profile_id: str, **_kwargs: object) -> int:
         raise OperationalError("table is locked")
 
     monkeypatch.setattr(profiles_service, "count_by_profile", _fail)
@@ -148,6 +155,7 @@ def test_counters_fall_back_when_read_fails(
     )
 
     assert views[0].stock == 0
+    assert views[0].photo_stock == 0
 
 
 def test_preview_for_profile_delegates_to_preview_module(
@@ -156,22 +164,23 @@ def test_preview_for_profile_delegates_to_preview_module(
 ) -> None:
     add_profile(tmp_path)
     seen: list[str] = []
+    expected = ProfilePreview(tmp_path / "preview.jpg", "image/jpeg")
 
-    def _preview(_data_dir: Path, profile: object) -> Path:
+    def _preview(_data_dir: Path, profile: object) -> ProfilePreview:
         seen.append(str(profile))
-        return tmp_path / "preview.jpg"
+        return expected
 
     monkeypatch.setattr(profiles_service, "profile_preview", _preview)
 
-    assert profiles_service.preview_for_profile(tmp_path, "dating/profile_1") == (
-        tmp_path / "preview.jpg"
-    )
+    assert profiles_service.preview_for_profile(tmp_path, "dating/profile_1") == expected
     assert seen == [str(get_profile(tmp_path, "dating/profile_1"))]
 
 
-def test_get_profile_view_counts_stock_and_effective_settings(tmp_path: Path) -> None:
+def test_get_profile_view_counts_video_and_photo_stock(tmp_path: Path) -> None:
     add_profile(tmp_path)
-    add_profile_video(tmp_path)
+    add_profile_video(tmp_path, filename="dating_profile_1_001.mp4")
+    add_profile_video(tmp_path, filename="dating_profile_1_002.mp4")
+    add_profile_photo(tmp_path)
     set_profile_refill(tmp_path, "dating/profile_1", enabled=True, target=7, refill_at=3)
 
     view = profiles_service.get_profile_view(
@@ -181,7 +190,8 @@ def test_get_profile_view_counts_stock_and_effective_settings(tmp_path: Path) ->
         global_config=_GLOBAL,
     )
 
-    assert view.stock == 1
+    assert view.stock == 2
+    assert view.photo_stock == 1
     assert view.target == 7
     assert view.refill_at == 3
     assert view.target_override == 7

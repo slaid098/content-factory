@@ -287,6 +287,30 @@ def test_count_by_profile_ignores_photos_by_default(connection: Connection) -> N
         connection.close()
 
 
+def test_count_by_profile_separates_types_and_skips_delivered_rows(
+    connection: Connection,
+) -> None:
+    try:
+        rows = [
+            (_item("content/dating/ru/a.mp4"), 1, _NOW),
+            (_item("content/dating/ru/b.mp4"), 1, _NOW),
+            (_item("content/dating/ru/c.jpg", content_type=ContentType.PHOTO), 1, _NOW),
+            (_item("content/dating/ru/d.jpg", content_type=ContentType.PHOTO), 1, _NOW),
+        ]
+        upsert_items(connection, rows)
+        mark_delivered(
+            connection,
+            ["content/dating/ru/b.mp4", "content/dating/ru/d.jpg"],
+            "request-1",
+            _DELIVERED_AT,
+        )
+
+        assert count_by_profile(connection, "dating/profile_1") == 1
+        assert count_by_profile(connection, "dating/profile_1", content_type=ContentType.PHOTO) == 1
+    finally:
+        connection.close()
+
+
 def test_mark_delivered_records_the_request_of_every_path(connection: Connection) -> None:
     try:
         rows = [

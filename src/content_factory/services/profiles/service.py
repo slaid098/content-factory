@@ -17,10 +17,11 @@ from content_factory.exceptions.errors import (
     ProfileValidationError,
 )
 from content_factory.schemas.config.runtime import GeneratorConfig
+from content_factory.schemas.content.delivery import ContentType
 from content_factory.schemas.profiles.api import ProfileResponse, ProfileUpdateRequest
 from content_factory.schemas.profiles.refill import ProfileRefill
 from content_factory.schemas.profiles.registry import ProfileInfo
-from content_factory.services.profiles.preview import profile_preview
+from content_factory.services.profiles.preview import ProfilePreview, profile_preview
 from content_factory.services.profiles.refill import decide_refill
 from content_factory.services.profiles.registry import (
     get_profile,
@@ -52,11 +53,12 @@ def list_profile_views(
         Profiles in id order; an empty tuple when the registry is empty.
     """
     profiles = list_profiles(data_dir)
-    stock, refills = _counters(data_dir, profiles)
+    stock, photo_stock, refills = _counters(data_dir, profiles)
     return tuple(
         _view(
             profile,
             stock.get(profile.id, 0),
+            photo_stock.get(profile.id, 0),
             refills.get(profile.id, _DISABLED),
             output_dir,
             global_config,
@@ -84,10 +86,11 @@ def get_profile_view(
         ProfileError: The id is unsafe, the profile is missing or malformed.
     """
     profile = get_profile(data_dir, profile_id)
-    stock, refills = _counters(data_dir, (profile,))
+    stock, photo_stock, refills = _counters(data_dir, (profile,))
     return _view(
         profile,
         stock.get(profile.id, 0),
+        photo_stock.get(profile.id, 0),
         refills.get(profile.id, _DISABLED),
         output_dir,
         global_config,
@@ -130,29 +133,31 @@ def update_profile_settings(
     current = _read_refill(data_dir, profile.id)
     updated = _updated_refill(payload, current, global_config)
     _write_refill(data_dir, profile.id, updated, moment)
-    stock, refills = _counters(data_dir, (profile,))
+    stock, photo_stock, refills = _counters(data_dir, (profile,))
     return _view(
         profile,
         stock.get(profile.id, 0),
+        photo_stock.get(profile.id, 0),
         refills.get(profile.id, updated),
         output_dir,
         global_config,
     )
 
 
-def preview_for_profile(data_dir: Path, profile_id: str) -> Path | None:
-    """Return the cached JPEG preview of one profile.
+def preview_for_profile(data_dir: Path, profile_id: str) -> ProfilePreview | None:
+    """Return the preview of one profile: a video frame or its newest photo.
 
     Args:
         data_dir: Root of the runtime data directory, usually ``app_data``.
         profile_id: Profile identifier such as ``dating/profile_2``.
 
     Returns:
-        Path to the preview, or ``None`` when the profile has no mp4 yet.
+        The preview file with its media type, or ``None`` when the profile has
+        neither a video nor a photo.
 
     Raises:
         ProfileError: The id is unsafe, the profile is missing or malformed.
-        ProfilePreviewError: ffprobe or ffmpeg cannot build the preview.
+        ProfilePreviewError: ffprobe or ffmpeg cannot build the video preview.
     """
     return profile_preview(data_dir, get_profile(data_dir, profile_id))
 
@@ -160,6 +165,7 @@ def preview_for_profile(data_dir: Path, profile_id: str) -> Path | None:
 def _view(
     profile: ProfileInfo,
     stock: int,
+    photo_stock: int,
     refill: ProfileRefill,
     output_dir: Path,
     global_config: GeneratorConfig,
@@ -177,6 +183,7 @@ def _view(
         height=profile.height,
         audio=profile.audio,
         stock=stock,
+        photo_stock=photo_stock,
         target=refill.target if refill.target is not None else global_config.target,
         refill_at=(refill.refill_at if refill.refill_at is not None else global_config.refill_at),
         refill_enabled=refill.enabled,
@@ -264,8 +271,8 @@ def _storage_failure(profile_id: str, ex: BaseException, action: str) -> None:
 def _counters(
     data_dir: Path,
     profiles: tuple[ProfileInfo, ...],
-) -> tuple[dict[str, int], dict[str, ProfileRefill]]:
-    """Synchronize the stock index and read counts with settings.
+) -> tuple[dict[str, int], dict[str, int], dict[str, ProfileRefill]]:
+    """Synchronize the stock index and read video, photo and refill values.
 
     A database failure is logged and yields zeros with disabled settings:
     the list of profiles stays available even when accounting is broken.
@@ -278,7 +285,7 @@ def _counters(
             error=ex,
             error_type=type(ex).__name__,
         ).warning("Не удалось синхронизировать индекс стока")
-        return {}, {}
+        return {}, {}, {}
     try:
         connection = connect(data_dir / DB_DIR / DB_FILENAME)
     except (OSError, DatabaseError) as ex:
@@ -287,9 +294,13 @@ def _counters(
             error=ex,
             error_type=type(ex).__name__,
         ).warning("Не удалось прочитать настройки профилей")
-        return {}, {}
+        return {}, {}, {}
     try:
         stock = {profile.id: count_by_profile(connection, profile.id) for profile in profiles}
+        photo_stock = {
+            profile.id: count_by_profile(connection, profile.id, content_type=ContentType.PHOTO)
+            for profile in profiles
+        }
         refills = {profile.id: get_refill(connection, profile.id) for profile in profiles}
     except DatabaseError as ex:
         logger.bind(
@@ -297,10 +308,10 @@ def _counters(
             error=ex,
             error_type=type(ex).__name__,
         ).warning("Не удалось прочитать настройки профилей")
-        return {}, {}
+        return {}, {}, {}
     finally:
         connection.close()
-    return stock, refills
+    return stock, photo_stock, refills
 
 
 __all__ = [

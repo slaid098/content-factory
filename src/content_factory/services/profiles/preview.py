@@ -1,13 +1,16 @@
-"""Preview frames of the newest generated video of one profile.
+"""Preview of the newest generated media of one profile.
 
-The preview is a JPEG cached under ``app_data/preview``. It is rebuilt only
-when the newest source video is newer than the cache, so a partner page can
-poll the endpoint without running ffmpeg on every request.
+A video preview is a JPEG frame cached under ``app_data/preview``. It is
+rebuilt only when the newest source video is newer than the cache, so a partner
+page can poll the endpoint without running ffmpeg on every request. A profile
+without videos falls back to its newest photo post: the photo is served as is,
+without a cache and without ffmpeg.
 """
 
 from __future__ import annotations
 
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 from loguru import logger
@@ -19,6 +22,21 @@ from content_factory.schemas.profiles.registry import ProfileInfo
 _TIMEOUT_SECONDS = 30
 _MP4_SUFFIX = ".mp4"
 _JPEG_SUFFIX = ".jpg"
+_VIDEO_MEDIA_TYPE = "image/jpeg"
+_PHOTO_MEDIA_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ProfilePreview:
+    """One preview file and the media type it is served with."""
+
+    path: Path
+    media_type: str
 
 
 def extract_preview(source: Path, target: Path) -> None:
@@ -61,27 +79,34 @@ def extract_preview(source: Path, target: Path) -> None:
     )
 
 
-def profile_preview(data_dir: Path, profile: ProfileInfo) -> Path | None:
-    """Return the cached preview of *profile*, rebuilding it when stale.
+def profile_preview(data_dir: Path, profile: ProfileInfo) -> ProfilePreview | None:
+    """Return the preview of *profile*, rebuilding the video frame when stale.
+
+    A generated video has priority: its preview is the cached JPEG frame. A
+    profile without videos falls back to its newest photo post, served from the
+    stock directory as is.
 
     Args:
         data_dir: Root of the runtime data directory, usually ``app_data``.
         profile: Registry fields of the profile.
 
     Returns:
-        Path to the JPEG preview, or ``None`` when the profile has no
-        generated mp4 yet.
+        The preview file with its media type, or ``None`` when the profile has
+        neither a generated video nor a photo.
 
     Raises:
-        ProfilePreviewError: The newest source exists but ffprobe or ffmpeg
-            cannot produce a frame.
+        ProfilePreviewError: The newest source video exists but ffprobe or
+            ffmpeg cannot produce a frame.
     """
     source = _newest_source(data_dir, profile)
     if source is None:
-        return None
+        photo = _newest_photo(data_dir, profile)
+        if photo is None:
+            return None
+        return ProfilePreview(photo, _PHOTO_MEDIA_TYPES[photo.suffix.lower()])
     target = data_dir / PREVIEW_DIR / f"{profile.category}_{profile.name}{_JPEG_SUFFIX}"
     if _is_fresh(source, target):
-        return target
+        return ProfilePreview(target, _VIDEO_MEDIA_TYPE)
     staging = target.with_name(f"{target.stem}.tmp{_JPEG_SUFFIX}")
     try:
         extract_preview(source, staging)
@@ -101,7 +126,7 @@ def profile_preview(data_dir: Path, profile: ProfileInfo) -> Path | None:
             error_type=type(ex).__name__,
         ).warning("Не удалось собрать превью профиля {}", profile.id)
         raise ProfilePreviewError("preview unavailable") from ex
-    return target
+    return ProfilePreview(target, _VIDEO_MEDIA_TYPE)
 
 
 def _duration(source: Path) -> float:
@@ -136,11 +161,7 @@ def _newest_source(data_dir: Path, profile: ProfileInfo) -> Path | None:
     directory = data_dir / CONTENT_DIR / profile.niche / profile.language
     prefix = f"{profile.category}_{profile.name}_"
     try:
-        candidates = [
-            path
-            for path in directory.iterdir()
-            if path.suffix == _MP4_SUFFIX and path.name.startswith(prefix) and path.is_file()
-        ]
+        candidates = _media_candidates(directory, prefix, frozenset({_MP4_SUFFIX}))
     except OSError as ex:
         logger.bind(
             path=str(directory),
@@ -148,6 +169,53 @@ def _newest_source(data_dir: Path, profile: ProfileInfo) -> Path | None:
             error_type=type(ex).__name__,
         ).debug("Каталог стока профиля {} недоступен", profile.id)
         return None
+    return _newest(candidates)
+
+
+def _newest_photo(data_dir: Path, profile: ProfileInfo) -> Path | None:
+    """Return the newest photo post of *profile*, or ``None``."""
+    directory = data_dir / CONTENT_DIR / profile.niche / profile.language
+    prefix = f"{profile.category}_{profile.name}_"
+    try:
+        candidates = _media_candidates(
+            directory,
+            prefix,
+            frozenset(_PHOTO_MEDIA_TYPES),
+            ignore_case=True,
+        )
+    except OSError as ex:
+        logger.bind(
+            path=str(directory),
+            error=ex,
+            error_type=type(ex).__name__,
+        ).debug("Каталог стока профиля {} недоступен", profile.id)
+        return None
+    return _newest(candidates)
+
+
+def _media_candidates(
+    directory: Path,
+    prefix: str,
+    suffixes: frozenset[str],
+    *,
+    ignore_case: bool = False,
+) -> list[Path]:
+    """Return regular media files with *prefix*.
+
+    Raises:
+        OSError: The directory cannot be read.
+    """
+    return [
+        path
+        for path in directory.iterdir()
+        if (path.suffix.lower() if ignore_case else path.suffix) in suffixes
+        and path.name.startswith(prefix)
+        and path.is_file()
+    ]
+
+
+def _newest(candidates: list[Path]) -> Path | None:
+    """Return the newest file by modification time, breaking ties by name."""
     newest: Path | None = None
     newest_mtime = float("-inf")
     for path in candidates:
@@ -193,4 +261,4 @@ def _stderr(ex: BaseException) -> str:
     return str(stderr).strip()
 
 
-__all__ = ["extract_preview", "profile_preview"]
+__all__ = ["ProfilePreview", "extract_preview", "profile_preview"]
