@@ -22,6 +22,7 @@ from content_factory.services.stock.layout import (
     language_files,
     photo_sidecar,
     photo_text,
+    profile_slugs,
     stock_files,
 )
 
@@ -129,5 +130,6 @@ __all__ = [
     "language_files",
     "photo_sidecar",
     "photo_text",
+    "profile_slugs",
     "stock_files",
 ]

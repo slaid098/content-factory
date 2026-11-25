@@ -184,7 +184,10 @@ def get_profile_preview(
     return FileResponse(
         preview.path,
         media_type=preview.media_type,
-        headers={"Cache-Control": "max-age=60"},
+        headers={
+            "Cache-Control": "max-age=60",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

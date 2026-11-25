@@ -14,10 +14,11 @@ from pathlib import Path
 
 from loguru import logger
 
-from content_factory.constants import CONTENT_DIR, PREVIEW_DIR
+from content_factory.constants import CONTENT_DIR, PREVIEW_DIR, PROFILES_DIR
 from content_factory.exceptions.errors import ProfilePreviewError
 from content_factory.schemas.profiles.preview import ProfilePreview
 from content_factory.schemas.profiles.registry import ProfileInfo
+from content_factory.services.stock import profile_slugs
 
 _TIMEOUT_SECONDS = 30
 _MP4_SUFFIX = ".mp4"
@@ -90,17 +91,29 @@ def profile_preview(data_dir: Path, profile: ProfileInfo) -> ProfilePreview | No
         ProfilePreviewError: The newest source video exists but ffprobe or
             ffmpeg cannot produce a frame.
     """
-    source = _newest_source(data_dir, profile)
-    if source is None:
-        photo = _newest_photo(data_dir, profile)
-        if photo is None:
-            return None
-        return ProfilePreview(photo, _PHOTO_MEDIA_TYPES[photo.suffix.lower()])
-    target = data_dir / PREVIEW_DIR / f"{profile.category}_{profile.name}{_JPEG_SUFFIX}"
+    directory = data_dir / CONTENT_DIR / profile.niche / profile.language
+    videos, photos = _profile_media(data_dir, directory, profile)
+    source = _newest(videos)
+    if source is not None:
+        return _video_preview(data_dir, profile, source)
+    photo = _newest(photos)
+    if photo is None:
+        return None
+    return ProfilePreview(photo, _PHOTO_MEDIA_TYPES[photo.suffix.lower()])
+
+
+def _video_preview(
+    data_dir: Path,
+    profile: ProfileInfo,
+    source: Path,
+) -> ProfilePreview:
+    """Return the cached JPEG frame of *source*, rebuilding it when stale."""
+    target = data_dir / PREVIEW_DIR / profile.category / f"{profile.name}{_JPEG_SUFFIX}"
     if _is_fresh(source, target):
         return ProfilePreview(target, _VIDEO_MEDIA_TYPE)
     staging = target.with_name(f"{target.stem}.tmp{_JPEG_SUFFIX}")
     try:
+        target.parent.mkdir(parents=True, exist_ok=True)
         extract_preview(source, staging)
         staging.replace(target)
     except (OSError, subprocess.SubprocessError, ProfilePreviewError) as ex:
@@ -148,62 +161,71 @@ def _duration(source: Path) -> float:
     return duration
 
 
-def _newest_source(data_dir: Path, profile: ProfileInfo) -> Path | None:
-    """Return the newest generated mp4 of *profile*, or ``None``."""
-    directory = data_dir / CONTENT_DIR / profile.niche / profile.language
-    prefix = f"{profile.category}_{profile.name}_"
-    try:
-        candidates = _media_candidates(directory, prefix, frozenset({_MP4_SUFFIX}))
-    except OSError as ex:
-        logger.bind(
-            path=str(directory),
-            error=ex,
-            error_type=type(ex).__name__,
-        ).debug("Каталог стока профиля {} недоступен", profile.id)
-        return None
-    return _newest(candidates)
-
-
-def _newest_photo(data_dir: Path, profile: ProfileInfo) -> Path | None:
-    """Return the newest photo post of *profile*, or ``None``."""
-    directory = data_dir / CONTENT_DIR / profile.niche / profile.language
-    prefix = f"{profile.category}_{profile.name}_"
-    try:
-        candidates = _media_candidates(
-            directory,
-            prefix,
-            frozenset(_PHOTO_MEDIA_TYPES),
-            ignore_case=True,
-        )
-    except OSError as ex:
-        logger.bind(
-            path=str(directory),
-            error=ex,
-            error_type=type(ex).__name__,
-        ).debug("Каталог стока профиля {} недоступен", profile.id)
-        return None
-    return _newest(candidates)
-
-
-def _media_candidates(
+def _profile_media(
+    data_dir: Path,
     directory: Path,
-    prefix: str,
-    suffixes: frozenset[str],
-    *,
-    ignore_case: bool = False,
-) -> list[Path]:
-    """Return regular media files with *prefix*.
+    profile: ProfileInfo,
+) -> tuple[list[Path], list[Path]]:
+    """Return video and photo files owned by *profile* in one directory scan.
 
-    Raises:
-        OSError: The directory cannot be read.
+    The owner of a file is the longest registry slug that prefixes its name,
+    so a profile never serves files of a profile whose name extends its own.
+    A slug claimed by two profiles is ambiguous and belongs to none; symlinks
+    are not stock files.
+
+    Args:
+        data_dir: Root of the runtime data directory, usually ``app_data``.
+        directory: Stock directory ``content/<niche>/<language>``.
+        profile: Registry fields of the profile.
+
+    Returns:
+        Video and photo candidates; both lists are empty when the directory
+        cannot be read.
     """
-    return [
-        path
-        for path in directory.iterdir()
-        if (path.suffix.lower() if ignore_case else path.suffix) in suffixes
-        and path.name.startswith(prefix)
-        and path.is_file()
-    ]
+    try:
+        entries = list(directory.iterdir())
+    except OSError as ex:
+        logger.bind(
+            path=str(directory),
+            error=ex,
+            error_type=type(ex).__name__,
+        ).debug("Каталог стока профиля {} недоступен", profile.id)
+        return [], []
+    owners = sorted(
+        profile_slugs(data_dir / PROFILES_DIR).items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+    videos: list[Path] = []
+    photos: list[Path] = []
+    for path in entries:
+        if not _is_regular_file(path):
+            continue
+        if _owner(path.name, owners) != profile.id:
+            continue
+        if path.suffix == _MP4_SUFFIX:
+            videos.append(path)
+        elif path.suffix.lower() in _PHOTO_MEDIA_TYPES:
+            photos.append(path)
+    return videos, photos
+
+
+def _is_regular_file(path: Path) -> bool:
+    """Return whether *path* is a regular file and not a symlink."""
+    try:
+        if path.is_symlink():
+            return False
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _owner(name: str, owners: list[tuple[str, str]]) -> str | None:
+    """Return the profile id of the longest slug that prefixes *name*."""
+    for slug, profile_id in owners:
+        if name.startswith(f"{slug}_"):
+            return profile_id
+    return None
 
 
 def _newest(candidates: list[Path]) -> Path | None:
@@ -231,8 +253,14 @@ def _newest(candidates: list[Path]) -> Path | None:
 
 
 def _is_fresh(source: Path, target: Path) -> bool:
-    """Return whether *target* exists and is not older than *source*."""
+    """Return whether *target* is a regular cache not older than *source*.
+
+    A symlink is never a usable cache: it could point outside the preview
+    directory, so it is rebuilt.
+    """
     try:
+        if target.is_symlink():
+            return False
         return target.is_file() and target.stat().st_mtime >= source.stat().st_mtime
     except OSError as ex:
         logger.bind(

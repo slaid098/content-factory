@@ -385,8 +385,9 @@ def test_preview_returns_jpeg_and_reuses_cache(
     assert first.status_code == 200
     assert first.headers["Content-Type"] == "image/jpeg"
     assert first.headers["Cache-Control"] == "max-age=60"
+    assert first.headers["X-Content-Type-Options"] == "nosniff"
     assert first.content == b"\xff\xd8frame"
-    assert (data_dir / PREVIEW_DIR / "dating_profile_1.jpg").is_file()
+    assert (data_dir / PREVIEW_DIR / "dating" / "profile_1.jpg").is_file()
     assert len(calls) == 1
 
     second = _get(client, f"{_PREFIX}/dating/profile_1/preview")
@@ -454,6 +455,7 @@ def test_preview_returns_newest_photo_with_real_media_type(
     assert response.status_code == 200
     assert response.headers["Content-Type"] == media_type
     assert response.headers["Cache-Control"] == "max-age=60"
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert response.content == b"image"
     assert calls == []
     assert not (data_dir / PREVIEW_DIR).exists()
@@ -522,7 +524,7 @@ def test_preview_failure_returns_503_without_stderr(
     assert response.status_code == 503
     assert response.json() == {"detail": "preview unavailable"}
     assert "secret stderr" not in response.text
-    records = [record for record in log_records if record["function"] == "profile_preview"]
+    records = [record for record in log_records if record["function"] == "_video_preview"]
     assert records[-1]["extra"]["stderr"] == "secret stderr"
 
 
