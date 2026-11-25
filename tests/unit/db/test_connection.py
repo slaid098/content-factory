@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import ast
 import re
+import traceback
 from pathlib import Path
 
 import pytest
 
+from content_factory.config.dsn import sanitize_database_text
 from content_factory.config.settings import Settings, get_settings
 from content_factory.db.connection import (
     _backend_key,
+    _PostgresConnection,
     _to_postgres,
     connect,
     database_url,
@@ -89,6 +92,39 @@ def test_settings_reject_malformed_dsn(value: str) -> None:
         Settings(database_url=value)
 
 
+def test_settings_reject_password_in_query_without_echoing_it() -> None:
+    with pytest.raises(ConfigError, match="userinfo") as info:
+        Settings(database_url="postgresql://user@localhost/db?password=100%25secret")
+
+    assert "100%25secret" not in str(info.value)
+    assert "100%secret" not in str(info.value)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "dbname=another",
+        "host=prod.example",
+        "hostaddr=10.0.0.1",
+        "port=5555",
+        "service=production",
+    ],
+)
+def test_settings_reject_retargeting_query_parameters(query: str) -> None:
+    with pytest.raises(ConfigError, match="query"):
+        Settings(database_url=f"postgresql://user@localhost/db?{query}")
+
+
+def test_sanitize_masks_query_password_raw_and_decoded() -> None:
+    dsn = "postgresql://user@localhost/db?password=100%25secret"
+    text = f'invalid percent-encoded token: "{dsn}" raw=100%25secret decoded=100%secret'
+
+    sanitized = sanitize_database_text(text, dsn)
+
+    assert "100%25secret" not in sanitized
+    assert "100%secret" not in sanitized
+
+
 def test_settings_hide_database_url() -> None:
     settings = Settings(database_url="postgresql://user:topsecret@localhost:5432/db")
 
@@ -154,6 +190,34 @@ def test_connect_failure_hides_the_password(
     assert "dbname=content_factory" in message
     assert captured["connect_timeout"] == 10
     assert not (tmp_path / "db").exists()
+
+
+def test_postgres_failure_has_no_raw_exception_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    psycopg = pytest.importorskip("psycopg")
+    dsn = "postgresql://user:userinfo-secret@db.example:5432/content_factory?password=query-secret"
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise psycopg.OperationalError(f'invalid connection string: "{dsn}"')
+
+    monkeypatch.setattr(psycopg, "connect", fail)
+
+    failure: DatabaseError | None = None
+    try:
+        _PostgresConnection.open(dsn)
+    except DatabaseError as ex:
+        failure = ex
+        formatted = traceback.format_exc()
+    else:  # pragma: no cover - the fake driver always fails
+        pytest.fail("ожидалась DatabaseError")
+    assert failure is not None
+    message = str(failure)
+    for secret in ("userinfo-secret", "query-secret"):
+        assert secret not in message
+        assert secret not in formatted
+    assert failure.__cause__ is None
+    assert failure.__context__ is None
 
 
 def test_db_exists_checks_the_sqlite_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

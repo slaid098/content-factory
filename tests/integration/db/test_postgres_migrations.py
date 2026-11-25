@@ -81,3 +81,25 @@ def test_rows_support_column_names_and_positions(pg: Path) -> None:
 def test_guard_rejects_a_database_without_the_test_suffix() -> None:
     with pytest.raises(pytest.fail.Exception, match="_test"):
         require_test_database("postgresql://user@localhost/content_factory")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql://u@localhost/content_factory_test?dbname=content_factory",
+        "postgresql://u@localhost/content_factory_test?host=prod.example",
+        "postgresql://u@prod.example/content_factory_test",
+        "host=localhost dbname=content_factory_test",
+        "postgresql://u@localhost/content_factory_test?service=production",
+    ],
+)
+def test_guard_rejects_retargeting_and_keyword_dsn(url: str) -> None:
+    with pytest.raises(pytest.fail.Exception, match="CONTENT_FACTORY_TEST_DATABASE_URL"):
+        require_test_database(url)
+
+
+def test_guard_accepts_the_ci_dsn() -> None:
+    require_test_database(
+        "postgresql://content_factory:content_factory@localhost:5432/content_factory_test"
+    )
+    require_test_database("postgresql:///content_factory_test")

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -200,6 +200,23 @@ def _psycopg() -> Any:
     return psycopg
 
 
+def _run_postgres[T](operation: Callable[[], T], *, dsn: str | None = None) -> T:
+    """Run a driver call and translate its error outside the except block.
+
+    Raising after the ``except`` block keeps the raw psycopg exception out of
+    ``__cause__``, ``__context__`` and the traceback, where it could print the
+    DSN even when the translated message is sanitized.
+    """
+    psycopg = _psycopg()
+    failure: errors.DatabaseError | None = None
+    try:
+        return operation()
+    except psycopg.Error as ex:
+        failure = _translate_postgres(ex, dsn=dsn)
+    assert failure is not None
+    raise failure
+
+
 def _validate_table(table: str) -> None:
     """Reject table names that cannot be safely interpolated into a query."""
     if not table or any(char not in _TABLE_NAME_PATTERN for char in table):
@@ -381,19 +398,11 @@ class _PostgresCursor:
         return int(self._cursor.rowcount)
 
     def fetchone(self) -> Row | None:
-        psycopg = _psycopg()
-        try:
-            row = self._cursor.fetchone()
-        except psycopg.Error as ex:
-            raise _translate_postgres(ex) from ex
+        row = _run_postgres(self._cursor.fetchone)
         return None if row is None else _PostgresRow(tuple(row), self._index())
 
     def fetchall(self) -> list[Row]:
-        psycopg = _psycopg()
-        try:
-            rows = self._cursor.fetchall()
-        except psycopg.Error as ex:
-            raise _translate_postgres(ex) from ex
+        rows = _run_postgres(self._cursor.fetchall)
         index = self._index()
         return [_PostgresRow(tuple(row), index) for row in rows]
 
@@ -421,35 +430,27 @@ class _PostgresConnection:
         options = f"-c lock_timeout={_POSTGRES_LOCK_TIMEOUT}"
         if readonly:
             options += " -c default_transaction_read_only=on"
-        try:
-            connection = psycopg.connect(
+        connection = _run_postgres(
+            lambda: psycopg.connect(
                 dsn,
                 autocommit=False,
                 options=options,
                 connect_timeout=_POSTGRES_CONNECT_TIMEOUT,
-            )
-        except psycopg.Error as ex:
-            raise _translate_postgres(ex, dsn=dsn) from ex
+            ),
+            dsn=dsn,
+        )
         return cls(connection)
 
     def execute(self, sql: str, params: Params = ()) -> Cursor:
-        psycopg = _psycopg()
-        try:
-            cursor = self._connection.cursor()
-            cursor.execute(_to_postgres(sql), params or None)
-        except psycopg.Error as ex:
-            raise _translate_postgres(ex) from ex
+        cursor = _run_postgres(self._connection.cursor)
+        _run_postgres(lambda: cursor.execute(_to_postgres(sql), params or None))
         return _PostgresCursor(cursor)
 
     def executemany(self, sql: str, params: Rows) -> Cursor:
-        psycopg = _psycopg()
+        cursor = _run_postgres(self._connection.cursor)
         rows = list(params)
-        try:
-            cursor = self._connection.cursor()
-            if rows:
-                cursor.executemany(_to_postgres(sql), rows)
-        except psycopg.Error as ex:
-            raise _translate_postgres(ex) from ex
+        if rows:
+            _run_postgres(lambda: cursor.executemany(_to_postgres(sql), rows))
         return _PostgresCursor(cursor)
 
     def begin(self) -> None:
@@ -457,25 +458,13 @@ class _PostgresConnection:
         return None
 
     def commit(self) -> None:
-        psycopg = _psycopg()
-        try:
-            self._connection.commit()
-        except psycopg.Error as ex:
-            raise _translate_postgres(ex) from ex
+        _run_postgres(self._connection.commit)
 
     def rollback(self) -> None:
-        psycopg = _psycopg()
-        try:
-            self._connection.rollback()
-        except psycopg.Error as ex:
-            raise _translate_postgres(ex) from ex
+        _run_postgres(self._connection.rollback)
 
     def close(self) -> None:
-        psycopg = _psycopg()
-        try:
-            self._connection.close()
-        except psycopg.Error as ex:
-            raise _translate_postgres(ex) from ex
+        _run_postgres(self._connection.close)
 
     def columns(self, table: str) -> set[str]:
         _validate_table(table)
