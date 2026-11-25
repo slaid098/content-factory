@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 from content_factory.exceptions.generator import ProfileError
+from content_factory.schemas.content.delivery import ContentType
 from content_factory.schemas.profiles.delivery import DeliveryInfo, TitleConfig, TitleMode
 from content_factory.schemas.profiles.registry import ProfileInfo
 from content_factory.services.profiles.registry import get_profile, list_profiles
@@ -359,6 +360,78 @@ def test_profile_without_description_fields_has_none(tmp_path: Path) -> None:
 
     assert profile.title is None
     assert profile.summary is None
+
+
+def test_profile_without_production_outputs_video(tmp_path: Path) -> None:
+    _make_profile(tmp_path, "dating", "profile_2")
+
+    assert get_profile(tmp_path, "dating/profile_2").outputs == frozenset({ContentType.VIDEO})
+
+
+def test_profile_outputs_follow_the_production_block(tmp_path: Path) -> None:
+    _make_profile(
+        tmp_path,
+        "dating",
+        "profile_2",
+        production=[
+            {"producer": "vast", "type": "video", "qa": ["media", "clef"]},
+            {"producer": "card", "type": "photo", "qa": ["image"]},
+        ],
+    )
+
+    assert get_profile(tmp_path, "dating/profile_2").outputs == frozenset(
+        {ContentType.VIDEO, ContentType.PHOTO}
+    )
+
+
+def test_photo_only_profile_outputs_photo(tmp_path: Path) -> None:
+    _make_profile(
+        tmp_path,
+        "dating",
+        "profile_2",
+        production=[{"producer": "card", "type": "photo"}],
+    )
+
+    assert get_profile(tmp_path, "dating/profile_2").outputs == frozenset({ContentType.PHOTO})
+
+
+def test_production_step_without_type_outputs_video(tmp_path: Path) -> None:
+    _make_profile(
+        tmp_path,
+        "dating",
+        "profile_2",
+        production=[{"producer": "vast"}],
+    )
+
+    assert get_profile(tmp_path, "dating/profile_2").outputs == frozenset({ContentType.VIDEO})
+
+
+@pytest.mark.parametrize(
+    "production",
+    [
+        "photo",
+        [],
+        [42],
+        [{"type": "photo"}],
+        [{"producer": "vast", "type": "audio"}],
+        [{"producer": "vast"}, {"producer": "vast"}],
+    ],
+)
+def test_invalid_production_skips_only_that_profile(
+    tmp_path: Path,
+    production: object,
+    log_records: list[dict[str, Any]],
+) -> None:
+    _make_profile(tmp_path, "dating", "profile_1")
+    _make_profile(tmp_path, "dating", "profile_2", production=production)
+
+    assert [profile.id for profile in list_profiles(tmp_path)] == ["dating/profile_1"]
+    assert any(
+        record["level"].name == "WARNING" and "dating/profile_2" in record["message"]
+        for record in log_records
+    )
+    with pytest.raises(ProfileError, match="профиль не найден"):
+        get_profile(tmp_path, "dating/profile_2")
 
 
 @pytest.mark.parametrize(

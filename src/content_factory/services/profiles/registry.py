@@ -27,6 +27,7 @@ from content_factory.utils.profiles import (
     read_profile_delivery,
     read_profile_language,
     read_profile_niche,
+    read_profile_outputs,
     read_profile_positive_int,
     read_profile_summary,
     read_profile_title,
@@ -143,6 +144,7 @@ def _read_info(directory: Path, category: str, name: str) -> ProfileInfo:
         delivery=read_profile_delivery(data, label),
         title=read_profile_title(data, label),
         summary=read_profile_summary(data, label),
+        outputs=read_profile_outputs(data, label),
     )
 
 

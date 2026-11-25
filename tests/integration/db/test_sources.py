@@ -98,7 +98,7 @@ def test_migration_creates_the_source_tables(connection: Connection) -> None:
     versions = connection.execute(
         "SELECT version FROM schema_migrations ORDER BY version"
     ).fetchall()
-    assert [row[0] for row in versions] == ["0001", "0002"]
+    assert [row[0] for row in versions] == ["0001", "0002", "0003"]
 
 
 def test_second_migration_is_idempotent(tmp_path: Path) -> None:

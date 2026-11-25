@@ -20,7 +20,7 @@ from content_factory.exceptions.errors import (
 )
 from content_factory.schemas.config.runtime import GeneratorConfig
 from content_factory.schemas.database.port import Connection
-from content_factory.schemas.profiles.api import ProfileUpdateRequest
+from content_factory.schemas.profiles.api import ProfileResponse, ProfileUpdateRequest
 from content_factory.schemas.profiles.preview import ProfilePreview
 from content_factory.services.profiles import service as profiles_service
 from content_factory.services.profiles.registry import get_profile
@@ -32,7 +32,7 @@ _MOMENT = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
 def _update(
     data_dir: Path,
     payload: ProfileUpdateRequest,
-) -> object:
+) -> ProfileResponse:
     return profiles_service.update_profile_settings(
         data_dir,
         "dating/profile_1",
@@ -181,7 +181,15 @@ def test_get_profile_view_counts_video_and_photo_stock(tmp_path: Path) -> None:
     add_profile_video(tmp_path, filename="dating_profile_1_001.mp4")
     add_profile_video(tmp_path, filename="dating_profile_1_002.mp4")
     add_profile_photo(tmp_path)
-    set_profile_refill(tmp_path, "dating/profile_1", enabled=True, target=7, refill_at=3)
+    set_profile_refill(
+        tmp_path,
+        "dating/profile_1",
+        enabled=True,
+        target=7,
+        refill_at=3,
+        photo_target=9,
+        photo_refill_at=4,
+    )
 
     view = profiles_service.get_profile_view(
         tmp_path,
@@ -196,4 +204,35 @@ def test_get_profile_view_counts_video_and_photo_stock(tmp_path: Path) -> None:
     assert view.refill_at == 3
     assert view.target_override == 7
     assert view.refill_at_override == 3
+    assert view.photo_target == 9
+    assert view.photo_refill_at == 4
     assert view.refill_enabled is True
+
+
+def test_update_stores_the_photo_pair(tmp_path: Path) -> None:
+    add_profile(tmp_path)
+
+    view = _update(tmp_path, ProfileUpdateRequest(photo_target=10, photo_refill_at=4))
+
+    assert view.photo_target == 10
+    assert view.photo_refill_at == 4
+    assert view.target == 20
+    assert view.refill_at == 2
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        ProfileUpdateRequest(photo_target=0, photo_refill_at=1),
+        ProfileUpdateRequest(photo_target=5, photo_refill_at=5),
+        ProfileUpdateRequest(photo_target=5, photo_refill_at=6),
+    ],
+)
+def test_update_rejects_an_invalid_photo_pair(
+    tmp_path: Path,
+    payload: ProfileUpdateRequest,
+) -> None:
+    add_profile(tmp_path)
+
+    with pytest.raises(ProfileValidationError, match="photo_"):
+        _update(tmp_path, payload)

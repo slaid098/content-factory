@@ -13,7 +13,9 @@ from tests.unit.generator.helpers import make_profile
 
 from content_factory.constants import PROFILES_DIR
 from content_factory.exceptions.generator import GeneratorError, ProfileError
+from content_factory.flows.generate_batch import flow as generate_flow
 from content_factory.flows.generate_batch.flow import generate_batch
+from content_factory.schemas.content.delivery import ContentType
 from content_factory.schemas.generator.pipeline import (
     Artifact,
     ArtifactKind,
@@ -436,3 +438,94 @@ def test_failed_item_does_not_stop_the_next_item_or_profile(tmp_path: Path) -> N
         for item in report["items"]
         if item["file"].endswith("002.mp4")
     ] == ["done", "done"]
+
+
+def test_content_type_photo_runs_only_the_photo_chain(tmp_path: Path) -> None:
+    make_profile(
+        tmp_path / "profiles",
+        extra={
+            "production": [
+                {"producer": "vast", "type": "video", "qa": ["clef"]},
+                {"producer": "card", "type": "photo"},
+            ]
+        },
+    )
+    photo = _FakeProducer(ArtifactKind.PHOTO, prefix="photo")
+    registry.register("vast", _BrokenProducer)
+    registry.register("card", lambda: photo)
+    try:
+        outcome = generate_batch.fn(
+            profiles="dating/profile_2",
+            count=1,
+            content_type="photo",
+        )
+    finally:
+        registry.reset()
+
+    assert re.fullmatch(r"run=\S+ status=done generated=1 failed=0", outcome)
+    assert photo.calls == [(("dating/profile_2",), 1)]
+    report = _reports(tmp_path)[0]
+    assert report["production"] == [{"producer": "card", "type": "photo", "qa": ["image"]}]
+    assert [item["type"] for item in report["items"]] == ["photo"]
+    assert [item["status"] for item in report["items"]] == ["done"]
+    assert not list((tmp_path / "generated").rglob("*.mp4"))
+
+
+def test_content_type_video_runs_only_the_video_chain(tmp_path: Path) -> None:
+    make_profile(
+        tmp_path / "profiles",
+        extra={
+            "production": [
+                {"producer": "vast", "type": "video", "qa": ["clef"]},
+                {"producer": "card", "type": "photo"},
+            ]
+        },
+    )
+    video = _FakeProducer()
+    registry.register("vast", lambda: video)
+    try:
+        outcome = generate_batch.fn(
+            profiles="dating/profile_2",
+            count=1,
+            content_type="video",
+        )
+    finally:
+        registry.reset()
+
+    assert re.fullmatch(r"run=\S+ status=done generated=1 failed=0", outcome)
+    assert video.calls == [(("dating/profile_2",), 1)]
+    report = _reports(tmp_path)[0]
+    assert report["production"] == [{"producer": "vast", "type": "video", "qa": ["clef"]}]
+    assert [item["type"] for item in report["items"]] == ["video"]
+    assert not list((tmp_path / "generated").rglob("*.jpg"))
+
+
+def test_content_type_without_the_layer_is_rejected(tmp_path: Path) -> None:
+    make_profile(
+        tmp_path / "profiles",
+        extra={"production": [{"producer": "card", "type": "photo"}]},
+    )
+
+    with pytest.raises(ProfileError, match="нет слоя"):
+        generate_batch.fn(profiles="dating/profile_2", count=1, content_type="video")
+
+    assert _reports(tmp_path) == []
+
+
+def test_unknown_content_type_is_rejected(tmp_path: Path) -> None:
+    make_profile(tmp_path / "profiles", extra=_recipe("vast"))
+
+    with pytest.raises(ProfileError, match="content_type"):
+        generate_batch.fn(profiles="dating/profile_2", count=1, content_type="audio")
+
+    assert _reports(tmp_path) == []
+
+
+def test_filtered_layer_with_an_input_of_another_type_is_rejected() -> None:
+    layers = (
+        Layer(name="vast", producer="vast", inputs=(), output=ArtifactKind.VIDEO),
+        Layer(name="card", producer="card", inputs=("vast",), output=ArtifactKind.PHOTO),
+    )
+
+    with pytest.raises(ProfileError, match="другого типа"):
+        generate_flow._filter_recipe("dating/profile_2", layers, ContentType.PHOTO)

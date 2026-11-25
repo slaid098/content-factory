@@ -35,6 +35,7 @@ from content_factory.services.stock import sync_stock
 _DISABLED = ProfileRefill(False, None, None)
 _TARGET_MIN = 1
 _TARGET_MAX = 1000
+_PHOTO_REFILL_MAX = 999
 
 
 def list_profile_views(
@@ -111,7 +112,9 @@ def update_profile_settings(
 
     A missing field keeps its value and an explicit ``null`` clears the
     override. The resulting effective pair must satisfy
-    ``0 <= refill_at < target`` and ``1 <= target <= 1000``.
+    ``0 <= refill_at < target`` and ``1 <= target <= 1000``. The photo pair
+    has no fallback: ``0 <= photo_target <= 1000``, ``0 <= photo_refill_at
+    <= 999``, and either both are zero or ``photo_refill_at < photo_target``.
 
     Args:
         data_dir: Root of the runtime data directory, usually ``app_data``.
@@ -190,6 +193,8 @@ def _view(
         refill_enabled=refill.enabled,
         target_override=refill.target,
         refill_at_override=refill.refill_at,
+        photo_target=refill.photo_target,
+        photo_refill_at=refill.photo_refill_at,
         preview_url=f"/api/v1/content/profiles/{profile.category}/{profile.name}/preview",
         last_run=latest_run(output_dir, profile),
     )
@@ -205,6 +210,12 @@ def _updated_refill(
     enabled = payload.refill_enabled if "refill_enabled" in fields else current.enabled
     target = payload.target if "target" in fields else current.target
     refill_at = payload.refill_at if "refill_at" in fields else current.refill_at
+    photo_target = payload.photo_target
+    if "photo_target" not in fields or photo_target is None:
+        photo_target = current.photo_target
+    photo_refill_at = payload.photo_refill_at
+    if "photo_refill_at" not in fields or photo_refill_at is None:
+        photo_refill_at = current.photo_refill_at
     effective_target = target if target is not None else global_config.target
     effective_refill_at = refill_at if refill_at is not None else global_config.refill_at
     if not _TARGET_MIN <= effective_target <= _TARGET_MAX:
@@ -215,11 +226,41 @@ def _updated_refill(
         raise ProfileValidationError(
             f"refill_at должен быть меньше target: {effective_refill_at} >= {effective_target}"
         )
+    _validate_photo(photo_target, photo_refill_at)
     return ProfileRefill(
         enabled=bool(enabled),
         target=target,
         refill_at=refill_at,
+        photo_target=photo_target,
+        photo_refill_at=photo_refill_at,
     )
+
+
+def _validate_photo(target: int, refill_at: int) -> None:
+    """Validate the photo goal and threshold pair.
+
+    Raises:
+        ProfileValidationError: A value is out of range, a zero goal has a
+            non-zero threshold, or a non-zero threshold is not below the goal.
+    """
+    if not 0 <= target <= _TARGET_MAX:
+        raise ProfileValidationError(
+            f"photo_target должен быть в диапазоне 0..{_TARGET_MAX}: {target}"
+        )
+    if not 0 <= refill_at <= _PHOTO_REFILL_MAX:
+        raise ProfileValidationError(
+            f"photo_refill_at должен быть в диапазоне 0..{_PHOTO_REFILL_MAX}: {refill_at}"
+        )
+    if target == 0:
+        if refill_at != 0:
+            raise ProfileValidationError(
+                f"при photo_target=0 photo_refill_at должен быть 0: {refill_at}"
+            )
+        return
+    if refill_at >= target:
+        raise ProfileValidationError(
+            f"photo_refill_at должен быть меньше photo_target: {refill_at} >= {target}"
+        )
 
 
 def _read_refill(data_dir: Path, profile_id: str) -> ProfileRefill:

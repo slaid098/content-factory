@@ -132,6 +132,8 @@ def set_profile_refill(
     enabled: bool,
     target: int | None = None,
     refill_at: int | None = None,
+    photo_target: int = 0,
+    photo_refill_at: int = 0,
 ) -> None:
     """Persist one profile settings row in the operational database."""
     connection = connect(data_dir / DB_DIR / DB_FILENAME)
@@ -139,7 +141,13 @@ def set_profile_refill(
         upsert_refill(
             connection,
             profile_id,
-            ProfileRefill(enabled=enabled, target=target, refill_at=refill_at),
+            ProfileRefill(
+                enabled=enabled,
+                target=target,
+                refill_at=refill_at,
+                photo_target=photo_target,
+                photo_refill_at=photo_refill_at,
+            ),
             _STARTED.isoformat(),
         )
         connection.commit()
