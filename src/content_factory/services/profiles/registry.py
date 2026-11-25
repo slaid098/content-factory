@@ -24,6 +24,7 @@ from content_factory.exceptions.generator import ProfileError
 from content_factory.schemas.profiles.registry import ProfileInfo
 from content_factory.utils.filesystem import child_directories
 from content_factory.utils.profiles import (
+    read_profile_delivery,
     read_profile_language,
     read_profile_niche,
     read_profile_positive_int,
@@ -137,6 +138,7 @@ def _read_info(directory: Path, category: str, name: str) -> ProfileInfo:
         height=read_profile_positive_int(data, "height", label),
         audio=bool(data.get("audio", True)),
         dir=directory,
+        delivery=read_profile_delivery(data, label),
     )
 
 

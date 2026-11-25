@@ -21,6 +21,7 @@ from content_factory.db.video_meta import load_video_meta as load_video_meta
 from content_factory.exceptions.errors import DeliveryError, LockError
 from content_factory.schemas.content.delivery import GENERAL_PROFILE, ContentType
 from content_factory.schemas.content.video import VideoMeta
+from content_factory.schemas.profiles.delivery import TitleConfig, TitlePolicy
 from content_factory.services.delivery.archives import is_archive_expired
 from content_factory.services.delivery.packing import (
     build_archive as _build_archive,
@@ -31,7 +32,7 @@ from content_factory.services.delivery.packing import (
 from content_factory.services.delivery.packing import discard_tmp as _discard_tmp
 from content_factory.services.delivery.packing import remove_sources as _remove_sources
 from content_factory.services.delivery.sidecars import read_job_file
-from content_factory.services.profiles import get_profile
+from content_factory.services.profiles import get_profile, title_policy
 from content_factory.services.stock import sync_stock
 
 _ZIP_SUFFIX = ".zip"
@@ -79,7 +80,15 @@ def deliver(
         ProfileError: The profile is unsafe, missing or malformed.
     """
     profile_id = None if profile == GENERAL_PROFILE else profile
-    resolved = _checked_language(data_dir, language, profile_id)
+    profile_info = None if profile_id is None else get_profile(data_dir, profile_id)
+    resolved = _checked_language(
+        language,
+        None if profile_info is None else profile_info.language,
+    )
+    policy = title_policy(
+        profile_info.delivery.title if profile_info is not None else TitleConfig()
+    )
+    hashtags = () if profile_info is None else profile_info.delivery.hashtags
     moment = now or datetime.now(UTC)
     try:
         with locked(lock_path(data_dir / DB_DIR, DELIVERY_LOCK)):
@@ -93,23 +102,20 @@ def deliver(
                 content_type=content_type,
                 retention_hours=retention_hours,
                 now=moment,
+                policy=policy,
+                hashtags=hashtags,
             )
     except LockError as ex:
         raise DeliveryError(f"не удалось заблокировать выдачу {request_id}") from ex
 
 
-def _checked_language(
-    data_dir: Path,
-    language: str,
-    profile_id: str | None,
-) -> str:
+def _checked_language(language: str, profile_language: str | None) -> str:
     """Return the request language after checking it matches the profile.
 
     Raises:
         DeliveryError: The profile belongs to another language.
-        ProfileError: The profile is unsafe, missing or malformed.
     """
-    if profile_id is not None and get_profile(data_dir, profile_id).language != language:
+    if profile_language is not None and profile_language != language:
         raise DeliveryError("язык профиля не совпадает с языком запроса")
     return language
 
@@ -125,6 +131,8 @@ def _deliver_locked(
     content_type: ContentType,
     retention_hours: int,
     now: datetime,
+    policy: TitlePolicy,
+    hashtags: tuple[str, ...],
 ) -> Path | None:
     """Build or reuse one archive while holding the delivery lock."""
     archive_dir = data_dir / ARCHIVE_DIR / language
@@ -146,6 +154,7 @@ def _deliver_locked(
             db_path=data_dir / DB_DIR / DB_FILENAME,
             content_type=content_type,
             query=query,
+            policy=policy,
         )
         if not sources:
             return None
@@ -157,6 +166,7 @@ def _deliver_locked(
             content_type=content_type,
             language=language,
             profile_id=profile_id,
+            hashtags=hashtags,
         )
     except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as ex:
         _discard_tmp(archive_path)
@@ -410,24 +420,42 @@ def _select_sources(
     count: int,
     *,
     db_path: Path,
+    policy: TitlePolicy,
     content_type: ContentType = ContentType.VIDEO,
     query: str | None = None,
 ) -> tuple[list[Path], dict[str, str]]:
     """Pick up to ``count`` candidates and the titles of selected videos.
 
-    A video is selected only with a non-empty stored title; a title made only
-    of whitespace counts as absent, and a stored title is returned unchanged.
-    A photo needs no title, because its text comes from the sidecar.
+    The title policy decides which videos are ready: ``generated`` needs a
+    non-empty stored title, while ``fixed`` selects every candidate and takes
+    the profile title instead of the stored one. A stored title is returned
+    unchanged. A photo needs no title, because its text comes from the sidecar.
     """
     if content_type is ContentType.PHOTO:
         return list(candidates[:count]), {}
     stored = load_titles(db_path, [path.stem for path in candidates])
-    titled = [path for path in candidates if stored.get(path.stem, "").strip()]
+    selected = _policy_pairs(candidates, policy, stored)
     if query is not None:
-        meta = load_video_meta(db_path, [path.stem for path in titled])
-        titled = [path for path in titled if _matches_query(meta, path.stem, query)]
-    selected = titled[:count]
-    return selected, {path.stem: stored[path.stem] for path in selected}
+        meta = load_video_meta(db_path, [path.stem for path, _title in selected])
+        selected = [
+            (path, title) for path, title in selected if _matches_query(meta, path.stem, query)
+        ]
+    picked = selected[:count]
+    return [path for path, _title in picked], {path.stem: title for path, title in picked}
+
+
+def _policy_pairs(
+    candidates: Sequence[Path],
+    policy: TitlePolicy,
+    stored: Mapping[str, str],
+) -> list[tuple[Path, str]]:
+    """Return candidates with a title under the policy, in candidate order."""
+    pairs: list[tuple[Path, str]] = []
+    for path in candidates:
+        title = policy.title_for(path.stem, stored)
+        if title is not None:
+            pairs.append((path, title))
+    return pairs
 
 
 def _mark_delivered(
