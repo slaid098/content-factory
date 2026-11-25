@@ -7,10 +7,12 @@ import sqlite3
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
 import pytest
+from PIL import Image
 from tests.unit.common.delivery_helpers import (
     REQUEST_ID,
     add_downloaded_video,
@@ -19,7 +21,9 @@ from tests.unit.common.delivery_helpers import (
     touch_photo,
 )
 from tests.unit.common.profile_helpers import add_profile, add_profile_video
+from tests.unit.generator.helpers import make_profile
 
+from content_factory.config.settings import GeneratorSettings
 from content_factory.constants import ARCHIVE_DIR, CONTENT_DIR
 from content_factory.db.video_meta import load_video_meta
 from content_factory.exceptions import DeliveryError, ProfileError
@@ -39,6 +43,8 @@ from content_factory.services.delivery.service import (
 )
 from content_factory.services.delivery.sidecars import save_job
 from content_factory.services.delivery.topics import collect_topics
+from content_factory.services.production.card import CardProducer
+from content_factory.services.stock import stock_files
 
 _MOMENT = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
 
@@ -1474,3 +1480,64 @@ def test_photo_with_broken_sidecar_is_delivered_without_text(
     assert [record["level"].name for record in records] == ["WARNING"]
     assert records[0]["extra"]["path"] == str(sidecar)
     assert "{broken after sync" not in records[0]["message"]
+
+
+class _CardWriter:
+    """Text model port that returns one fixed card answer."""
+
+    def write(self, system_prompt: str) -> str:
+        del system_prompt
+        return "<result><block>Первая строка\nВторая строка</block><block>Пиши мне</block></result>"
+
+
+def test_producer_photo_post_is_scanned_and_delivered_with_its_text(tmp_path: Path) -> None:
+    make_profile(
+        tmp_path / "profiles",
+        width=544,
+        height=960,
+        extra={"production": [{"producer": "card", "type": "photo"}]},
+    )
+
+    def render(profile: Any, overlay: Any) -> Image.Image:
+        del overlay
+        return Image.new("RGBA", (profile.width, profile.height), (0, 0, 0, 0))
+
+    CardProducer(writer=_CardWriter(), renderer=render).produce(
+        SimpleNamespace(name="dating/profile_2"),
+        1,
+        tmp_path,
+        GeneratorSettings(output_dir=tmp_path / "generated", safety_enabled=False),
+    )
+
+    scanned = stock_files(
+        tmp_path / CONTENT_DIR,
+        tmp_path / "profiles",
+        content_type=ContentType.PHOTO,
+    )
+    assert len(scanned) == 1
+    assert scanned[0].content_type is ContentType.PHOTO
+    assert scanned[0].profile_id == "dating/profile_2"
+
+    archive = deliver(
+        tmp_path,
+        "ru",
+        10,
+        REQUEST_ID,
+        profile="dating/profile_2",
+        content_type=ContentType.PHOTO,
+        retention_hours=24,
+    )
+
+    assert archive is not None
+    data = archive.read_bytes()
+    assert _zip_entries(data) == ["001.jpg", "001.json"]
+    assert _zip_sidecar(data) == {
+        "type": "photo",
+        "language": "ru",
+        "profile_id": "dating/profile_2",
+        "text": "Первая строка\nВторая строка\nПиши мне",
+    }
+    with Image.open(io.BytesIO(_zip_bytes(data, "001.jpg"))) as image:
+        assert image.size == (544, 960)
+    assert scanned[0].path.exists() is False
+    assert not scanned[0].path.with_suffix(".json").exists()

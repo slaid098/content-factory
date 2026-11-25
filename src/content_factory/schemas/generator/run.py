@@ -97,15 +97,15 @@ class RunStep(BaseModel):
 
 
 class RunItem(BaseModel):
-    """One planned video: its look, seed, length and final file."""
+    """One planned item: its video look and length or photo post file."""
 
     model_config = ConfigDict(extra="forbid")
 
     file: str
     profile: str
-    look_id: str
-    seed: int
-    frames: int
+    look_id: str | None = None
+    seed: int | None = None
+    frames: int | None = None
     duration: float | None = None
     status: RunStatus = RunStatus.RUNNING
     error: str | None = None

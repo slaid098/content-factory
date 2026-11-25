@@ -520,6 +520,43 @@ def test_production_step_selects_by_producer(tmp_path: Path) -> None:
         production_step(profile, "unique")
 
 
+def test_photo_recipe_defaults_to_the_image_check(tmp_path: Path) -> None:
+    profile = fixture_profile(
+        tmp_path / "profiles",
+        extra={"production": [{"producer": "card", "type": "photo"}]},
+    )
+
+    assert profile.production == (ProductionStep("card", ContentType.PHOTO, ("image",)),)
+
+
+def test_photo_recipe_accepts_the_image_check_explicitly(tmp_path: Path) -> None:
+    profile = fixture_profile(
+        tmp_path / "profiles",
+        extra={
+            "production": [
+                {"producer": "card", "type": "photo", "qa": ["image"]},
+            ]
+        },
+    )
+
+    assert profile.production[0].qa == ("image",)
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        {"producer": "card", "type": "photo", "qa": ["media"]},
+        {"producer": "card", "type": "photo", "qa": ["clef"]},
+        {"producer": "vast", "type": "video", "qa": ["image"]},
+    ],
+)
+def test_recipe_rejects_checks_of_another_type(tmp_path: Path, step: dict[str, Any]) -> None:
+    make_profile(tmp_path / "profiles", extra={"production": [step]})
+
+    with pytest.raises(ProfileError, match="не подходит"):
+        load_profile("dating/profile_2", tmp_path / "profiles")
+
+
 def test_profile_names_are_split_without_blanks_or_repeats() -> None:
     assert parse_names(" dating/profile_2, dating/profile_1,dating/profile_2 ") == [
         "dating/profile_2",

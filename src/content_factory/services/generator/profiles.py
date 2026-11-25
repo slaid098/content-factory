@@ -38,6 +38,9 @@ _SUPPORTED_RENDERERS = ("default",)
 _AUDIO_SUFFIXES = (".mp3", ".wav")
 _DEFAULT_MAX_TEXT_WIDTH = 0.86
 _DEFAULT_QA = ("media", "clef")
+_PHOTO_QA = ("image",)
+_VIDEO_ONLY_QA = frozenset({"media", "clef"})
+_PHOTO_ONLY_QA = frozenset({"image"})
 
 _REQUIRED_KEYS = ("count", "width", "height", "frames", "fps", "image", "gpu", "max_cost")
 _SPIN = re.compile(r"\{([^{}|]+(?:\|[^{}]+)+)\}")
@@ -430,7 +433,7 @@ def _read_production(data: Mapping[str, Any], name: str) -> tuple[ProductionStep
             ProductionStep(
                 producer=producer,
                 type=content_type,
-                qa=_qa_names(item.get("qa"), name, index, allowed_qa),
+                qa=_qa_names(item.get("qa"), name, index, allowed_qa, content_type),
             )
         )
     return tuple(steps)
@@ -454,15 +457,17 @@ def _qa_names(
     name: str,
     index: int,
     allowed: tuple[str, ...],
+    content_type: ContentType,
 ) -> tuple[str, ...]:
     """Read the ordered QA names of one step, rejecting blanks and repeats."""
     if raw is None:
-        return _DEFAULT_QA
+        return _PHOTO_QA if content_type is ContentType.PHOTO else _DEFAULT_QA
     if not isinstance(raw, list) or not raw:
         raise ProfileError(
             f"qa шага production {index} в профиле {name} должен быть непустым списком"
         )
     names: list[str] = []
+    incompatible = _VIDEO_ONLY_QA if content_type is ContentType.PHOTO else _PHOTO_ONLY_QA
     for value in raw:
         qa = str(value).strip()
         if not qa:
@@ -472,6 +477,10 @@ def _qa_names(
         if qa not in allowed:
             raise ProfileError(
                 f"неизвестная QA-проверка {qa!r} в профиле {name}: допустимы {', '.join(allowed)}"
+            )
+        if qa in incompatible:
+            raise ProfileError(
+                f"QA {qa!r} не подходит для type={content_type.value!r} в профиле {name}"
             )
         names.append(qa)
     return tuple(names)

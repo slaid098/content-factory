@@ -421,6 +421,8 @@ def _postprocess(
 
 def _advance_cursor(output_dir: Path, profile: _Profile, item: RunItem, run_id: str) -> None:
     """Move the rotation cursor after a finished video without failing it."""
+    if item.look_id is None:
+        return
     try:
         rotation.advance_cursor(
             _cursor_path(output_dir, profile),
@@ -448,6 +450,8 @@ def _finish_item(
     data_root: Path,
 ) -> None:
     """Run the local stages of one video and publish its final into the stock."""
+    if item.frames is None:
+        raise GeneratorError(f"у ролика {item.file} не задано число кадров")
     card = texts.generate_overlay(profile, writer, rng=rng)
     texts.save_overlay(run_dir / _TEXT_DIR / f"{Path(item.file).stem}.json", card)
     audio = rng.choice(profile.audio_tracks) if profile.audio_tracks else None

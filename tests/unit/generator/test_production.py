@@ -15,6 +15,7 @@ from content_factory.services.production import ProducedBatch, Producer, Profile
 from content_factory.services.production import protocol as production_protocol
 from content_factory.services.production import qa as production_qa
 from content_factory.services.production import vast as vast_module
+from content_factory.services.production.card import CardProducer
 from content_factory.services.production.vast import VastProducer
 
 
@@ -25,9 +26,15 @@ def test_production_door_exports_the_producer_port() -> None:
 
 
 def test_vast_is_the_builtin_producer() -> None:
-    assert registry.available() == ("vast",)
+    assert "vast" in registry.available()
     assert isinstance(registry.resolve("vast"), VastProducer)
     assert registry.resolve("vast").supported_types == frozenset({ContentType.VIDEO})
+
+
+def test_card_is_the_builtin_photo_producer() -> None:
+    assert "card" in registry.available()
+    assert isinstance(registry.resolve("card"), CardProducer)
+    assert registry.resolve("card").supported_types == frozenset({ContentType.PHOTO})
 
 
 def test_registry_can_be_injected_and_reset() -> None:
@@ -42,7 +49,7 @@ def test_registry_can_be_injected_and_reset() -> None:
     assert local.resolve("fake") is producer
 
     local.reset()
-    assert local.available() == ("vast",)
+    assert local.available() == ("card", "vast")
 
 
 def test_registry_rejects_blank_and_unknown_names() -> None:
@@ -60,12 +67,13 @@ def test_process_registry_restores_builtins_after_injection() -> None:
     assert "fake" in registry.available()
 
     registry.reset()
-    assert registry.available() == ("vast",)
+    assert registry.available() == ("card", "vast")
 
 
 def test_qa_builtins_have_their_pipeline_stages() -> None:
-    assert production_qa.available() == ("clef", "media")
+    assert production_qa.available() == ("clef", "image", "media")
     assert production_qa.resolve("clef").stage == production_qa.QA_SOURCE
+    assert production_qa.resolve("image").stage == production_qa.QA_FINAL
     assert production_qa.resolve("media").stage == production_qa.QA_FINAL
     assert production_qa.has(("media", "clef"), production_qa.QA_FINAL)
     assert not production_qa.has(("media",), production_qa.QA_SOURCE)
