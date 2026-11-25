@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import random
+import stat
 import threading
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -374,6 +376,7 @@ def test_publish_stock_copies_when_hardlink_fails(
     final = tmp_path / "generated" / "final.mp4"
     final.parent.mkdir(parents=True)
     final.write_bytes(b"video")
+    final.chmod(0o600)
     real_link = publish.os.link
     calls: list[int] = []
 
@@ -389,6 +392,7 @@ def test_publish_stock_copies_when_hardlink_fails(
 
     assert destination.read_bytes() == b"video"
     assert destination.stat().st_ino != final.stat().st_ino
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o644
     assert final.is_file()
 
 
@@ -452,15 +456,14 @@ def test_publish_stock_copy_fallback_never_overwrites_an_existing_file(
     final.parent.mkdir(parents=True)
     final.write_bytes(b"new")
     destination = tmp_path / "content" / "dating" / "ru" / "final.mp4"
-    real_link = publish.os.link
     calls: list[int] = []
 
     def race_link(source: Path, target: Path, *args: object, **kwargs: object) -> None:
+        del source, args, kwargs
         if not calls:
             calls.append(1)
             target.write_bytes(b"old")
-            raise OSError("cross-device link")
-        real_link(source, target, *args, **kwargs)
+        raise OSError(errno.EOPNOTSUPP, "hard links not supported")
 
     monkeypatch.setattr(publish.os, "link", race_link)
 
@@ -469,6 +472,30 @@ def test_publish_stock_copy_fallback_never_overwrites_an_existing_file(
 
     assert destination.read_bytes() == b"old"
     assert final.read_bytes() == b"new"
+    assert list(destination.parent.iterdir()) == [destination]
+
+
+def test_publish_stock_copies_on_a_filesystem_without_hardlinks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+    final = tmp_path / "generated" / "final.mp4"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"video")
+    final.chmod(0o600)
+
+    def no_link(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise OSError(errno.EOPNOTSUPP, "hard links not supported")
+
+    monkeypatch.setattr(publish.os, "link", no_link)
+
+    destination = publish.publish_stock(profile, final, tmp_path)
+
+    assert destination.read_bytes() == b"video"
+    assert destination.stat().st_ino != final.stat().st_ino
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o644
     assert list(destination.parent.iterdir()) == [destination]
 
 

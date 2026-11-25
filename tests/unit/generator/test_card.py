@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import errno
 import json
+import stat
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -423,6 +425,34 @@ def test_publish_photo_places_the_sidecar_before_the_jpeg(
     assert destination.with_suffix(".json").read_text(encoding="utf-8") == '{"text": "Текст"}'
     assert final.is_file()
     assert sidecar.is_file()
+
+
+def test_publish_photo_copy_fallback_makes_both_files_readable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+    final = tmp_path / "generated" / "post.jpg"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"jpeg")
+    final.chmod(0o600)
+    sidecar = final.with_suffix(".json")
+    sidecar.write_text('{"text": "Текст"}', encoding="utf-8")
+    sidecar.chmod(0o600)
+
+    def no_link(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise OSError(errno.EOPNOTSUPP, "hard links not supported")
+
+    monkeypatch.setattr(publish.os, "link", no_link)
+
+    destination = publish.publish_photo(profile, final, tmp_path)
+
+    for path, expected in (
+        (destination, b"jpeg"),
+        (destination.with_suffix(".json"), '{"text": "Текст"}'.encode()),
+    ):
+        assert path.read_bytes() == expected
+        assert stat.S_IMODE(path.stat().st_mode) == 0o644
 
 
 def test_check_image_accepts_a_matching_jpeg(tmp_path: Path) -> None:

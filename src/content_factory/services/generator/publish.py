@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+from contextlib import suppress
 from pathlib import Path
 
 from loguru import logger
@@ -13,6 +14,8 @@ from content_factory.constants import CONTENT_DIR, LANGUAGE_CODE_RE, NICHE_CODE_
 from content_factory.exceptions.generator import GeneratorError
 from content_factory.services.generator.profiles import _Profile, profile_niche
 
+_STOCK_FILE_MODE = 0o644
+
 
 def publish_stock(profile: _Profile, final: Path, data_root: Path) -> Path:
     """Publish one final video into ``content/<niche>/<language>/``.
@@ -20,10 +23,12 @@ def publish_stock(profile: _Profile, final: Path, data_root: Path) -> Path:
     A hard link keeps the video in ``generated/`` without spending disk space.
     When linking is impossible, the file is copied into a hidden temporary file
     next to the destination and linked under its stock name only after the copy
-    is complete. An existing stock file is never overwritten: that is a
-    publication error. The niche and the language are validated again here, and
-    the resolved destination must stay inside the stock root, so a malformed
-    profile cannot write anywhere else.
+    is complete. On a filesystem without hard links the stock name appears
+    before the copy finishes, but an existing file is still never overwritten.
+    A copied stock file gets mode ``0644`` so the partner can read it. An
+    existing stock file is a publication error. The niche and the language are
+    validated again here, and the resolved destination must stay inside the
+    stock root, so a malformed profile cannot write anywhere else.
 
     Args:
         profile: Profile that produced the video; an empty niche falls back
@@ -48,13 +53,15 @@ def publish_stock(profile: _Profile, final: Path, data_root: Path) -> Path:
 def publish_photo(profile: _Profile, final: Path, data_root: Path) -> Path:
     """Publish a photo and its text sidecar as one stock pair.
 
-    The text sidecar is placed first and the photo last: both final names
-    appear only after the photo itself is complete, so a process that dies
-    mid-publication never leaves a photo without its text. Both destinations
-    must be free before anything is placed. When the photo cannot be placed,
-    the sidecar is removed, but only while it is still the inode this call
-    created, so a file replaced by someone else is never deleted. The source
-    files stay in ``generated/``.
+    The text sidecar is placed first and the photo last, so a published photo
+    is never without its text. Both destinations must be free before anything
+    is placed. On a filesystem with hard links each name appears only after its
+    copy is complete; without hard links a name appears before its copy
+    finishes, but an existing file is still never overwritten. Copied stock
+    files get mode ``0644`` so the partner can read them. When the photo cannot
+    be placed, the sidecar is removed, but only while it is still the inode
+    this call created, so a file replaced by someone else is never deleted.
+    The source files stay in ``generated/``.
 
     Args:
         profile: Profile that produced the photo.
@@ -148,18 +155,21 @@ def _place(source: Path, destination: Path) -> os.stat_result:
 
 
 def _copy_exclusive(source: Path, destination: Path) -> os.stat_result:
-    """Copy *source* into an exclusive temporary file and link it into place.
+    """Copy *source* into a temporary file and place it at *destination*.
 
-    The destination name appears only after the copy is complete, and
-    ``os.link`` refuses an existing name, so a concurrent publication cannot
-    be overwritten. The temporary file is removed in every case.
+    The temporary copy is made readable by the partner (``0644``) regardless
+    of the source mode or the process umask, and a hard link then makes the
+    destination name appear atomically. On a filesystem without hard links the
+    temporary file is copied into an exclusively created destination: there
+    the name appears before the copy is complete, but an existing file is
+    still never overwritten. The temporary file is removed in every case.
 
     Args:
         source: Finished file inside the run ``final`` directory.
         destination: Free stock path of the file.
 
     Returns:
-        Stat of the inode linked at *destination*.
+        Stat of the inode placed at *destination*.
 
     Raises:
         GeneratorError: The source cannot be read, the temporary file cannot
@@ -173,24 +183,96 @@ def _copy_exclusive(source: Path, destination: Path) -> os.stat_result:
         raise GeneratorError(_publish_error(destination)) from ex
     temp = Path(temp_name)
     try:
-        created = os.fstat(fd)
-        try:
-            with source.open("rb") as src, os.fdopen(fd, "wb") as dst:
-                fd = -1
-                shutil.copyfileobj(src, dst)
-        except OSError as ex:
-            raise GeneratorError(_publish_error(destination)) from ex
+        created = _fill_temp(source, fd, destination)
         try:
             os.link(temp, destination)
         except FileExistsError as ex:
             raise GeneratorError(_publish_error(destination)) from ex
-        except OSError as ex:
-            raise GeneratorError(_publish_error(destination)) from ex
+        except OSError:
+            return _copy_into_new_inode(temp, destination)
         return created
     finally:
-        if fd != -1:
-            os.close(fd)
         _remove(temp)
+
+
+def _fill_temp(source: Path, fd: int, destination: Path) -> os.stat_result:
+    """Fill a ``mkstemp`` descriptor from *source* and make it stock-readable.
+
+    The descriptor is closed on every path, including a failed ``os.fdopen``.
+
+    Args:
+        source: Finished file inside the run ``final`` directory.
+        fd: Open descriptor of the temporary file.
+        destination: Final stock path, used in error messages.
+
+    Returns:
+        Stat of the temporary inode taken before copying.
+
+    Raises:
+        GeneratorError: The source cannot be read or the temporary file cannot
+            be written.
+    """
+    try:
+        writer = os.fdopen(fd, "wb")
+    except OSError as ex:
+        with suppress(OSError):
+            os.close(fd)
+        raise GeneratorError(_publish_error(destination)) from ex
+    except BaseException:
+        with suppress(OSError):
+            os.close(fd)
+        raise
+    try:
+        with writer:
+            created = os.fstat(writer.fileno())
+            with source.open("rb") as reader:
+                shutil.copyfileobj(reader, writer)
+            os.fchmod(writer.fileno(), _STOCK_FILE_MODE)
+    except OSError as ex:
+        raise GeneratorError(_publish_error(destination)) from ex
+    return created
+
+
+def _copy_into_new_inode(source: Path, destination: Path) -> os.stat_result:
+    """Copy *source* into an exclusively created *destination*.
+
+    Used when the filesystem does not support hard links. ``open("xb")``
+    refuses an existing name, so a concurrent publication is never
+    overwritten, and the new inode gets the stock mode ``0644`` before the
+    copy starts.
+
+    Args:
+        source: Completed temporary file next to the destination.
+        destination: Free stock path of the file.
+
+    Returns:
+        Stat of the inode created at *destination*.
+
+    Raises:
+        GeneratorError: The destination exists or cannot be written.
+    """
+    try:
+        writer = destination.open("xb")
+    except FileExistsError as ex:
+        raise GeneratorError(_publish_error(destination)) from ex
+    except OSError as ex:
+        raise GeneratorError(_publish_error(destination)) from ex
+    created: os.stat_result | None = None
+    completed = False
+    try:
+        created = os.fstat(writer.fileno())
+        os.fchmod(writer.fileno(), _STOCK_FILE_MODE)
+        with writer, source.open("rb") as reader:
+            shutil.copyfileobj(reader, writer)
+        completed = True
+        return created
+    except OSError as ex:
+        raise GeneratorError(_publish_error(destination)) from ex
+    finally:
+        with suppress(OSError):
+            writer.close()
+        if not completed and created is not None:
+            _remove_if_same(destination, created)
 
 
 def _remove_if_same(path: Path, expected: os.stat_result) -> None:
