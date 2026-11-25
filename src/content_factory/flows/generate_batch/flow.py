@@ -1,10 +1,10 @@
-"""Prefect flow for one manual dating video batch."""
+"""Prefect flow for one manual dating content batch."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from loguru import logger
 from prefect import flow
@@ -16,149 +16,91 @@ from content_factory.config.settings import (
 )
 from content_factory.constants import DB_DIR, PROFILES_DIR
 from content_factory.db.lock import GENERATOR_LOCK, lock_path, try_acquire
-from content_factory.exceptions.generator import GeneratorBusyError, ProfileError
-from content_factory.schemas.content.delivery import ContentType
-from content_factory.schemas.generator.run import (
-    ProductionStep,
-    RunItem,
-    RunReport,
-    RunStatus,
-    RunStep,
-)
+from content_factory.exceptions.generator import GeneratorBusyError
+from content_factory.schemas.generator.pipeline import PipelineContext, RecipeProfile
+from content_factory.schemas.generator.run import RunStatus
 from content_factory.services import production
 from content_factory.services.generator import (
     choose_run_id,
     load_profile,
     parse_names,
-    plan_batch,
     profile_slug,
     validate_count,
     write_report,
 )
-from content_factory.services.generator import generate_batch as run_batch
-from content_factory.services.generator.service import read_profile_cursor
+from content_factory.utils.run_id import profile_run_dir
 
 if TYPE_CHECKING:
     from content_factory.config.settings import GeneratorSettings
 
 
-def _is_default_recipe(steps: tuple[ProductionStep, ...]) -> bool:
-    """Return True when the recipe is the single default Vast video step."""
-    return (
-        len(steps) == 1
-        and steps[0].producer == production.VAST_PRODUCER
-        and steps[0].type is ContentType.VIDEO
-    )
-
-
-def _produce(
-    profile: production.ProfileRef,
-    step: ProductionStep,
+def _run_group(
+    group: tuple[RecipeProfile, ...],
     count: int,
     data_dir: Path,
     settings: GeneratorSettings,
-) -> production.ProducedBatch:
-    """Run one recipe step through the producer registered under its name."""
-    return production.resolve_producer(step.producer).produce(profile, count, data_dir, settings)
-
-
-def _has_photo_step(loaded: list[Any]) -> bool:
-    """Return whether any profile recipe asks for a photo step."""
-    return any(step.type is ContentType.PHOTO for profile in loaded for step in profile.production)
-
-
-def _dry_run(loaded: list[Any], count: int, settings: GeneratorSettings) -> list[str]:
-    """Write one plan report per profile with every recipe step."""
+    dry_run: bool,
+    taken: set[str],
+) -> tuple[str, int, int]:
+    """Run one recipe group and write the report of every profile in it."""
+    profiles = tuple(group)
     started = datetime.now(UTC)
-    run_id = choose_run_id(settings.output_dir, loaded, started)
-    for profile in loaded:
-        report = _dry_report(profile, count, run_id, started, settings.output_dir)
-        run_dir = settings.output_dir / profile.language / profile_slug(profile) / run_id
-        write_report(run_dir, report)
-    return [run_id]
-
-
-def _dry_report(
-    profile: Any, count: int, run_id: str, started: datetime, output_dir: Path
-) -> RunReport:
-    """Build the dry-run report of one profile across all recipe steps."""
-    return RunReport(
-        run_id=run_id,
-        started_at=started,
-        status=RunStatus.DRY_RUN,
-        profiles=[profile.name],
+    run_id = choose_run_id(settings.output_dir, list(profiles), started, taken=taken)
+    context = PipelineContext(
+        profiles=profiles,
         count=count,
-        production=[
-            RunStep(producer=step.producer, type=step.type, qa=list(step.qa))
-            for step in profile.production
-        ],
-        items=[
-            item
-            for step in profile.production
-            for item in _dry_items(profile, step, count, run_id, output_dir)
-        ],
+        data_dir=data_dir,
+        settings=settings,
+        run_id=run_id,
+        dry_run=dry_run,
+        now=started,
     )
-
-
-def _dry_items(
-    profile: Any, step: ProductionStep, count: int, run_id: str, output_dir: Path
-) -> list[RunItem]:
-    """Plan one step: video cards, seeds and lengths or photo post names."""
-    if step.type is ContentType.PHOTO:
-        slug = profile_slug(profile)
-        return [
-            RunItem(
-                file=f"{slug}_{run_id}_{seq:03d}.jpg",
-                profile=profile.name,
-                status=RunStatus.DRY_RUN,
-                producer=step.producer,
-                type=step.type,
-                qa=list(step.qa),
-            )
-            for seq in range(1, count + 1)
-        ]
-    cursor = read_profile_cursor(output_dir, profile.language, profile_slug(profile))
-    return [
-        RunItem(
-            file=item.filename,
-            profile=profile.name,
-            look_id=item.look.id,
-            seed=item.seed,
-            frames=item.frames,
-            status=RunStatus.DRY_RUN,
-            producer=step.producer,
-            type=step.type,
-            qa=list(step.qa),
+    layers = profiles[0].production
+    result = production.run_pipeline(
+        context,
+        layers,
+        producers=production.default_producers(),
+        checks=production.default_checks(),
+    )
+    generated = failed = 0
+    for profile in profiles:
+        report = production.build_report(profile, layers, context, result)
+        run_dir = profile_run_dir(
+            settings.output_dir,
+            profile.language,
+            profile_slug(profile),
+            run_id,
         )
-        for item in plan_batch(profile, count, run_id, start_after=cursor)
-    ]
+        write_report(run_dir, report)
+        generated += report.totals.generated
+        failed += report.totals.failed
+    return run_id, generated, failed
 
 
 @flow(name="generate_batch")
 def generate_batch(
     profiles: str = "dating/profile_2", count: int = 1, dry_run: bool = False
 ) -> str:
-    """Собрать партию дейтинг-роликов и вернуть код исхода.
+    """Собрать партию контента по рецептам профилей и вернуть код исхода.
 
     Запуск ручной: расписания нет. Файловая блокировка не даёт двум партиям
     одновременно арендовать серверы; второй запуск сразу падает с
-    ``GeneratorBusyError``, а не ждёт освобождения. Producer каждого шага
-    берётся из рецепта ``production`` профиля; при ``dry_run`` producer не
-    вызывается, но рецепт проверяется, а план строится по каждому шагу:
-    видео — looks/seeds/frames, фото — имена файлов. Всё это попадает в
-    ``run.json``; сеть и LLM при ``dry_run`` не трогаются.
+    ``GeneratorBusyError``, а не ждёт освобождения. Профили группируются по
+    сигнатуре слоёв рецепта: одна группа — один ``run_id`` и один
+    ``run_pipeline``. Группа одинаковых vast-профилей по-прежнему получает
+    общий ``run_id`` и одну партию; профиль с несколькими независимыми
+    цепочками (например, ``vast/video`` и ``card/photo``) выполняет их в
+    одном прогоне. Отчёт ``run.json`` каждого профиля пишет flow один раз по
+    результату конвейера.
 
-    Если у всех профилей рецепт — один шаг ``vast/video``, flow вызывает
-    ``run_batch`` один раз со всеми профилями: он проверяет ``count`` и планы
-    всех профилей до аренды и даёт общий ``run_id``. Для неоднородных
-    рецептов flow проверяет только ``count``, а план каждого шага проверяет
-    его producer перед своей арендой; каждый шаг даёт свой ``run_id``, и все
-    они возвращаются в строке исхода.
+    При ``dry_run`` каждый слой планируется через ``plan_layer``: для vast —
+    looks/seeds/frames, для card — имена файлов. Producers, LLM, сеть и Vast
+    не вызываются, курсор не двигается.
 
     Args:
         profiles: Имена профилей через запятую, например
             ``"dating/profile_2,dating/profile_1"``.
-        count: Сколько роликов собрать на каждый профиль.
+        count: Сколько items собрать на каждый профиль.
         dry_run: Построить план и записать ``run.json`` без Vast и ComfyUI.
 
     Raises:
@@ -176,42 +118,25 @@ def generate_batch(
         loaded = [
             load_profile(name, settings.data_dir / PROFILES_DIR) for name in parse_names(profiles)
         ]
-        if dry_run and _has_photo_step(loaded):
-            run_ids = _dry_run(loaded, count, generator_settings)
-            status, generated, failed = RunStatus.DRY_RUN.value, 0, 0
-        elif dry_run:
-            planned = run_batch(
-                profiles=profiles,
-                count=count,
-                dry_run=True,
-                data_dir=settings.data_dir,
-                settings=generator_settings,
+        run_ids: list[str] = []
+        generated = failed = 0
+        taken: set[str] = set()
+        for group in production.group_profiles(loaded):
+            run_id, batch_generated, batch_failed = _run_group(
+                group,
+                count,
+                settings.data_dir,
+                generator_settings,
+                dry_run,
+                taken,
             )
-            run_ids = [planned.run_id]
-            status, generated, failed = planned.status, planned.generated, planned.failed
-        elif all(_is_default_recipe(profile.production) for profile in loaded):
-            batch = run_batch(
-                profiles=profiles,
-                count=count,
-                data_dir=settings.data_dir,
-                settings=generator_settings,
-            )
-            run_ids = [batch.run_id]
-            status, generated, failed = batch.status, batch.generated, batch.failed
-        else:
-            batches = [
-                _produce(profile, step, count, settings.data_dir, generator_settings)
-                for profile in loaded
-                for step in profile.production
-            ]
-            if not batches:
-                raise ProfileError("рецепт production не дал ни одного шага")
-            run_ids = [batch.run_id for batch in batches]
-            generated = sum(batch.generated for batch in batches)
-            failed = sum(batch.failed for batch in batches)
-            status = "failed" if failed else "done"
+            run_ids.append(run_id)
+            taken.add(run_id)
+            generated += batch_generated
+            failed += batch_failed
     finally:
         lock.release()
+    status = RunStatus.DRY_RUN.value if dry_run else ("failed" if failed else "done")
     logger.bind(
         flow="generate_batch",
         run_id=run_ids[0] if len(run_ids) == 1 else run_ids,

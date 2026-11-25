@@ -11,8 +11,7 @@ import yaml
 from tests.unit.generator.helpers import fixture_profile, make_profile
 
 from content_factory.exceptions.generator import ProfileError
-from content_factory.schemas.content.delivery import ContentType
-from content_factory.schemas.generator.run import ProductionStep
+from content_factory.schemas.generator.pipeline import ArtifactKind, Layer
 from content_factory.services.generator.profiles import (
     _age_text,
     _alpha,
@@ -25,7 +24,6 @@ from content_factory.services.generator.profiles import (
     build_prompt,
     load_profile,
     parse_names,
-    production_step,
     profile_dir,
     prompt_template,
     text_prompt,
@@ -496,10 +494,10 @@ def test_card_flags_must_be_boolean(tmp_path: Path, key: str) -> None:
         load_profile("dating/profile_2", tmp_path / "profiles")
 
 
-def test_recipe_defaults_to_the_old_vast_step(tmp_path: Path) -> None:
+def test_recipe_defaults_to_the_old_vast_layer(tmp_path: Path) -> None:
     profile = fixture_profile(tmp_path / "profiles")
 
-    assert profile.production == (ProductionStep("vast", ContentType.VIDEO, ("media", "clef")),)
+    assert profile.production == (Layer("vast", "vast", (), ArtifactKind.VIDEO, ("media", "clef")),)
 
 
 def test_recipe_keeps_the_declared_qa_order(tmp_path: Path) -> None:
@@ -512,10 +510,10 @@ def test_recipe_keeps_the_declared_qa_order(tmp_path: Path) -> None:
         },
     )
 
-    step = profile.production[0]
-    assert step.producer == "vast"
-    assert step.type is ContentType.VIDEO
-    assert step.qa == ("clef", "media")
+    layer = profile.production[0]
+    assert layer.producer == "vast"
+    assert layer.output is ArtifactKind.VIDEO
+    assert layer.checks == ("clef", "media")
 
 
 def test_recipe_step_defaults_to_video_and_both_checks(tmp_path: Path) -> None:
@@ -524,19 +522,27 @@ def test_recipe_step_defaults_to_video_and_both_checks(tmp_path: Path) -> None:
         extra={"production": [{"producer": "vast"}]},
     )
 
-    step = profile.production[0]
-    assert step.type is ContentType.VIDEO
-    assert step.qa == ("media", "clef")
+    layer = profile.production[0]
+    assert layer.output is ArtifactKind.VIDEO
+    assert layer.checks == ("media", "clef")
 
 
-def test_production_step_selects_by_producer(tmp_path: Path) -> None:
-    profile = fixture_profile(tmp_path / "profiles")
+def test_recipe_of_two_producers_is_two_independent_chains(tmp_path: Path) -> None:
+    profile = fixture_profile(
+        tmp_path / "profiles",
+        extra={
+            "production": [
+                {"producer": "vast", "type": "video", "qa": ["media", "clef"]},
+                {"producer": "card", "type": "photo"},
+            ]
+        },
+    )
 
-    assert production_step(profile) is profile.production[0]
-    assert production_step(profile, "vast") is profile.production[0]
-
-    with pytest.raises(ProfileError, match="нет шага unique"):
-        production_step(profile, "unique")
+    assert profile.production == (
+        Layer("vast", "vast", (), ArtifactKind.VIDEO, ("media", "clef")),
+        Layer("card", "card", (), ArtifactKind.PHOTO, ("image",)),
+    )
+    assert all(layer.inputs == () for layer in profile.production)
 
 
 def test_photo_recipe_defaults_to_the_image_check(tmp_path: Path) -> None:
@@ -545,7 +551,7 @@ def test_photo_recipe_defaults_to_the_image_check(tmp_path: Path) -> None:
         extra={"production": [{"producer": "card", "type": "photo"}]},
     )
 
-    assert profile.production == (ProductionStep("card", ContentType.PHOTO, ("image",)),)
+    assert profile.production == (Layer("card", "card", (), ArtifactKind.PHOTO, ("image",)),)
 
 
 def test_photo_recipe_accepts_the_image_check_explicitly(tmp_path: Path) -> None:
@@ -558,7 +564,7 @@ def test_photo_recipe_accepts_the_image_check_explicitly(tmp_path: Path) -> None
         },
     )
 
-    assert profile.production[0].qa == ("image",)
+    assert profile.production[0].checks == ("image",)
 
 
 @pytest.mark.parametrize(

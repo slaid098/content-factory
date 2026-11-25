@@ -200,29 +200,7 @@ check_id = "dead_module"
 path = "src/content_factory/db/migrations/0001_initial.py"
 reason = "миграция подключается по строковому имени из реестра: имя начинается с цифры"
 
-# issue #119 задаёт единый protocol.py капсулы производства: LayerProducer,
-# LayerCheck и PipelineContext — публичные контракты конвейера, а не DTO схем.
-# Разнести их по файлам значило бы сломать контракт issue и импорты портов.
-[[tool.audit.ignore]]
-check_id = "one_public_class_per_file"
-path = "src/content_factory/services/production/protocol.py"
-reason = "issue #119: порты слоистого конвейера объявлены одним protocol.py по контракту"
-
-# PipelineContext — вход одного прогона: profiles/count/settings/rng/now.
-# Он не сериализуется и не является DTO слоя, поэтому живёт рядом с портами,
-# которые его принимают, а не в schemas/generator.
-[[tool.audit.ignore]]
-check_id = "models_location"
-path = "src/content_factory/services/production/protocol.py"
-reason = "issue #119: PipelineContext — контекст прогона рядом с портами, не DTO схем"
-
-# Реестры слоёв живут в модулях существующих реестров того же домена:
-# ProducerRegistry рядом с Registry, CheckRegistry рядом с QA Registry.
-[[tool.audit.ignore]]
-check_id = "one_public_class_per_file"
-path = "src/content_factory/services/production/registry.py"
-reason = "issue #119: ProducerRegistry — второй реестр того же домена producers"
-
+# CheckRegistry живёт рядом с QA Registry того же домена проверок.
 [[tool.audit.ignore]]
 check_id = "one_public_class_per_file"
 path = "src/content_factory/services/production/qa.py"

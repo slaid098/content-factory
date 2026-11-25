@@ -12,7 +12,7 @@ import json
 import math
 import random
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,13 +22,19 @@ import yaml
 
 from content_factory.exceptions.generator import GeneratorError, ProfileError
 from content_factory.schemas.content.delivery import ContentType
-from content_factory.schemas.generator.run import ProductionStep
+from content_factory.schemas.generator.pipeline import (
+    ArtifactKind,
+    Layer,
+    RecipeProfile,
+    artifact_kind,
+)
 from content_factory.services import production
 from content_factory.utils.profiles import (
     read_profile_language,
     read_profile_niche,
     read_profile_positive_int,
 )
+from content_factory.utils.run_id import profile_slug
 
 _SHARED_DIR = "_shared"
 _FONTS_DIR = "fonts"
@@ -90,7 +96,15 @@ class _OverlayStyle:
     block2_alpha: int | None = None
 
 
-_DEFAULT_PRODUCTION = (ProductionStep("vast", ContentType.VIDEO, _DEFAULT_QA),)
+_DEFAULT_PRODUCTION = (
+    Layer(
+        name=production.VAST_PRODUCER,
+        producer=production.VAST_PRODUCER,
+        inputs=(),
+        output=ArtifactKind.VIDEO,
+        checks=_DEFAULT_QA,
+    ),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,7 +129,7 @@ class _Profile:
     looks: tuple[_Look, ...]
     audio_tracks: tuple[Path, ...]
     workflow: Mapping[str, Any]
-    production: tuple[ProductionStep, ...] = _DEFAULT_PRODUCTION
+    production: tuple[Layer, ...] = _DEFAULT_PRODUCTION
     negative_prompt: str | None = None
     cfg: float | None = None
     rent: _RentOptions = _RentOptions()
@@ -270,18 +284,20 @@ def parse_names(value: str) -> list[str]:
     return names
 
 
-def profile_slug(profile: _Profile) -> str:
-    """Return the profile directory name used in output paths."""
-    return profile.name.replace("/", "_")
-
-
-def choose_run_id(output_dir: Path, loaded: list[_Profile], moment: datetime) -> str:
+def choose_run_id(
+    output_dir: Path,
+    loaded: Sequence[RecipeProfile],
+    moment: datetime,
+    *,
+    taken: Collection[str] = (),
+) -> str:
     """Return a UTC run id whose directories do not exist yet.
 
     Args:
         output_dir: Root of the run directories.
         loaded: Profiles of the batch, each with its language and name.
         moment: Run start moment.
+        taken: Run ids already used by other groups of the same flow run.
 
     Returns:
         A timestamp id, with a numeric suffix when the directory is taken.
@@ -292,6 +308,8 @@ def choose_run_id(output_dir: Path, loaded: list[_Profile], moment: datetime) ->
     stamp = moment.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
     for suffix in range(1, 100):
         candidate = stamp if suffix == 1 else f"{stamp}-{suffix}"
+        if candidate in taken:
+            continue
         if not any(
             (output_dir / profile.language / profile_slug(profile) / candidate).exists()
             for profile in loaded
@@ -300,26 +318,16 @@ def choose_run_id(output_dir: Path, loaded: list[_Profile], moment: datetime) ->
     raise GeneratorError(f"не удалось подобрать свободный run_id для {stamp}")
 
 
-def production_step(profile: _Profile, producer: str | None = None) -> ProductionStep:
-    """Return the step a pipeline executes.
-
-    Args:
-        profile: Loaded profile with a non-empty production recipe.
-        producer: Required producer name; ``None`` takes the first step.
-
-    Returns:
-        The first step or the step of the named producer.
+def vast_layer(profile: _Profile) -> Layer:
+    """Return the Vast video layer the generator executes.
 
     Raises:
-        ProfileError: The recipe has no step of the named producer.
+        ProfileError: The recipe has no Vast layer.
     """
-    if producer is None:
-        return profile.production[0]
-    for step in profile.production:
-        if step.producer == producer:
-            return step
-    names = ", ".join(step.producer for step in profile.production)
-    raise ProfileError(f"у профиля {profile.name} нет шага {producer}: есть {names}")
+    for layer in profile.production:
+        if layer.producer == production.VAST_PRODUCER:
+            return layer
+    raise ProfileError(f"у профиля {profile.name} нет слоя {production.VAST_PRODUCER!r}")
 
 
 def prompt_template(profile: _Profile) -> str:
@@ -419,16 +427,16 @@ def _read_workflow(directory: Path, root: Path) -> Mapping[str, Any]:
     return payload
 
 
-def _read_production(data: Mapping[str, Any], name: str) -> tuple[ProductionStep, ...]:
-    """Read the production recipe, defaulting to the original Vast step."""
+def _read_production(data: Mapping[str, Any], name: str) -> tuple[Layer, ...]:
+    """Read the production recipe as independent layer chains."""
     raw = data.get("production")
     if raw is None:
         return _DEFAULT_PRODUCTION
     if not isinstance(raw, list) or not raw:
         raise ProfileError(f"в профиле {name} production должен быть непустым списком")
     allowed_producers = production.available_producers()
-    allowed_qa = production.available_qa()
-    steps: list[ProductionStep] = []
+    allowed_qa = production.available_checks()
+    layers: list[Layer] = []
     seen: set[str] = set()
     for index, item in enumerate(raw, start=1):
         if not isinstance(item, dict):
@@ -445,21 +453,24 @@ def _read_production(data: Mapping[str, Any], name: str) -> tuple[ProductionStep
             )
         engine = production.resolve_producer(producer)
         content_type = _content_type(item.get("type"), name)
-        if content_type not in engine.supported_types:
-            supported = ", ".join(sorted(item.value for item in engine.supported_types))
+        output = artifact_kind(content_type)
+        if output not in engine.supported_outputs:
+            supported = ", ".join(sorted(kind.value for kind in engine.supported_outputs))
             raise ProfileError(
                 f"producer {producer!r} в профиле {name} не производит "
                 f"type={content_type.value!r}: поддержаны {supported}"
             )
         seen.add(producer)
-        steps.append(
-            ProductionStep(
+        layers.append(
+            Layer(
+                name=producer,
                 producer=producer,
-                type=content_type,
-                qa=_qa_names(item.get("qa"), name, index, allowed_qa, content_type),
+                inputs=(),
+                output=output,
+                checks=_qa_names(item.get("qa"), name, index, allowed_qa, content_type),
             )
         )
-    return tuple(steps)
+    return tuple(layers)
 
 
 def _content_type(raw: object, name: str) -> ContentType:
@@ -745,3 +756,17 @@ def _bool_or(value: object, default: bool, key: str) -> bool:
     if isinstance(value, bool):
         return value
     raise ProfileError(f"{key} должен быть true или false: {value!r}")
+
+
+__all__ = [
+    "build_prompt",
+    "choose_run_id",
+    "load_profile",
+    "parse_names",
+    "profile_dir",
+    "profile_niche",
+    "profile_slug",
+    "prompt_template",
+    "text_prompt",
+    "vast_layer",
+]

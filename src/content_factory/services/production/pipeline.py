@@ -17,13 +17,11 @@ from content_factory.schemas.generator.pipeline import (
     Artifact,
     ItemFailure,
     Layer,
-    LayerOutcome,
-    PipelineResult,
-)
-from content_factory.services.production.protocol import (
     LayerCheck,
+    LayerOutcome,
     LayerProducer,
     PipelineContext,
+    PipelineResult,
 )
 from content_factory.services.production.qa import CheckRegistry
 from content_factory.services.production.registry import ProducerRegistry
@@ -81,14 +79,16 @@ def run_pipeline(
         if context.dry_run:
             artifacts = _plan_layer(item, context)
             item_failures: tuple[ItemFailure, ...] = ()
+            produced = artifacts
         else:
             inputs = _inputs_of(item.layer, by_name, failed)
-            artifacts, item_failures = _run_layer(item, context, inputs)
+            produced, artifacts, item_failures = _run_layer(item, context, inputs)
             artifacts = _without_failed(artifacts, failed)
         outcome = LayerOutcome(
             layer=item.layer.name,
             artifacts=artifacts,
             failures=item_failures,
+            produced=produced,
         )
         outcomes.append(outcome)
         by_name[item.layer.name] = outcome
@@ -194,13 +194,13 @@ def _run_layer(
     item: _ResolvedLayer,
     context: PipelineContext,
     inputs: tuple[Artifact, ...],
-) -> tuple[tuple[Artifact, ...], tuple[ItemFailure, ...]]:
+) -> tuple[tuple[Artifact, ...], tuple[Artifact, ...], tuple[ItemFailure, ...]]:
     """Produce, validate and check one layer of a real run."""
     produced = _produce_layer(item, context, inputs)
     _validate_artifacts(item.layer, produced, context)
     missing = _missing_artifacts(item.layer, produced, inputs, context)
     kept, check_failures = _run_checks(item, context, produced)
-    return kept, (*missing, *check_failures)
+    return produced, kept, (*missing, *check_failures)
 
 
 def _produce_layer(

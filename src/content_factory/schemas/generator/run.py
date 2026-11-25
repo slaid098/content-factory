@@ -1,38 +1,14 @@
-"""Typed models of a generator run and of a profile production recipe."""
+"""Typed models of a generator run and of its profile references."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from content_factory.schemas.content.delivery import ContentType
-
-if TYPE_CHECKING:
-    from content_factory.config.settings import GeneratorSettings
-
-
-@dataclass(frozen=True, slots=True)
-class ProductionStep:
-    """One way to produce content: producer, media type and QA checks."""
-
-    producer: str
-    type: ContentType = ContentType.VIDEO
-    qa: tuple[str, ...] = ("media", "clef")
-
-
-@dataclass(frozen=True, slots=True)
-class ProducedBatch:
-    """Outcome of one production step."""
-
-    run_id: str
-    generated: int
-    failed: int
-    run_dirs: tuple[Path, ...]
 
 
 class ProfileRef(Protocol):
@@ -41,25 +17,6 @@ class ProfileRef(Protocol):
     @property
     def name(self) -> str:
         """Profile name such as ``dating/profile_2``."""
-        ...
-
-
-class Producer(Protocol):
-    """Named way to produce content of one profile."""
-
-    @property
-    def supported_types(self) -> frozenset[ContentType]:
-        """Content types this producer can make."""
-        ...
-
-    def produce(
-        self,
-        profile: ProfileRef,
-        count: int,
-        data_dir: Path,
-        settings: GeneratorSettings,
-    ) -> ProducedBatch:
-        """Produce up to *count* items and return the batch outcome."""
         ...
 
 
@@ -87,7 +44,7 @@ class RunServer(BaseModel):
 
 
 class RunStep(BaseModel):
-    """One production step of the profile recipe."""
+    """One layer of the profile recipe."""
 
     model_config = ConfigDict(extra="forbid")
 
