@@ -448,7 +448,6 @@ def test_downloader_continues_when_author_rejection_fails(
 ) -> None:
     cfg = make_config(tmp_path)
     repo = Repository(cfg.db_path)
-    repo.init_schema()
     used = make_video("used", "bob")
     assert repo.add_found(used)
     repo.save_download(
@@ -562,7 +561,6 @@ def test_downloader_rejects_used_authors_and_scopes_language(
 ) -> None:
     cfg = make_config(tmp_path)
     repo = Repository(cfg.db_path)
-    repo.init_schema()
     used = make_video("used", "bob")
     assert repo.add_found(used)
     repo.save_download(
@@ -600,7 +598,6 @@ def test_downloader_rejects_used_authors_and_scopes_language(
 def test_downloader_returns_when_no_approved(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
     repo = Repository(cfg.db_path)
-    repo.init_schema()
 
     result = Downloader(cfg, repo).download(limit=2)
 

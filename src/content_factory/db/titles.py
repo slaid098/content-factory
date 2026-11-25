@@ -2,40 +2,16 @@
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
 from loguru import logger
 
-from content_factory.db.connection import connect_readonly
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS titles (
-    sha256 TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    norm TEXT NOT NULL UNIQUE,
-    created_at TEXT NOT NULL
-)
-"""
-
-_INDEX = """
-CREATE INDEX IF NOT EXISTS idx_titles_created_at ON titles(created_at DESC)
-"""
+from content_factory.db.connection import Connection, connect_readonly, db_exists
+from content_factory.db.errors import DatabaseError
 
 _BATCH_SIZE = 500
-
-
-def ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create the titles table and its index when missing.
-
-    Args:
-        conn: Open connection to the operational database.
-    """
-    conn.execute(_SCHEMA)
-    conn.execute(_INDEX)
-    conn.commit()
 
 
 def load_titles(db_path: Path, hashes: Sequence[str]) -> dict[str, str]:
@@ -51,7 +27,7 @@ def load_titles(db_path: Path, hashes: Sequence[str]) -> dict[str, str]:
     Returns:
         Mapping from SHA-256 to the stored title.
     """
-    if not hashes or not db_path.is_file():
+    if not hashes or not db_exists(db_path):
         return {}
     titles: dict[str, str] = {}
     try:
@@ -62,19 +38,14 @@ def load_titles(db_path: Path, hashes: Sequence[str]) -> dict[str, str]:
                 titles.update(_load_batch(connection, batch))
         finally:
             connection.close()
-    except sqlite3.OperationalError as ex:
-        if "no such table" in str(ex).lower():
-            return {}
-        _log_read_error(ex)
-        return {}
-    except (OSError, sqlite3.Error) as ex:
+    except (OSError, DatabaseError) as ex:
         _log_read_error(ex)
         return {}
     return titles
 
 
 def save_title(
-    conn: sqlite3.Connection,
+    conn: Connection,
     sha256: str,
     title: str,
     norm: str,
@@ -94,8 +65,9 @@ def save_title(
     """
     cursor = conn.execute(
         """
-        INSERT OR IGNORE INTO titles (sha256, title, norm, created_at)
+        INSERT INTO titles (sha256, title, norm, created_at)
         VALUES (?, ?, ?, ?)
+        ON CONFLICT DO NOTHING
         """,
         (sha256, title, norm, created_at),
     )
@@ -113,7 +85,7 @@ def recent_titles(db_path: Path, limit: int = 40) -> tuple[str, ...]:
     Returns:
         Stored titles, newest first; empty when the database or table is absent.
     """
-    if limit <= 0 or not db_path.is_file():
+    if limit <= 0 or not db_exists(db_path):
         return ()
     try:
         connection = connect_readonly(db_path)
@@ -122,25 +94,20 @@ def recent_titles(db_path: Path, limit: int = 40) -> tuple[str, ...]:
                 """
                 SELECT title FROM titles
                 WHERE title <> ''
-                ORDER BY created_at DESC, rowid DESC
+                ORDER BY created_at DESC, sha256 DESC
                 LIMIT ?
                 """,
                 (limit,),
             ).fetchall()
         finally:
             connection.close()
-    except sqlite3.OperationalError as ex:
-        if "no such table" in str(ex).lower():
-            return ()
-        _log_read_error(ex)
-        return ()
-    except (OSError, sqlite3.Error) as ex:
+    except (OSError, DatabaseError) as ex:
         _log_read_error(ex)
         return ()
     return tuple(str(row["title"]) for row in rows)
 
 
-def _load_batch(connection: sqlite3.Connection, hashes: Sequence[str]) -> dict[str, str]:
+def _load_batch(connection: Connection, hashes: Sequence[str]) -> dict[str, str]:
     """Read one batch of titles, one placeholder per hash."""
     placeholders = ", ".join("?" for _ in hashes)
     rows = connection.execute(
@@ -158,3 +125,6 @@ def _log_read_error(error: Exception) -> None:
     logger.bind(error=error, error_type=type(error).__name__).warning(
         "Не удалось прочитать названия видео"
     )
+
+
+__all__ = ["load_titles", "recent_titles", "save_title"]

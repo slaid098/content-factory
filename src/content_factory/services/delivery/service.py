@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 import zipfile
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -14,6 +13,7 @@ from loguru import logger
 from content_factory.constants import ARCHIVE_DIR, DB_DIR, DB_FILENAME
 from content_factory.db.connection import connect, connect_readonly
 from content_factory.db.delivery import load_language_queries as load_language_queries
+from content_factory.db.errors import DatabaseError
 from content_factory.db.lock import DELIVERY_LOCK, lock_path, locked
 from content_factory.db.stock import list_available, mark_delivered
 from content_factory.db.titles import load_titles
@@ -164,7 +164,7 @@ def _deliver_locked(
 
     try:
         _mark_delivered(data_dir, sources, request_id, now)
-    except (OSError, sqlite3.Error) as ex:
+    except (OSError, DatabaseError) as ex:
         raise DeliveryError(f"не удалось отметить выдачу {request_id}") from ex
     _remove_sources(sources, content_type)
     logger.bind(
@@ -374,7 +374,7 @@ def _available_sources(
     """
     try:
         sync_stock(data_dir)
-    except (OSError, sqlite3.Error) as ex:
+    except (OSError, DatabaseError) as ex:
         logger.bind(
             path=str(data_dir / DB_DIR / DB_FILENAME),
             error=ex,

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 from loguru import logger
 
-from content_factory.db.connection import connect_readonly
+from content_factory.db.connection import connect_readonly, db_exists
+from content_factory.db.errors import DatabaseError
 
 
 def load_language_queries(db_path: Path, language: str) -> list[str] | None:
@@ -24,7 +24,7 @@ def load_language_queries(db_path: Path, language: str) -> list[str] | None:
         Sorted distinct queries, or ``None`` when the database is absent or
         cannot be read.
     """
-    if not db_path.is_file():
+    if not db_exists(db_path):
         return None
     try:
         connection = connect_readonly(db_path)
@@ -36,7 +36,7 @@ def load_language_queries(db_path: Path, language: str) -> list[str] | None:
             ).fetchall()
         finally:
             connection.close()
-    except (OSError, sqlite3.Error) as ex:
+    except (OSError, DatabaseError) as ex:
         logger.bind(error=ex, error_type=type(ex).__name__).warning(
             "Не удалось прочитать запросы из базы"
         )

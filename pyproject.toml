@@ -24,6 +24,7 @@ dependencies = [
   "ruamel.yaml>=0.18",
   "pydantic>=2.9",
   "pydantic-settings>=2.6",
+  "psycopg[binary]>=3.2",
   "apscheduler>=3.11,<4",
   "loguru>=0.7.2",
   "imageio-ffmpeg>=0.5",
@@ -110,11 +111,14 @@ path = "README.md"
 reason = "служебный runbook, не продуктовая витрина"
 
 # ConfigError наследует ContentFactoryError — осознанная иерархия ошибок
-# сервиса, чтобы вызывающий код мог ловить общий тип.
+# сервиса, чтобы вызывающий код мог ловить общий тип. DatabaseError — база
+# порта БД: IntegrityError и OperationalError уточняют её, а не доменную
+# иерархию, поэтому сервис не смешивает отказ базы с ошибкой конфигурации.
 inheritance_allowlist = [
   "content_factory.exceptions.errors.ContentFactoryError",
   "content_factory.exceptions.errors.SupplierError",
   "content_factory.exceptions.errors.DeliveryError",
+  "content_factory.exceptions.errors.DatabaseError",
 ]
 
 # Конструкторы этапов (download/filter/mcp_session) совпадают по форме: два
@@ -129,6 +133,15 @@ reason = "совпадение тривиальных конструкторов
 check_id = "duplicate_code"
 path = "src/content_factory/services/generator/texts.py"
 reason = "конструктор TextClient совпадает по форме с этапом supplier/finder: три присваивания полей, общий базовый класс не оправдан"
+
+# commit/rollback/close у SQLite и PostgreSQL совпадают по форме: это три
+# тонкие обёртки над драйвером. Отличается только тип переводимого
+# исключения, поэтому общий базовый класс связал бы два адаптера ради трёх
+# методов и усложнил бы перевод ошибок.
+[[tool.audit.ignore]]
+check_id = "duplicate_code"
+path = "src/content_factory/db/connection.py"
+reason = "обёртки commit/rollback/close отличаются только типом исключения драйвера; общая база не оправдана"
 
 # Проверка ищет только legacy-имя docker-compose.yml. Канонический файл
 # называется compose.yaml (требование issue #6 и современное имя Compose),
@@ -178,4 +191,12 @@ reason = "отдельный CLI-вход миграции, не часть гр
 check_id = "orm_in_core"
 path = "src/content_factory/services/stock/index.py"
 reason = "синхронизация индекса stock_items через db.connection, ORM-моделей нет"
+
+# Имя модуля миграции начинается с цифры, поэтому статический импорт
+# невозможен: раннер подключает его строкой из MIGRATION_MODULES и вызывает
+# apply(). Это реестр миграций, а не мёртвый модуль.
+[[tool.audit.ignore]]
+check_id = "dead_module"
+path = "src/content_factory/db/migrations/0001_initial.py"
+reason = "миграция подключается по строковому имени из реестра: имя начинается с цифры"
 

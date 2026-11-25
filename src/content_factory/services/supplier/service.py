@@ -77,7 +77,6 @@ def produce(
         raise SupplierError("SUPPLIER_PROFILE_ID не задан: укажите ID профиля BitBrowser")
 
     repo = Repository(db_path)
-    repo.init_schema()
     budget = Budget(
         queries=runtime.search.max_queries,
         filters=runtime.filter.max,

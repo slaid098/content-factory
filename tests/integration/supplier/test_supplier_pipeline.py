@@ -52,7 +52,6 @@ def _unused_stages(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _repo(tmp_path: Path) -> Repository:
     repo = Repository(tmp_path / "app_data" / "db" / "db.sqlite3")
-    repo.init_schema()
     return repo
 
 

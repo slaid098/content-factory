@@ -5,6 +5,7 @@ import os
 import re
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
@@ -273,7 +274,6 @@ def test_existing_downloads_are_added_to_the_language_target(
 ) -> None:
     monkeypatch.setattr(service, "McpClient", FakeMcp)
     repo = Repository(tmp_path / DB_DIR / DB_FILENAME)
-    repo.init_schema()
     existing = make_video("old", "old-author")
     assert repo.add_found(existing)
     repo.save_download(
@@ -345,7 +345,15 @@ def test_deadline_check_between_languages_stops_plan(
         },
     )
     clock = iter([0.0, 0.0, 1_000.0])
-    monkeypatch.setattr(service.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(
+        service,
+        "time",
+        SimpleNamespace(
+            monotonic=lambda: next(clock),
+            sleep=lambda _s: None,
+            time=lambda: 0.0,
+        ),
+    )
 
     result = _produce(tmp_path, {"ru": 1, "en": 1})
 
@@ -409,7 +417,6 @@ def test_empty_query_file_drains_approved_leftovers(
     monkeypatch.setattr(service, "McpClient", FakeMcp)
     video = make_video("444", "dmitri", language="de")
     repo = Repository(tmp_path / DB_DIR / DB_FILENAME)
-    repo.init_schema()
     assert repo.add_found(video)
     repo.save_decision(video, make_metadata(video), FilterDecision(True))
     queries_dir = tmp_path / QUERIES_DIR

@@ -23,7 +23,8 @@ from content_factory.constants import (
     QUERIES_DIR,
 )
 from content_factory.db import titles as titles_db
-from content_factory.db.titles import ensure_schema, load_titles, recent_titles, save_title
+from content_factory.db.connection import connect
+from content_factory.db.titles import load_titles, recent_titles, save_title
 from content_factory.db.video_meta import load_video_meta
 from content_factory.exceptions import ConfigError
 from content_factory.exceptions.titles import (
@@ -34,6 +35,7 @@ from content_factory.exceptions.titles import (
 from content_factory.flows.titles import flow as titles_flow
 from content_factory.schemas.content.titles import TitlePassResult
 from content_factory.schemas.content.video import VideoMeta
+from content_factory.schemas.database.port import Connection
 from content_factory.services.titles import assign_titles
 from content_factory.services.titles import client as titles_client
 from content_factory.services.titles import frames as titles_frames
@@ -76,9 +78,8 @@ def _http_client(handler: httpx.MockTransport) -> httpx.Client:
 def test_save_title_inserts_once_and_rejects_duplicates(tmp_path: Path) -> None:
     db_path = _db_path(tmp_path)
     db_path.parent.mkdir(parents=True)
-    connection = sqlite3.connect(db_path)
+    connection = connect(db_path)
     try:
-        ensure_schema(connection)
         assert save_title(connection, "a" * 64, "Утренний свет на кухне", "свет", "2026-05-01")
         assert (
             save_title(connection, "a" * 64, "Другой вариант утра", "утро", "2026-05-01") is False
@@ -105,7 +106,7 @@ def test_load_titles_reads_more_than_one_batch(
     batches: list[list[str]] = []
     original = titles_db._load_batch
 
-    def spy(connection: sqlite3.Connection, batch: list[str]) -> dict[str, str]:
+    def spy(connection: Connection, batch: list[str]) -> dict[str, str]:
         batches.append(list(batch))
         return original(connection, batch)
 
@@ -122,9 +123,8 @@ def test_load_titles_reads_more_than_one_batch(
 def test_load_titles_skips_empty_titles(tmp_path: Path) -> None:
     db_path = _db_path(tmp_path)
     db_path.parent.mkdir(parents=True)
-    connection = sqlite3.connect(db_path)
+    connection = connect(db_path)
     try:
-        ensure_schema(connection)
         connection.execute(
             "INSERT INTO titles (sha256, title, norm, created_at) VALUES (?, '', 'norm', 'now')",
             ("a" * 64,),

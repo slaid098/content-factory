@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from tests.unit.common.profile_helpers import add_profile, add_profile_video, set_profile_refill
 
+from content_factory.db.errors import OperationalError
 from content_factory.exceptions.errors import (
     ProfileStorageError,
     ProfileValidationError,
 )
 from content_factory.schemas.config.runtime import GeneratorConfig
+from content_factory.schemas.database.port import Connection
 from content_factory.schemas.profiles.api import ProfileUpdateRequest
 from content_factory.services.profiles import service as profiles_service
 from content_factory.services.profiles.registry import get_profile
@@ -55,16 +56,16 @@ def test_update_rejects_oversized_stored_target(tmp_path: Path) -> None:
         _update(tmp_path, ProfileUpdateRequest(refill_enabled=True))
 
 
-def test_read_schema_error_maps_to_storage_error(
+def test_read_error_maps_to_storage_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     add_profile(tmp_path)
 
-    def _fail(_connection: sqlite3.Connection) -> None:
-        raise sqlite3.OperationalError("schema is locked")
+    def _fail(_connection: Connection, _profile_id: str) -> object:
+        raise OperationalError("schema is locked")
 
-    monkeypatch.setattr(profiles_service, "ensure_settings_schema", _fail)
+    monkeypatch.setattr(profiles_service, "get_refill", _fail)
 
     with pytest.raises(ProfileStorageError, match="прочитать"):
         _update(tmp_path, ProfileUpdateRequest(refill_enabled=True))
@@ -78,12 +79,12 @@ def test_write_connect_error_maps_to_storage_error(
     original_connect = profiles_service.connect
     calls = 0
 
-    def _connect(path: Path) -> sqlite3.Connection:
+    def _connect(path: Path) -> Connection:
         nonlocal calls
         calls += 1
         if calls == 1:
             return original_connect(path)
-        raise sqlite3.OperationalError("cannot open")
+        raise OperationalError("cannot open")
 
     monkeypatch.setattr(profiles_service, "connect", _connect)
 
@@ -98,7 +99,7 @@ def test_write_error_maps_to_storage_error(
     add_profile(tmp_path)
 
     def _fail(*args: object, **kwargs: object) -> None:
-        raise sqlite3.OperationalError("disk is full")
+        raise OperationalError("disk is full")
 
     monkeypatch.setattr(profiles_service, "upsert_refill", _fail)
 
@@ -112,8 +113,8 @@ def test_counters_fall_back_when_connect_fails(
 ) -> None:
     add_profile(tmp_path)
 
-    def _fail(_path: Path) -> sqlite3.Connection:
-        raise sqlite3.OperationalError("cannot open")
+    def _fail(_path: Path) -> Connection:
+        raise OperationalError("cannot open")
 
     monkeypatch.setattr(profiles_service, "sync_stock", lambda _data_dir: 0)
     monkeypatch.setattr(profiles_service, "connect", _fail)
@@ -135,8 +136,8 @@ def test_counters_fall_back_when_read_fails(
 ) -> None:
     add_profile(tmp_path)
 
-    def _fail(_connection: sqlite3.Connection, _profile_id: str) -> int:
-        raise sqlite3.OperationalError("table is locked")
+    def _fail(_connection: Connection, _profile_id: str) -> int:
+        raise OperationalError("table is locked")
 
     monkeypatch.setattr(profiles_service, "count_by_profile", _fail)
 

@@ -4,18 +4,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from loguru import logger
 
 from content_factory.constants import CONTENT_DIR, DB_DIR, DB_FILENAME
 from content_factory.db.connection import connect
-from content_factory.db.stock import ensure_schema, prune_missing, upsert_items
+from content_factory.db.stock import prune_missing, upsert_items
+from content_factory.schemas.database.port import Connection
 from content_factory.schemas.stock.layout import StockFile
 from content_factory.services.stock.layout import stock_files
-
-if TYPE_CHECKING:
-    import sqlite3
 
 _ScanRow = tuple[StockFile, int, str]
 
@@ -35,7 +32,6 @@ def sync_stock(data_dir: Path) -> int:
     """
     connection = connect(data_dir / DB_DIR / DB_FILENAME)
     try:
-        ensure_schema(connection)
         rows = _scan(data_dir)
         upsert_items(connection, rows)
         prune_missing(connection, {item.path.as_posix() for item, _, _ in rows})
@@ -79,7 +75,7 @@ def _created_at(mtime: float) -> str:
     return datetime.fromtimestamp(mtime, tz=UTC).isoformat()
 
 
-def _row_count(connection: sqlite3.Connection) -> int:
+def _row_count(connection: Connection) -> int:
     """Return the number of rows in the stock table."""
     row = connection.execute("SELECT COUNT(*) FROM stock_items").fetchone()
     return 0 if row is None else int(row[0])

@@ -430,7 +430,6 @@ def test_default_probe_propagates_proxy_config_error(
 def test_filter_stage_reads_found_videos_and_saves_decisions(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
     repo = Repository(cfg.db_path)
-    repo.init_schema()
     video = make_video("1")
     assert repo.add_found(video)
     stage = Filter(cfg, repo, probe=lambda url: make_metadata(video))
@@ -444,7 +443,6 @@ def test_filter_stage_reads_found_videos_and_saves_decisions(tmp_path: Path) -> 
 def test_filter_stage_without_found_videos_skips_probe(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
     repo = Repository(cfg.db_path)
-    repo.init_schema()
     stage = Filter(
         cfg,
         repo,
@@ -457,7 +455,6 @@ def test_filter_stage_without_found_videos_skips_probe(tmp_path: Path) -> None:
 def test_filter_stage_zero_limit_skips_probe(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
     repo = Repository(cfg.db_path)
-    repo.init_schema()
     assert repo.add_found(make_video("1"))
     stage = Filter(cfg, repo, probe=lambda url: pytest.fail("probe must not be called"))
 
@@ -467,7 +464,6 @@ def test_filter_stage_zero_limit_skips_probe(tmp_path: Path) -> None:
 def test_filter_stage_only_reads_its_language(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
     repo = Repository(cfg.db_path)
-    repo.init_schema()
     russian = make_video("1", language="ru")
     english = make_video("2", "bob", language="en")
     assert repo.add_found(russian)

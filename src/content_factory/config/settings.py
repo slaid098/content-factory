@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     telegram_chat_id: str | None = Field(default=None, validation_alias="TELEGRAM_CHAT_ID")
     delivery_token: str | None = None
     delivery_retention_hours: int = Field(default=24, ge=1)
+    database_url: str | None = None
 
     @field_validator("data_dir")
     @classmethod
@@ -69,11 +70,24 @@ class Settings(BaseSettings):
         "telegram_bot_token",
         "telegram_chat_id",
         "delivery_token",
+        "database_url",
         mode="before",
     )
     @classmethod
     def _blank_to_none(cls, value: object) -> object:
         return _blank_to_none_value(value)
+
+    @field_validator("database_url")
+    @classmethod
+    def _check_database_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        scheme = urlsplit(value).scheme.lower()
+        if scheme not in {"postgresql", "postgres"}:
+            raise ConfigError(
+                "CONTENT_FACTORY_DATABASE_URL должен начинаться с postgresql:// или postgres://"
+            )
+        return value
 
 
 class SupplierSettings(BaseSettings):

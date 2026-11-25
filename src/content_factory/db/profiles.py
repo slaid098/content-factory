@@ -1,4 +1,4 @@
-"""Profile-level refill settings stored in SQLite.
+"""Profile-level refill settings stored in the operational database.
 
 Every profile may override the global ``generator.target`` and
 ``generator.refill_at``. A missing row, or a ``NULL`` column, means the
@@ -7,19 +7,8 @@ profile is disabled or follows the global value.
 
 from __future__ import annotations
 
-import sqlite3
-
+from content_factory.db.connection import Connection
 from content_factory.schemas.profiles.refill import ProfileRefill
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS profile_settings (
-    profile_id TEXT PRIMARY KEY,
-    refill_enabled INTEGER NOT NULL DEFAULT 0,
-    target INTEGER,
-    refill_at INTEGER,
-    updated_at TEXT NOT NULL
-)
-"""
 
 _UPSERT = """
 INSERT INTO profile_settings (profile_id, refill_enabled, target, refill_at, updated_at)
@@ -32,17 +21,7 @@ ON CONFLICT(profile_id) DO UPDATE SET
 """
 
 
-def ensure_schema(connection: sqlite3.Connection) -> None:
-    """Create the profile settings table when it is missing.
-
-    Args:
-        connection: Open connection to the operational database.
-    """
-    connection.execute(_SCHEMA)
-    connection.commit()
-
-
-def get_refill(connection: sqlite3.Connection, profile_id: str) -> ProfileRefill:
+def get_refill(connection: Connection, profile_id: str) -> ProfileRefill:
     """Read the refill settings of one profile.
 
     Args:
@@ -71,7 +50,7 @@ def get_refill(connection: sqlite3.Connection, profile_id: str) -> ProfileRefill
 
 
 def upsert_refill(
-    connection: sqlite3.Connection,
+    connection: Connection,
     profile_id: str,
     refill: ProfileRefill,
     now: str,
@@ -90,4 +69,4 @@ def upsert_refill(
     )
 
 
-__all__ = ["ProfileRefill", "ensure_schema", "get_refill", "upsert_refill"]
+__all__ = ["ProfileRefill", "get_refill", "upsert_refill"]

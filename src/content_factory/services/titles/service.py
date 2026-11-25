@@ -4,18 +4,18 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from loguru import logger
 
 from content_factory.config.settings import TitlesSettings
 from content_factory.constants import CONTENT_DIR, DB_DIR, DB_FILENAME
 from content_factory.db.connection import connect
-from content_factory.db.titles import ensure_schema, load_titles, recent_titles, save_title
+from content_factory.db.titles import load_titles, recent_titles, save_title
 from content_factory.db.video_meta import load_video_meta
 from content_factory.exceptions.titles import TitleError
 from content_factory.schemas.content.titles import TitlePassResult
 from content_factory.schemas.content.video import VideoMeta
+from content_factory.schemas.database.port import Connection
 from content_factory.services.stock import stock_files
 from content_factory.services.titles.client import generate_titles
 from content_factory.services.titles.frames import extract_frames
@@ -25,9 +25,6 @@ from content_factory.services.titles.text import (
     normalize_title_key,
     validate_title,
 )
-
-if TYPE_CHECKING:
-    import sqlite3
 
 _RECENT_LIMIT = 40
 _EMPTY_META = VideoMeta(description="", query="")
@@ -60,7 +57,6 @@ def assign_titles(
     files = stock_files(data_dir / CONTENT_DIR)
     connection = connect(db_path)
     try:
-        ensure_schema(connection)
         stored = load_titles(db_path, [item.path.stem for item in files])
         pending = [item for item in files if item.path.stem not in stored]
         meta = load_video_meta(db_path, [item.path.stem for item in pending])
@@ -87,7 +83,7 @@ def assign_titles(
 
 
 def _title_one(
-    connection: sqlite3.Connection,
+    connection: Connection,
     path: Path,
     language: str,
     meta: VideoMeta,
@@ -129,7 +125,7 @@ def _title_one(
 
 
 def _save_candidate(
-    connection: sqlite3.Connection,
+    connection: Connection,
     sha256: str,
     options: tuple[str, ...],
     language: str,

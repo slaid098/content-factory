@@ -12,7 +12,6 @@ import yaml
 
 from content_factory.constants import CONTENT_DIR, DB_DIR, DB_FILENAME, PROFILES_DIR
 from content_factory.db.connection import connect
-from content_factory.db.profiles import ensure_schema as ensure_settings_schema
 from content_factory.db.profiles import upsert_refill
 from content_factory.schemas.profiles.refill import ProfileRefill
 
@@ -108,7 +107,6 @@ def set_profile_refill(
     """Persist one profile settings row in the operational database."""
     connection = connect(data_dir / DB_DIR / DB_FILENAME)
     try:
-        ensure_settings_schema(connection)
         upsert_refill(
             connection,
             profile_id,

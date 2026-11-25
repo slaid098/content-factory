@@ -1,14 +1,15 @@
-"""SQLite repository for supplier videos and downloaded files."""
+"""Repository of supplier videos and downloaded files."""
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
 from content_factory.db.connection import connect
+from content_factory.db.errors import DatabaseError
 from content_factory.exceptions.errors import SupplierError
+from content_factory.schemas.database.port import Connection, Row
 from content_factory.schemas.supplier.results import FilterDecision
 from content_factory.schemas.supplier.video import (
     STATUS_APPROVED,
@@ -23,47 +24,9 @@ from content_factory.schemas.supplier.video import (
     utcnow,
 )
 
-_SCHEMA_TABLES = """
-CREATE TABLE IF NOT EXISTS videos (
-    video_id TEXT PRIMARY KEY,
-    language TEXT NOT NULL DEFAULT '',
-    url TEXT NOT NULL,
-    author TEXT NOT NULL,
-    query TEXT NOT NULL DEFAULT '',
-    views INTEGER,
-    followers INTEGER,
-    duration INTEGER,
-    width INTEGER,
-    height INTEGER,
-    create_time INTEGER,
-    description TEXT NOT NULL DEFAULT '',
-    is_aigc INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'found'
-        CHECK (status IN ('found', 'approved', 'rejected', 'downloaded', 'failed')),
-    reject_reason TEXT,
-    discovered_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS downloads (
-    video_id TEXT PRIMARY KEY REFERENCES videos(video_id),
-    sha256 TEXT NOT NULL UNIQUE,
-    path TEXT NOT NULL,
-    size INTEGER NOT NULL,
-    downloaded_at TEXT NOT NULL
-);
-"""
-
-_SCHEMA_INDEXES = """
-CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
-CREATE INDEX IF NOT EXISTS idx_videos_language_status ON videos(language, status);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_videos_author_downloaded
-    ON videos(author) WHERE status = 'downloaded';
-"""
-
 
 @contextmanager
-def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
+def _connect(db_path: Path) -> Iterator[Connection]:
     """Open one write transaction through the database connection factory."""
     try:
         connection = connect(db_path)
@@ -79,16 +42,8 @@ def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
         connection.close()
 
 
-def _add_language_column(conn: sqlite3.Connection) -> None:
-    """Add the language column, tolerating a concurrent migration."""
-    try:
-        conn.execute("ALTER TABLE videos ADD COLUMN language TEXT NOT NULL DEFAULT ''")
-    except sqlite3.OperationalError as ex:
-        if "duplicate column name" not in str(ex).lower():
-            raise
-
-
-def _row_to_video(row: sqlite3.Row) -> Video:
+def _row_to_video(row: Row) -> Video:
+    """Build a video from one selected row."""
     return Video(
         video_id=str(row["video_id"]),
         url=str(row["url"]),
@@ -100,7 +55,7 @@ def _row_to_video(row: sqlite3.Row) -> Video:
 
 
 class Repository:
-    """Хранилище SQLite, общее для этапов поставщика.
+    """Хранилище операционной базы, общее для этапов поставщика.
 
     Каждый метод открывает своё соединение, поэтому один репозиторий можно
     использовать из параллельных потоков фильтра и загрузчика.
@@ -110,7 +65,7 @@ class Repository:
         """Создать репозиторий одного файла базы.
 
         Args:
-            db_path: Путь к базе SQLite.
+            db_path: Путь к базе SQLite; в режиме PostgreSQL не используется.
         """
         self._db_path = db_path
 
@@ -118,25 +73,6 @@ class Repository:
     def db_path(self) -> Path:
         """Вернуть путь к базе."""
         return self._db_path
-
-    def init_schema(self) -> None:
-        """Создать схему поставщика и добавить колонку ``language``.
-
-        Миграция нужна базам, созданным до появления языков: старая таблица
-        ``videos`` получает колонку со значением по умолчанию.
-
-        Raises:
-            SupplierError: Схему не удалось создать или изменить.
-        """
-        try:
-            with _connect(self._db_path) as conn:
-                conn.executescript(_SCHEMA_TABLES)
-                columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(videos)")}
-                if "language" not in columns:
-                    _add_language_column(conn)
-                conn.executescript(_SCHEMA_INDEXES)
-        except sqlite3.Error as ex:
-            raise SupplierError(f"не удалось подготовить схему поставщика: {ex}") from ex
 
     def add_found(self, video: Video) -> bool:
         """Сохранить видео из поисковой выдачи.
@@ -155,10 +91,11 @@ class Repository:
             with _connect(self._db_path) as conn:
                 cursor = conn.execute(
                     """
-                    INSERT OR IGNORE INTO videos (
+                    INSERT INTO videos (
                         video_id, language, url, author, query, status,
                         discovered_at, updated_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT DO NOTHING
                     """,
                     (
                         video.video_id,
@@ -172,7 +109,7 @@ class Repository:
                     ),
                 )
                 return cursor.rowcount > 0
-        except sqlite3.Error as ex:
+        except DatabaseError as ex:
             raise SupplierError(f"не удалось сохранить видео {video.video_id}: {ex}") from ex
 
     def save_decision(
@@ -231,7 +168,7 @@ class Repository:
                 )
                 if cursor.rowcount == 0:
                     raise SupplierError(f"видео не найдено: {video.video_id}")
-        except sqlite3.Error as ex:
+        except DatabaseError as ex:
             raise SupplierError(f"не удалось сохранить решение {video.video_id}: {ex}") from ex
 
     def save_rejection(self, video: Video, reason: str) -> None:
@@ -254,6 +191,9 @@ class Repository:
 
     def save_download(self, item: DownloadedVideo) -> None:
         """Сохранить скачивание и отклонить другие видео того же автора.
+
+        Запись скачивания, смена статуса видео и отказ остальных видео автора
+        выполняются одной транзакцией: частичное состояние недопустимо.
 
         Args:
             item: Запись о скачанном видео.
@@ -301,11 +241,7 @@ class Repository:
                         STATUS_APPROVED,
                     ),
                 )
-        except sqlite3.IntegrityError as ex:
-            raise SupplierError(
-                f"не удалось записать скачивание {item.video.video_id}: {ex}"
-            ) from ex
-        except sqlite3.Error as ex:
+        except DatabaseError as ex:
             raise SupplierError(
                 f"не удалось записать скачивание {item.video.video_id}: {ex}"
             ) from ex
@@ -322,7 +258,7 @@ class Repository:
                     "SELECT 1 FROM downloads WHERE sha256 = ?",
                     (sha256,),
                 ).fetchone()
-        except sqlite3.Error as ex:
+        except DatabaseError as ex:
             raise SupplierError(f"не удалось проверить SHA-256: {ex}") from ex
         return row is not None
 
@@ -338,7 +274,7 @@ class Repository:
                     "SELECT video_id FROM videos WHERE status <> ?",
                     (STATUS_FOUND,),
                 ).fetchall()
-        except sqlite3.Error as ex:
+        except DatabaseError as ex:
             raise SupplierError(f"не удалось прочитать решения: {ex}") from ex
         return {str(row["video_id"]) for row in rows}
 
@@ -354,7 +290,7 @@ class Repository:
                     "SELECT DISTINCT author FROM videos WHERE status = ?",
                     (STATUS_DOWNLOADED,),
                 ).fetchall()
-        except sqlite3.Error as ex:
+        except DatabaseError as ex:
             raise SupplierError(f"не удалось прочитать авторов: {ex}") from ex
         return {str(row["author"]) for row in rows}
 
@@ -370,7 +306,7 @@ class Repository:
                     "SELECT COUNT(*) AS count FROM videos WHERE language = ? AND status = ?",
                     (language, STATUS_DOWNLOADED),
                 ).fetchone()
-        except sqlite3.Error as ex:
+        except DatabaseError as ex:
             raise SupplierError(f"не удалось посчитать скачанные видео: {ex}") from ex
         return 0 if row is None else int(row["count"])
 
@@ -414,7 +350,7 @@ class Repository:
         try:
             with _connect(self._db_path) as conn:
                 rows = conn.execute(query, params).fetchall()
-        except sqlite3.Error as ex:
+        except DatabaseError as ex:
             raise SupplierError(f"не удалось прочитать видео: {ex}") from ex
         return [_row_to_video(row) for row in rows]
 
@@ -432,5 +368,8 @@ class Repository:
                 )
                 if cursor.rowcount == 0:
                     raise SupplierError(f"видео не найдено: {video_id}")
-        except sqlite3.Error as ex:
+        except DatabaseError as ex:
             raise SupplierError(f"не удалось обновить видео {video_id}: {ex}") from ex
+
+
+__all__ = ["Repository"]

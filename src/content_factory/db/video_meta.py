@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
 
 from loguru import logger
 
-from content_factory.db.connection import connect_readonly
+from content_factory.db.connection import connect_readonly, db_exists
+from content_factory.db.errors import DatabaseError
 from content_factory.schemas.content.video import VideoMeta
 
 
@@ -25,7 +25,7 @@ def load_video_meta(db_path: Path, hashes: Sequence[str]) -> dict[str, VideoMeta
     Returns:
         Mapping from SHA-256 to the stored video metadata.
     """
-    if not hashes or not db_path.is_file():
+    if not hashes or not db_exists(db_path):
         return {}
     placeholders = ", ".join("?" for _ in hashes)
     query = (
@@ -40,7 +40,7 @@ def load_video_meta(db_path: Path, hashes: Sequence[str]) -> dict[str, VideoMeta
             rows = connection.execute(query, list(hashes)).fetchall()
         finally:
             connection.close()
-    except (OSError, sqlite3.Error) as ex:
+    except (OSError, DatabaseError) as ex:
         logger.bind(error=ex, error_type=type(ex).__name__).warning(
             "Не удалось прочитать метаданные видео"
         )
