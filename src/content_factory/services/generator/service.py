@@ -18,8 +18,8 @@ from content_factory.config.settings import (
 )
 from content_factory.constants import PROFILES_DIR
 from content_factory.exceptions.generator import GeneratorError
+from content_factory.schemas.generator.pipeline import Layer, content_type
 from content_factory.schemas.generator.run import (
-    ProductionStep,
     RunItem,
     RunReport,
     RunServer,
@@ -40,7 +40,6 @@ from content_factory.services.generator import (
 )
 from content_factory.services.generator.comfy import (
     _ClientFactory,
-    _ServerSession,
     _SessionFactory,
     _Store,
 )
@@ -55,7 +54,7 @@ from content_factory.services.generator.profiles import (
     choose_run_id,
     load_profile,
     parse_names,
-    production_step,
+    vast_layer,
 )
 from content_factory.services.generator.publish import publish_stock
 from content_factory.services.generator.report import (
@@ -68,6 +67,7 @@ from content_factory.services.generator.report import (
 from content_factory.services.generator.rotation import read_profile_cursor
 from content_factory.services.generator.vast import VastSession
 from content_factory.services.generator.workflow import build_workflow
+from content_factory.utils.run_id import profile_run_dir, validate_run_id
 
 _SOURCE_DIR = "source"
 _TEXT_DIR = "text"
@@ -90,6 +90,7 @@ def generate_batch(
     count: int = 1,
     dry_run: bool = False,
     *,
+    run_id: str | None = None,
     data_dir: Path | None = None,
     settings: GeneratorSettings | None = None,
     session_factory: _SessionFactory | None = None,
@@ -113,6 +114,8 @@ def generate_batch(
             ``"dating/profile_2,dating/profile_1"``.
         count: Videos per profile, at least one.
         dry_run: Build plans and write ``run.json`` without any network call.
+        run_id: Run id chosen by the calling pipeline; picked locally when
+            omitted.
         data_dir: Runtime data directory; defaults to the process settings.
         settings: Generator settings; defaults to the environment.
         session_factory: Rental factory; tests inject a fake server.
@@ -144,19 +147,18 @@ def generate_batch(
     randomizer = rng or random.Random()  # noqa: S311 — variety, not secrets
     loaded = [load_profile(name, root) for name in names]
     started = now or datetime.now(UTC)
-    run_id = choose_run_id(config.output_dir, loaded, started)
-    steps = [
-        production_step(profile, None if dry_run else production.VAST_PRODUCER)
-        for profile in loaded
-    ]
-    prepared = _prepare(config, loaded, count, run_id, randomizer)
+    selected_run_id = validate_run_id(
+        run_id if run_id is not None else choose_run_id(config.output_dir, loaded, started)
+    )
+    layers = [vast_layer(profile) for profile in loaded]
+    prepared = _prepare(config, loaded, count, selected_run_id, randomizer)
     checker = _prepare_media(config, dry_run, safety_checker)
     data_root = root.parent
     run_dirs, generated, failed = _run_all(
         prepared,
-        steps,
+        layers,
         config,
-        run_id,
+        selected_run_id,
         started,
         count,
         dry_run,
@@ -169,7 +171,7 @@ def generate_batch(
         data_root,
     )
     return _BatchResult(
-        run_id=run_id,
+        run_id=selected_run_id,
         status=RunStatus.DRY_RUN.value if dry_run else _status(generated, failed),
         run_dirs=tuple(run_dirs),
         generated=generated,
@@ -196,7 +198,7 @@ def _prepare_media(
 
 def _run_all(
     prepared: list[tuple[_Profile, tuple[_PlannedItem, ...]]],
-    steps: list[ProductionStep],
+    layers: list[Layer],
     config: GeneratorSettings,
     run_id: str,
     started: datetime,
@@ -214,29 +216,34 @@ def _run_all(
     run_dirs: list[Path] = []
     generated = 0
     failed = 0
-    for (profile, items), step in zip(prepared, steps, strict=True):
-        run_dir = config.output_dir / profile.language / profiles.profile_slug(profile) / run_id
+    for (profile, items), layer in zip(prepared, layers, strict=True):
+        slug = profiles.profile_slug(profile)
+        run_dir = profile_run_dir(config.output_dir, profile.language, slug, run_id)
         report = _report(profile, items, run_id, started, count, dry_run)
         report.production = [
-            RunStep(producer=item.producer, type=item.type, qa=list(item.qa))
-            for item in profile.production
+            RunStep(
+                producer=entry.producer,
+                type=content_type(entry.output),
+                qa=list(entry.checks),
+            )
+            for entry in profile.production
         ]
         for item in report.items:
-            item.producer = step.producer
-            item.type = step.type
-            item.qa = list(step.qa)
+            item.producer = layer.producer
+            item.type = content_type(layer.output)
+            item.qa = list(layer.checks)
         _write_report(run_dir, report)
         run_dirs.append(run_dir)
         if dry_run:
             continue
         _produce_safely(
             profile,
-            step,
+            layer,
             items,
             run_dir,
             report,
             config,
-            session_factory or _default_session,
+            session_factory or VastSession,
             client_factory or comfy.ComfyClient,
             text_writer,
             store,
@@ -274,7 +281,7 @@ def _prepare(
 
 def _produce_safely(
     profile: _Profile,
-    step: ProductionStep,
+    layer: Layer,
     items: tuple[_PlannedItem, ...],
     run_dir: Path,
     report: RunReport,
@@ -291,7 +298,7 @@ def _produce_safely(
     try:
         _produce(
             profile,
-            step,
+            layer,
             items,
             run_dir,
             report,
@@ -316,7 +323,7 @@ def _produce_safely(
 
 def _produce(
     profile: _Profile,
-    step: ProductionStep,
+    layer: Layer,
     items: tuple[_PlannedItem, ...],
     run_dir: Path,
     report: RunReport,
@@ -341,7 +348,7 @@ def _produce(
         reason = checker.verify(item, source, attempt) if checker is not None else None
         if reason:
             return reason
-        extra = tuple(name for name in step.qa if name != "clef")
+        extra = tuple(name for name in layer.checks if name != "clef")
         return production.run_qa(extra, production.QA_SOURCE, {}) if extra else None
 
     report.status = RunStatus.GENERATING
@@ -375,13 +382,13 @@ def _produce(
         report.server = _server(profile, info)
     report.status = RunStatus.POSTPROCESSING
     _write_report(run_dir, report)
-    _postprocess(profile, step, results, run_dir, report, settings, text_writer, rng, data_root)
+    _postprocess(profile, layer, results, run_dir, report, settings, text_writer, rng, data_root)
     _finalize(report, run_dir, items)
 
 
 def _postprocess(
     profile: _Profile,
-    step: ProductionStep,
+    layer: Layer,
     results: tuple[comfy._JobResult, ...],
     run_dir: Path,
     report: RunReport,
@@ -403,7 +410,7 @@ def _postprocess(
             _write_report(run_dir, report)
             continue
         try:
-            _finish_item(profile, step, item, result.path, run_dir, writer, rng, data_root)
+            _finish_item(profile, layer, item, result.path, run_dir, writer, rng, data_root)
         except (GeneratorError, OSError) as ex:
             item.status = RunStatus.FAILED
             item.error = str(ex)
@@ -442,7 +449,7 @@ def _advance_cursor(output_dir: Path, profile: _Profile, item: RunItem, run_id: 
 
 def _finish_item(
     profile: _Profile,
-    step: ProductionStep,
+    layer: Layer,
     item: RunItem,
     source: Path,
     run_dir: Path,
@@ -459,7 +466,7 @@ def _finish_item(
     final = run_dir / _FINAL_DIR / item.file
     overlay.mix(profile, card, source, final, audio)
     info = qa.check_declared(
-        step.qa,
+        layer.checks,
         final,
         media.video_seconds(item.frames, profile.fps),
         expect_audio=bool(profile.audio_tracks),
@@ -467,11 +474,6 @@ def _finish_item(
     publish_stock(profile, final, data_root)
     item.duration = round(info.duration, 2)
     item.status = RunStatus.DONE
-
-
-def _default_session(profile: _Profile, settings: GeneratorSettings) -> _ServerSession:
-    """Build the real Vast.ai session of one profile."""
-    return VastSession(profile, settings)
 
 
 def _server(profile: _Profile, info: ServerInfo) -> RunServer:

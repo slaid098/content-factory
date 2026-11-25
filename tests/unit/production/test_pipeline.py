@@ -18,16 +18,11 @@ from content_factory.schemas.generator.pipeline import (
     CheckResult,
     ItemFailure,
     Layer,
-)
-from content_factory.services.production import (
-    CheckRegistry,
-    LayerCheck,
-    LayerProducer,
     PipelineContext,
-    ProducerRegistry,
-    run_pipeline,
 )
-from content_factory.services.production import protocol as production_protocol
+from content_factory.services.production import run_pipeline
+from content_factory.services.production.qa import CheckRegistry
+from content_factory.services.production.registry import ProducerRegistry
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,6 +200,7 @@ def _context(
         count=count,
         data_dir=tmp_path,
         settings=GeneratorSettings(output_dir=tmp_path),
+        run_id="20260101T000000Z",
         rng=random.Random(7),
         now=datetime(2026, 1, 1, tzinfo=UTC),
         dry_run=dry_run,
@@ -218,11 +214,6 @@ def _source_layer(
     checks: tuple[str, ...] = (),
 ) -> Layer:
     return Layer(name=name, producer=producer, inputs=(), output=ArtifactKind.VIDEO, checks=checks)
-
-
-def test_production_door_exports_the_layer_ports() -> None:
-    assert LayerProducer is production_protocol.LayerProducer
-    assert LayerCheck is production_protocol.LayerCheck
 
 
 def test_chain_runs_layers_in_order_and_links_inputs(tmp_path: Path) -> None:

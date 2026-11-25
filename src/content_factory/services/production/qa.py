@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from content_factory.exceptions.generator import GeneratorError, ProfileError
-from content_factory.services.production.protocol import LayerCheck
+from content_factory.schemas.generator.pipeline import LayerCheck
 from content_factory.services.production.registry import _FactoryRegistryMixin
 
 QA_SOURCE = "source"
@@ -121,6 +121,46 @@ class CheckRegistry(_FactoryRegistryMixin[LayerCheck]):
     _UNKNOWN_ERROR = "неизвестная проверка"
 
 
+def _media_check() -> LayerCheck:
+    """Build the layer adapter of the existing mp4 check."""
+    from content_factory.services.production.checks import ArtifactCheck, media_reason
+
+    return ArtifactCheck(media_reason)
+
+
+def _clef_check() -> LayerCheck:
+    """Build the layer adapter of the existing source-frame check."""
+    from content_factory.services.production.checks import ArtifactCheck, source_reason
+
+    return ArtifactCheck(source_reason)
+
+
+def _image_check() -> LayerCheck:
+    """Build the layer adapter of the existing JPEG check."""
+    from content_factory.services.production.checks import ArtifactCheck, image_reason
+
+    return ArtifactCheck(image_reason)
+
+
+_DEFAULT_CHECKS = CheckRegistry(
+    {
+        "clef": _clef_check,
+        "image": _image_check,
+        "media": _media_check,
+    }
+)
+
+
+def default_checks() -> CheckRegistry:
+    """Return the process registry with the built-in layer checks."""
+    return _DEFAULT_CHECKS
+
+
+def available_checks() -> tuple[str, ...]:
+    """Return the built-in layer check names in a stable order."""
+    return _DEFAULT_CHECKS.available()
+
+
 _DEFAULT = Registry(_BUILTINS)
 
 
@@ -161,6 +201,8 @@ __all__ = [
     "QaHandler",
     "Registry",
     "available",
+    "available_checks",
+    "default_checks",
     "has",
     "register",
     "reset",

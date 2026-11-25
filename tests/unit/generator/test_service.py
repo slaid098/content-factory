@@ -317,6 +317,27 @@ def test_existing_run_directory_gets_suffix(tmp_path: Path) -> None:
     assert second.run_dirs != first.run_dirs
 
 
+@pytest.mark.parametrize(
+    "run_id",
+    ["../../../../tmp/x", "", "20260101T000000Z/../x", "/tmp/x", "20260101T000000Z\n"],
+)
+def test_generate_batch_rejects_an_unsafe_run_id(tmp_path: Path, run_id: str) -> None:
+    fixture_profile(tmp_path / "profiles")
+
+    with pytest.raises(GeneratorError, match="run_id"):
+        service.generate_batch(
+            profiles="dating/profile_2",
+            count=1,
+            data_dir=tmp_path,
+            settings=_settings(tmp_path),
+            run_id=run_id,
+            rng=random.Random(1),
+            now=_NOW,
+        )
+
+    assert not (tmp_path / "generated").exists()
+
+
 def test_batch_writes_final_files_and_destroys_server_before_text(
     tmp_path: Path, monkeypatch
 ) -> None:

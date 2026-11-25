@@ -29,6 +29,7 @@ from content_factory.db.video_meta import load_video_meta
 from content_factory.exceptions import DeliveryError, ProfileError
 from content_factory.schemas.content.delivery import ContentType, DeliveryJobInfo
 from content_factory.schemas.content.video import VideoMeta
+from content_factory.schemas.generator.pipeline import ArtifactKind, Layer, PipelineContext
 from content_factory.services.delivery import service as delivery_service
 from content_factory.services.delivery.archives import (
     find_archive,
@@ -1502,11 +1503,18 @@ def test_producer_photo_post_is_scanned_and_delivered_with_its_text(tmp_path: Pa
         del overlay
         return Image.new("RGBA", (profile.width, profile.height), (0, 0, 0, 0))
 
-    CardProducer(writer=_CardWriter(), renderer=render).produce(
-        SimpleNamespace(name="dating/profile_2"),
-        1,
-        tmp_path,
-        GeneratorSettings(output_dir=tmp_path / "generated", safety_enabled=False),
+    settings = GeneratorSettings(output_dir=tmp_path / "generated", safety_enabled=False)
+    CardProducer(writer=_CardWriter(), renderer=render).produce_layer(
+        Layer("card", "card", (), ArtifactKind.PHOTO, ("image",)),
+        (),
+        PipelineContext(
+            profiles=(SimpleNamespace(name="dating/profile_2"),),
+            count=1,
+            data_dir=tmp_path,
+            settings=settings,
+            run_id="20260101T000000Z",
+            now=datetime(2026, 1, 1, tzinfo=UTC),
+        ),
     )
 
     scanned = stock_files(

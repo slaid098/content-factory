@@ -1,47 +1,39 @@
-"""Producer of photo posts: profile text rendered onto an opaque card."""
+"""Layer producer of photo posts: profile text rendered onto an opaque card."""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
 from loguru import logger
 from PIL import Image
 
-from content_factory.config.settings import GeneratorSettings
 from content_factory.constants import PROFILES_DIR
 from content_factory.exceptions.generator import GeneratorError, OverlayError, QaError
-from content_factory.schemas.content.delivery import ContentType
-from content_factory.schemas.generator.run import (
-    ProducedBatch,
-    ProductionStep,
-    ProfileRef,
-    RunItem,
-    RunReport,
-    RunStatus,
-    RunStep,
-    RunTotals,
+from content_factory.schemas.generator.pipeline import (
+    Artifact,
+    ArtifactKind,
+    Layer,
+    PipelineContext,
 )
 from content_factory.services.generator import (
     TextClient,
-    choose_run_id,
     generate_overlay,
     load_profile,
     profile_slug,
     publish_photo,
     render_card,
     validate_count,
-    write_report,
 )
-from content_factory.services.production import qa as production_qa
-from content_factory.services.production.registry import CARD_PRODUCER
+from content_factory.services.production.paths import context_run_dir
+from content_factory.utils.run_id import validate_run_id
 
 _FINAL_DIR = "final"
 _JPEG_QUALITY = 90
 _MAX_CAPTION_BYTES = 4096
+_JPEG_MEDIA_TYPE = "image/jpeg"
 
 
 class _Writer(Protocol):
@@ -104,107 +96,112 @@ _Renderer = Callable[..., Image.Image]
 class CardProducer:
     """Build photo posts from the profile caption and its rendered card."""
 
-    supported_types = frozenset({ContentType.PHOTO})
+    supported_outputs = frozenset({ArtifactKind.PHOTO})
 
     def __init__(
         self,
         *,
         writer: _Writer | None = None,
         renderer: _Renderer | None = None,
-        now: datetime | None = None,
     ) -> None:
         """Store optional test seams; production uses the text model and PIL.
 
         Args:
             writer: Text model port; defaults to :class:`TextClient`.
             renderer: Card renderer; defaults to ``overlay.render_card``.
-            now: Run start moment, fixed in tests.
         """
-        self._writer, self._renderer, self._now = writer, renderer, now
+        self._writer, self._renderer = writer, renderer
 
-    def produce(
+    def plan_layer(self, layer: Layer, context: PipelineContext) -> tuple[Artifact, ...]:
+        """Plan photo post names of every profile of the group."""
+        del layer
+        artifacts: list[Artifact] = []
+        for profile in context.profiles:
+            loaded = load_profile(profile.name, context.data_dir / PROFILES_DIR)
+            run_dir = context_run_dir(context, loaded.language, profile_slug(loaded))
+            for seq in range(1, context.count + 1):
+                filename = _post_name(loaded.name, context.run_id, seq)
+                artifacts.append(
+                    Artifact(
+                        item=filename,
+                        profile=loaded.name,
+                        kind=ArtifactKind.PHOTO,
+                        path=run_dir / _FINAL_DIR / filename,
+                        media_type=_JPEG_MEDIA_TYPE,
+                        meta=_plan_meta(loaded),
+                    )
+                )
+        return tuple(artifacts)
+
+    def produce_layer(
         self,
-        profile: ProfileRef,
-        count: int,
-        data_dir: Path,
-        settings: GeneratorSettings,
-    ) -> ProducedBatch:
-        """Produce *count* photo posts of one profile and publish complete pairs.
-
-        Args:
-            profile: Profile whose card is rendered; only its name is used.
-            count: Number of posts, at least one.
-            data_dir: Root ``app_data`` directory with ``profiles`` and stock.
-            settings: Generator settings with the output directory.
-
-        Returns:
-            Run id, counters and the run directory of the step.
-
-        Raises:
-            GeneratorError: ``count`` is invalid.
-        """
-        validate_count(count)
-        loaded = load_profile(profile.name, data_dir / PROFILES_DIR)
-        step = _step(loaded.production)
-        started = self._now or datetime.now(UTC)
-        run_id = choose_run_id(settings.output_dir, [loaded], started)
-        run_dir = settings.output_dir / loaded.language / profile_slug(loaded) / run_id
-        report = _report(
-            loaded.name,
-            profile_slug(loaded),
-            loaded.production,
-            step,
-            count,
-            run_id,
-            started,
-        )
-        write_report(run_dir, report)
-        writer = self._writer or TextClient(settings)
+        layer: Layer,
+        inputs: tuple[Artifact, ...],
+        context: PipelineContext,
+    ) -> tuple[Artifact, ...]:
+        """Produce *count* photo posts of every profile and publish pairs."""
+        del inputs
+        validate_count(context.count)
+        writer = self._writer or TextClient(context.settings)
         renderer = self._renderer or render_card
-        final_dir = run_dir / _FINAL_DIR
-        generated = failed = total_bytes = 0
-        for item in report.items:
-            try:
-                size = _produce_item(loaded, step, item, writer, renderer, final_dir, data_dir)
-            except (
-                GeneratorError,
-                OSError,
-                UnicodeError,
-                Image.DecompressionBombError,
-                MemoryError,
-                OverflowError,
-            ) as ex:
-                failed += 1
-                _mark_failed(item, ex)
-            else:
-                generated += 1
-                total_bytes += size
-                item.status = RunStatus.DONE
-                logger.bind(file=item.file).info("Фото готово")
-            write_report(run_dir, report)
-        _close_report(report, generated, failed, total_bytes)
-        write_report(run_dir, report)
-        return ProducedBatch(
-            run_id=run_id,
-            generated=report.totals.generated,
-            failed=report.totals.failed,
-            run_dirs=(run_dir,),
-        )
+        artifacts: list[Artifact] = []
+        for profile in context.profiles:
+            loaded = load_profile(profile.name, context.data_dir / PROFILES_DIR)
+            run_dir = context_run_dir(context, loaded.language, profile_slug(loaded))
+            for seq in range(1, context.count + 1):
+                filename = _post_name(loaded.name, context.run_id, seq)
+                artifacts.append(
+                    self._produce_item(
+                        loaded,
+                        filename,
+                        run_dir / _FINAL_DIR,
+                        writer,
+                        renderer,
+                        context,
+                    )
+                )
+        return tuple(artifacts)
+
+    def _produce_item(
+        self,
+        profile: Any,
+        filename: str,
+        final_dir: Path,
+        writer: _Writer,
+        renderer: _Renderer,
+        context: PipelineContext,
+    ) -> Artifact:
+        """Produce, check and publish one photo; failures stay on the artifact."""
+        final = final_dir / filename
+        try:
+            size = _produce_item(profile, writer, renderer, final, context)
+        except (
+            GeneratorError,
+            OSError,
+            UnicodeError,
+            Image.DecompressionBombError,
+            MemoryError,
+            OverflowError,
+        ) as ex:
+            logger.bind(file=filename, error=str(ex), error_type=type(ex).__name__).error(
+                "Фото не собрано"
+            )
+            return _artifact(profile, filename, final, "failed", str(ex))
+        logger.bind(file=filename).info("Фото готово")
+        return _artifact(profile, filename, final, "done", None, size)
 
 
 def _produce_item(
     profile: Any,
-    step: ProductionStep,
-    item: RunItem,
     writer: _Writer,
     renderer: _Renderer,
-    final_dir: Path,
-    data_dir: Path,
+    final: Path,
+    context: PipelineContext,
 ) -> int:
     """Generate, check and publish one photo; return its JPEG size.
 
     Raises:
-        QaError: A declared final check rejected the photo.
+        QaError: The mandatory image check rejected the photo.
         GeneratorError: The caption or the publication failed.
         OSError: A file could not be read or written.
         UnicodeError: The caption cannot be encoded as UTF-8.
@@ -212,79 +209,66 @@ def _produce_item(
         OverflowError: The image size overflows the renderer.
         Image.DecompressionBombError: The JPEG declares too many pixels.
     """
-    final = final_dir / item.file
     overlay = generate_overlay(profile, writer)
     caption = _checked_caption(overlay)
     _render_jpeg(profile, overlay, renderer, final)
     _write_sidecar(final, caption)
-    reason = _qa_reason(step, final, profile.width, profile.height)
+    reason = check_image(final, profile.width, profile.height)
     if reason is not None:
         raise QaError(reason)
     size = final.stat().st_size
-    publish_photo(profile, final, data_dir)
+    publish_photo(profile, final, context.data_dir)
     return size
 
 
-def _close_report(report: RunReport, generated: int, failed: int, total_bytes: int) -> None:
-    """Store the counted outcome and the finish moment in the report."""
-    report.totals = RunTotals(generated=generated, failed=failed, bytes=total_bytes)
-    report.status = RunStatus.DONE if failed == 0 else RunStatus.FAILED
-    report.finished_at = datetime.now(UTC)
-
-
-def _mark_failed(item: RunItem, error: Exception) -> None:
-    """Mark one item failed and log the reason without stopping the run."""
-    item.status = RunStatus.FAILED
-    item.error = str(error)
-    logger.bind(file=item.file, error=str(error), error_type=type(error).__name__).error(
-        "Фото не собрано"
+def _artifact(
+    profile: Any,
+    filename: str,
+    final: Path,
+    status: str,
+    error: str | None,
+    size: int = 0,
+) -> Artifact:
+    """Describe one produced photo as a layer artifact."""
+    return Artifact(
+        item=filename,
+        profile=profile.name,
+        kind=ArtifactKind.PHOTO,
+        path=final,
+        media_type=_JPEG_MEDIA_TYPE,
+        meta={
+            "look_id": None,
+            "seed": None,
+            "frames": None,
+            "width": profile.width,
+            "height": profile.height,
+            "status": status,
+            "error": error,
+            "bytes": size,
+        },
     )
 
 
-def _step(steps: tuple[ProductionStep, ...]) -> ProductionStep:
-    """Return the recipe step of the card producer.
+def _plan_meta(profile: Any) -> dict[str, object]:
+    """Describe the plan of one photo post."""
+    return {
+        "look_id": None,
+        "seed": None,
+        "frames": None,
+        "width": profile.width,
+        "height": profile.height,
+        "status": "planned",
+    }
+
+
+def _post_name(name: str, run_id: str, seq: int) -> str:
+    """Return the file name of one photo post.
 
     Raises:
-        GeneratorError: The recipe has no card step.
+        GeneratorError: The run id cannot be used in a file name.
     """
-    for step in steps:
-        if step.producer == CARD_PRODUCER and step.type is ContentType.PHOTO:
-            return step
-    raise GeneratorError(f"в рецепте профиля нет шага {CARD_PRODUCER}/photo")
-
-
-def _report(
-    name: str,
-    slug: str,
-    production: tuple[ProductionStep, ...],
-    step: ProductionStep,
-    count: int,
-    run_id: str,
-    started: datetime,
-) -> RunReport:
-    """Build the initial ``run.json`` report of one card run."""
-    items = [
-        RunItem(
-            file=f"{slug}_{run_id}_{seq:03d}.jpg",
-            profile=name,
-            producer=step.producer,
-            type=step.type,
-            qa=list(step.qa),
-        )
-        for seq in range(1, count + 1)
-    ]
-    return RunReport(
-        run_id=run_id,
-        started_at=started,
-        status=RunStatus.RUNNING,
-        profiles=[name],
-        count=count,
-        production=[
-            RunStep(producer=entry.producer, type=entry.type, qa=list(entry.qa))
-            for entry in production
-        ],
-        items=items,
-    )
+    validate_run_id(run_id)
+    return f"{name.replace('/', '_')}_{run_id}_{seq:03d}.jpg"
 
 
 def _render_jpeg(
@@ -354,20 +338,6 @@ def _write_sidecar(final: Path, caption: str) -> None:
     except UnicodeEncodeError as ex:
         raise GeneratorError("текст поста не кодируется в UTF-8") from ex
     final.with_suffix(".json").write_bytes(payload)
-
-
-def _qa_reason(
-    step: ProductionStep,
-    final: Path,
-    width: int,
-    height: int,
-) -> str | None:
-    """Run the mandatory image check and then the declared final checks."""
-    names = ("image", *(name for name in step.qa if name != "image"))
-    handlers: Mapping[str, production_qa.QaHandler] = {
-        "image": lambda: check_image(final, width, height)
-    }
-    return production_qa.run(names, production_qa.QA_FINAL, handlers)
 
 
 def check_image(path: Path, width: int, height: int) -> str | None:

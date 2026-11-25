@@ -16,9 +16,14 @@ from tests.unit.generator.helpers import fixture_profile, make_profile
 
 from content_factory.config.settings import GeneratorSettings
 from content_factory.exceptions.generator import GeneratorError, OverlayError, TextError
+from content_factory.schemas.generator.pipeline import (
+    Artifact,
+    ArtifactKind,
+    Layer,
+    PipelineContext,
+)
 from content_factory.services.generator import publish
 from content_factory.services.production import card as card_module
-from content_factory.services.production import qa as production_qa
 from content_factory.services.production.card import CardProducer, check_image
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
@@ -54,7 +59,7 @@ def _producer(
     writer: _Writer | None = None,
     renderer: Any = _renderer,
 ) -> CardProducer:
-    return CardProducer(writer=writer or _Writer(), renderer=renderer, now=_NOW)
+    return CardProducer(writer=writer or _Writer(), renderer=renderer)
 
 
 def _photo_profile(tmp_path: Path) -> None:
@@ -78,23 +83,47 @@ def _post_name(seq: int) -> str:
     return f"{_SLUG}_{_RUN_ID}_{seq:03d}"
 
 
+def _layer(*checks: str) -> Layer:
+    return Layer("card", "card", (), ArtifactKind.PHOTO, checks or ("image",))
+
+
+def _context(tmp_path: Path, count: int = 1) -> PipelineContext:
+    return PipelineContext(
+        profiles=(SimpleNamespace(name="dating/profile_2"),),
+        count=count,
+        data_dir=tmp_path,
+        settings=_settings(tmp_path),
+        run_id=_RUN_ID,
+        now=_NOW,
+    )
+
+
+def _produce(
+    tmp_path: Path,
+    *,
+    count: int = 1,
+    producer: CardProducer | None = None,
+    layer: Layer | None = None,
+) -> tuple[Artifact, ...]:
+    return (producer or _producer()).produce_layer(layer or _layer(), (), _context(tmp_path, count))
+
+
 def test_card_produces_two_photo_posts_with_their_text(tmp_path: Path) -> None:
     _photo_profile(tmp_path)
     writer = _Writer()
 
-    produced = _producer(writer=writer).produce(
-        SimpleNamespace(name="dating/profile_2"), 2, tmp_path, _settings(tmp_path)
-    )
+    artifacts = _produce(tmp_path, count=2, producer=_producer(writer=writer))
 
-    assert produced.run_id == _RUN_ID
-    assert produced.generated == 2
-    assert produced.failed == 0
-    assert produced.run_dirs == (_run_dir(tmp_path),)
     assert len(writer.prompts) == 2
-    for seq in (1, 2):
+    assert [artifact.meta["status"] for artifact in artifacts] == ["done", "done"]
+    for seq, artifact in zip((1, 2), artifacts, strict=True):
         name = _post_name(seq)
         final = _run_dir(tmp_path) / "final" / f"{name}.jpg"
         stock = _stock_dir(tmp_path) / f"{name}.jpg"
+        assert artifact.item == f"{name}.jpg"
+        assert artifact.profile == "dating/profile_2"
+        assert artifact.kind is ArtifactKind.PHOTO
+        assert artifact.path == final
         assert final.is_file()
         assert stock.is_file()
         assert stock.stat().st_ino == final.stat().st_ino
@@ -105,29 +134,21 @@ def test_card_produces_two_photo_posts_with_their_text(tmp_path: Path) -> None:
         sidecar = json.loads(stock.with_suffix(".json").read_text(encoding="utf-8"))
         assert sidecar == {"text": _CAPTION}
 
-    report = json.loads((_run_dir(tmp_path) / "run.json").read_text(encoding="utf-8"))
-    assert report["status"] == "done"
-    assert report["production"] == [{"producer": "card", "type": "photo", "qa": ["image"]}]
-    assert report["count"] == 2
-    assert [item["file"] for item in report["items"]] == [
+
+def test_card_plans_two_photo_names_without_the_text_model(tmp_path: Path) -> None:
+    _photo_profile(tmp_path)
+    writer = _Writer()
+
+    artifacts = CardProducer(writer=writer, renderer=_renderer).plan_layer(
+        _layer(), _context(tmp_path, 2)
+    )
+
+    assert writer.prompts == []
+    assert [artifact.item for artifact in artifacts] == [
         f"{_post_name(1)}.jpg",
         f"{_post_name(2)}.jpg",
     ]
-    for item in report["items"]:
-        assert item["profile"] == "dating/profile_2"
-        assert item["status"] == "done"
-        assert item["error"] is None
-        assert item["producer"] == "card"
-        assert item["type"] == "photo"
-        assert item["qa"] == ["image"]
-        assert item["look_id"] is None
-        assert item["seed"] is None
-        assert item["frames"] is None
-    assert report["totals"]["generated"] == 2
-    assert report["totals"]["failed"] == 0
-    assert report["totals"]["bytes"] == sum(
-        (_run_dir(tmp_path) / "final" / f"{_post_name(seq)}.jpg").stat().st_size for seq in (1, 2)
-    )
+    assert [artifact.meta["status"] for artifact in artifacts] == ["planned", "planned"]
 
 
 @pytest.mark.parametrize("count", [0, -1])
@@ -142,9 +163,7 @@ def test_invalid_count_fails_before_the_text_model_and_render(tmp_path: Path, co
         return Image.new("RGB", (1, 1))
 
     with pytest.raises(GeneratorError, match="count"):
-        _producer(writer=writer, renderer=render).produce(
-            SimpleNamespace(name="dating/profile_2"), count, tmp_path, _settings(tmp_path)
-        )
+        _produce(tmp_path, count=count, producer=_producer(writer=writer, renderer=render))
 
     assert writer.prompts == []
     assert renders == []
@@ -161,18 +180,12 @@ def test_text_failure_marks_the_item_failed_without_publication(
 
     monkeypatch.setattr(card_module, "generate_overlay", fail)
 
-    produced = _producer().produce(
-        SimpleNamespace(name="dating/profile_2"), 1, tmp_path, _settings(tmp_path)
-    )
+    artifacts = _produce(tmp_path)
 
-    assert produced.generated == 0
-    assert produced.failed == 1
+    assert len(artifacts) == 1
+    assert artifacts[0].meta["status"] == "failed"
+    assert "модель не ответила" in str(artifacts[0].meta["error"])
     assert not _stock_dir(tmp_path).exists()
-    report = json.loads((_run_dir(tmp_path) / "run.json").read_text(encoding="utf-8"))
-    item = report["items"][0]
-    assert item["status"] == "failed"
-    assert "модель не ответила" in item["error"]
-    assert report["totals"] == {"generated": 0, "failed": 1, "bytes": 0}
     assert not (_run_dir(tmp_path) / "final" / f"{_post_name(1)}.jpg").exists()
 
 
@@ -183,19 +196,15 @@ def test_broken_render_marks_the_item_failed_without_publication(tmp_path: Path)
         del profile, overlay
         raise OverlayError("карточка не нарисовалась")
 
-    produced = _producer(renderer=render).produce(
-        SimpleNamespace(name="dating/profile_2"), 1, tmp_path, _settings(tmp_path)
-    )
+    artifacts = _produce(tmp_path, producer=_producer(renderer=render))
 
-    assert produced.generated == 0
-    assert produced.failed == 1
+    assert artifacts[0].meta["status"] == "failed"
+    assert "карточка не нарисовалась" in str(artifacts[0].meta["error"])
     assert not _stock_dir(tmp_path).exists()
-    report = json.loads((_run_dir(tmp_path) / "run.json").read_text(encoding="utf-8"))
-    assert "карточка не нарисовалась" in report["items"][0]["error"]
 
 
 @pytest.mark.parametrize("kind", [MemoryError, OverflowError])
-def test_render_resource_error_marks_the_item_failed_and_finalizes_the_report(
+def test_render_resource_error_marks_the_item_failed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: type[Exception]
 ) -> None:
     _photo_profile(tmp_path)
@@ -206,19 +215,11 @@ def test_render_resource_error_marks_the_item_failed_and_finalizes_the_report(
 
     monkeypatch.setattr(card_module.Image, "new", fail)
 
-    produced = _producer().produce(
-        SimpleNamespace(name="dating/profile_2"), 1, tmp_path, _settings(tmp_path)
-    )
+    artifacts = _produce(tmp_path)
 
-    assert produced.generated == 0
-    assert produced.failed == 1
+    assert artifacts[0].meta["status"] == "failed"
+    assert "размер не помещается" in str(artifacts[0].meta["error"])
     assert not _stock_dir(tmp_path).exists()
-    report = json.loads((_run_dir(tmp_path) / "run.json").read_text(encoding="utf-8"))
-    assert report["status"] == "failed"
-    assert report["finished_at"] is not None
-    assert report["totals"] == {"generated": 0, "failed": 1, "bytes": 0}
-    assert report["items"][0]["status"] == "failed"
-    assert "размер не помещается" in report["items"][0]["error"]
 
 
 def test_image_check_failure_marks_the_item_failed_without_publication(
@@ -227,27 +228,17 @@ def test_image_check_failure_marks_the_item_failed_without_publication(
     _photo_profile(tmp_path)
     monkeypatch.setattr(card_module, "check_image", lambda path, width, height: "битый jpeg")
 
-    produced = _producer().produce(
-        SimpleNamespace(name="dating/profile_2"), 1, tmp_path, _settings(tmp_path)
-    )
+    artifacts = _produce(tmp_path)
 
-    assert produced.generated == 0
-    assert produced.failed == 1
+    assert artifacts[0].meta["status"] == "failed"
+    assert artifacts[0].meta["error"] == "битый jpeg"
     assert not _stock_dir(tmp_path).exists()
-    report = json.loads((_run_dir(tmp_path) / "run.json").read_text(encoding="utf-8"))
-    assert report["items"][0]["error"] == "битый jpeg"
 
 
 def test_image_check_runs_even_when_the_recipe_names_only_another_check(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    production_qa.register("custom", production_qa.QA_FINAL)
-    make_profile(
-        tmp_path / "profiles",
-        width=544,
-        height=960,
-        extra={"production": [{"producer": "card", "type": "photo", "qa": ["custom"]}]},
-    )
+    _photo_profile(tmp_path)
     calls: list[str] = []
 
     def failing(path: Path, width: int, height: int) -> str:
@@ -257,16 +248,11 @@ def test_image_check_runs_even_when_the_recipe_names_only_another_check(
 
     monkeypatch.setattr(card_module, "check_image", failing)
 
-    produced = _producer().produce(
-        SimpleNamespace(name="dating/profile_2"), 1, tmp_path, _settings(tmp_path)
-    )
+    artifacts = _produce(tmp_path, layer=_layer("custom"))
 
     assert len(calls) == 1
-    assert produced.failed == 1
+    assert artifacts[0].meta["status"] == "failed"
     assert not _stock_dir(tmp_path).exists()
-    report = json.loads((_run_dir(tmp_path) / "run.json").read_text(encoding="utf-8"))
-    assert report["items"][0]["qa"] == ["custom"]
-    assert report["items"][0]["error"] == "битый jpeg"
 
 
 @pytest.mark.parametrize("existing", ["jpg", "json"])
@@ -277,11 +263,9 @@ def test_existing_stock_file_leaves_no_half_pair(tmp_path: Path, existing: str) 
     name = _post_name(1)
     (stock_dir / f"{name}.{existing}").write_text("old", encoding="utf-8")
 
-    produced = _producer().produce(
-        SimpleNamespace(name="dating/profile_2"), 1, tmp_path, _settings(tmp_path)
-    )
+    artifacts = _produce(tmp_path)
 
-    assert produced.failed == 1
+    assert artifacts[0].meta["status"] == "failed"
     if existing == "jpg":
         assert not (stock_dir / f"{name}.json").exists()
         assert (stock_dir / f"{name}.jpg").read_text(encoding="utf-8") == "old"
@@ -308,11 +292,9 @@ def test_photo_publication_failure_removes_the_published_sidecar(
     monkeypatch.setattr(publish.os, "link", link)
     monkeypatch.setattr(publish.shutil, "copyfileobj", copy)
 
-    produced = _producer().produce(
-        SimpleNamespace(name="dating/profile_2"), 1, tmp_path, _settings(tmp_path)
-    )
+    artifacts = _produce(tmp_path)
 
-    assert produced.failed == 1
+    assert artifacts[0].meta["status"] == "failed"
     stock_dir = _stock_dir(tmp_path)
     assert list(stock_dir.glob(f"{_post_name(1)}.*")) == []
 
@@ -339,11 +321,9 @@ def test_photo_failure_does_not_remove_a_replaced_sidecar(
     monkeypatch.setattr(publish.os, "link", link)
     monkeypatch.setattr(publish.shutil, "copyfileobj", copy)
 
-    produced = _producer().produce(
-        SimpleNamespace(name="dating/profile_2"), 1, tmp_path, _settings(tmp_path)
-    )
+    artifacts = _produce(tmp_path)
 
-    assert produced.failed == 1
+    assert artifacts[0].meta["status"] == "failed"
     stock = _stock_dir(tmp_path) / f"{_post_name(1)}.json"
     assert stock.read_text(encoding="utf-8") == foreign
     assert not stock.with_suffix(".jpg").exists()
@@ -368,11 +348,9 @@ def test_failed_jpeg_publication_keeps_a_foreign_jpeg(
 
     monkeypatch.setattr(publish.os, "link", link)
 
-    produced = _producer().produce(
-        SimpleNamespace(name="dating/profile_2"), 1, tmp_path, _settings(tmp_path)
-    )
+    artifacts = _produce(tmp_path)
 
-    assert produced.failed == 1
+    assert artifacts[0].meta["status"] == "failed"
     stock = _stock_dir(tmp_path) / f"{_post_name(1)}.jpg"
     assert stock.read_text(encoding="utf-8") == foreign
     assert not stock.with_suffix(".json").exists()
@@ -517,21 +495,14 @@ def test_png_payload_fails_the_image_check_without_publication(
 
     monkeypatch.setattr(card_module, "_render_jpeg", save_png)
 
-    produced = _producer().produce(
-        SimpleNamespace(name="dating/profile_2"), 1, tmp_path, _settings(tmp_path)
-    )
+    artifacts = _produce(tmp_path)
 
-    assert produced.failed == 1
+    assert artifacts[0].meta["status"] == "failed"
     assert not _stock_dir(tmp_path).exists()
-    report = json.loads((_run_dir(tmp_path) / "run.json").read_text(encoding="utf-8"))
-    assert report["status"] == "failed"
-    assert report["finished_at"] is not None
-    assert "JPEG" in report["items"][0]["error"]
+    assert "JPEG" in str(artifacts[0].meta["error"])
 
 
-def test_decompression_bomb_fails_the_item_and_finalizes_the_report(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_decompression_bomb_fails_the_item(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _photo_profile(tmp_path)
 
     def bomb(*args: object, **kwargs: object) -> None:
@@ -540,17 +511,10 @@ def test_decompression_bomb_fails_the_item_and_finalizes_the_report(
 
     monkeypatch.setattr(card_module, "check_image", bomb)
 
-    produced = _producer().produce(
-        SimpleNamespace(name="dating/profile_2"), 1, tmp_path, _settings(tmp_path)
-    )
+    artifacts = _produce(tmp_path)
 
-    assert produced.generated == 0
-    assert produced.failed == 1
+    assert artifacts[0].meta["status"] == "failed"
     assert not _stock_dir(tmp_path).exists()
-    report = json.loads((_run_dir(tmp_path) / "run.json").read_text(encoding="utf-8"))
-    assert report["status"] == "failed"
-    assert report["finished_at"] is not None
-    assert report["totals"] == {"generated": 0, "failed": 1, "bytes": 0}
 
 
 def test_oversized_caption_fails_before_render_and_leaves_no_stock(tmp_path: Path) -> None:
@@ -562,35 +526,24 @@ def test_oversized_caption_fails_before_render_and_leaves_no_stock(tmp_path: Pat
         renders.append("render")
         return _renderer(profile, overlay)
 
-    produced = _producer(writer=writer, renderer=render).produce(
-        SimpleNamespace(name="dating/profile_2"), 1, tmp_path, _settings(tmp_path)
-    )
+    artifacts = _produce(tmp_path, producer=_producer(writer=writer, renderer=render))
 
-    assert produced.failed == 1
+    assert artifacts[0].meta["status"] == "failed"
     assert renders == []
     assert not _stock_dir(tmp_path).exists()
     assert not (_run_dir(tmp_path) / "final" / f"{_post_name(1)}.jpg").exists()
-    report = json.loads((_run_dir(tmp_path) / "run.json").read_text(encoding="utf-8"))
-    assert report["status"] == "failed"
-    assert report["finished_at"] is not None
-    assert "больше" in report["items"][0]["error"]
+    assert "больше" in str(artifacts[0].meta["error"])
 
 
 def test_lone_surrogate_caption_fails_without_crashing(tmp_path: Path) -> None:
     _photo_profile(tmp_path)
     writer = _Writer("<result><block>Привет \ud800</block></result>")
 
-    produced = _producer(writer=writer).produce(
-        SimpleNamespace(name="dating/profile_2"), 1, tmp_path, _settings(tmp_path)
-    )
+    artifacts = _produce(tmp_path, producer=_producer(writer=writer))
 
-    assert produced.generated == 0
-    assert produced.failed == 1
+    assert artifacts[0].meta["status"] == "failed"
+    assert artifacts[0].meta["error"] == "текст поста не кодируется в UTF-8"
     assert not _stock_dir(tmp_path).exists()
-    report = json.loads((_run_dir(tmp_path) / "run.json").read_text(encoding="utf-8"))
-    assert report["status"] == "failed"
-    assert report["finished_at"] is not None
-    assert report["items"][0]["error"] == "текст поста не кодируется в UTF-8"
 
 
 def test_write_sidecar_rejects_unencodable_text_before_creating_a_file(tmp_path: Path) -> None:
