@@ -19,9 +19,10 @@ from content_factory.exceptions.errors import (
 from content_factory.schemas.config.runtime import GeneratorConfig
 from content_factory.schemas.content.delivery import ContentType
 from content_factory.schemas.profiles.api import ProfileResponse, ProfileUpdateRequest
+from content_factory.schemas.profiles.preview import ProfilePreview
 from content_factory.schemas.profiles.refill import ProfileRefill
 from content_factory.schemas.profiles.registry import ProfileInfo
-from content_factory.services.profiles.preview import ProfilePreview, profile_preview
+from content_factory.services.profiles.preview import profile_preview
 from content_factory.services.profiles.refill import decide_refill
 from content_factory.services.profiles.registry import (
     get_profile,

@@ -10,13 +10,13 @@ without a cache and without ffmpeg.
 from __future__ import annotations
 
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 
 from loguru import logger
 
 from content_factory.constants import CONTENT_DIR, PREVIEW_DIR
 from content_factory.exceptions.errors import ProfilePreviewError
+from content_factory.schemas.profiles.preview import ProfilePreview
 from content_factory.schemas.profiles.registry import ProfileInfo
 
 _TIMEOUT_SECONDS = 30
@@ -29,14 +29,6 @@ _PHOTO_MEDIA_TYPES = {
     ".png": "image/png",
     ".webp": "image/webp",
 }
-
-
-@dataclass(frozen=True, slots=True)
-class ProfilePreview:
-    """One preview file and the media type it is served with."""
-
-    path: Path
-    media_type: str
 
 
 def extract_preview(source: Path, target: Path) -> None:

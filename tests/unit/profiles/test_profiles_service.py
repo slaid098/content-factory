@@ -21,8 +21,8 @@ from content_factory.exceptions.errors import (
 from content_factory.schemas.config.runtime import GeneratorConfig
 from content_factory.schemas.database.port import Connection
 from content_factory.schemas.profiles.api import ProfileUpdateRequest
+from content_factory.schemas.profiles.preview import ProfilePreview
 from content_factory.services.profiles import service as profiles_service
-from content_factory.services.profiles.preview import ProfilePreview
 from content_factory.services.profiles.registry import get_profile
 
 _GLOBAL = GeneratorConfig(target=20, refill_at=2)

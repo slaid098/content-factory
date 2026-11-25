@@ -13,9 +13,9 @@ from tests.unit.common.profile_helpers import add_profile_photo, add_profile_vid
 
 from content_factory.constants import CONTENT_DIR, PREVIEW_DIR
 from content_factory.exceptions.errors import ProfilePreviewError
+from content_factory.schemas.profiles.preview import ProfilePreview
 from content_factory.schemas.profiles.registry import ProfileInfo
 from content_factory.services.profiles import preview
-from content_factory.services.profiles.preview import ProfilePreview
 
 
 def _profile(tmp_path: Path, *, language: str = "ru", niche: str = "dating") -> ProfileInfo:
