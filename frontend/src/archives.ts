@@ -14,6 +14,7 @@ export interface ArchivesElements {
   empty: HTMLElement;
   message: HTMLElement;
   summary: HTMLElement;
+  loading?: HTMLElement;
 }
 
 export interface ArchivesView {
@@ -32,6 +33,10 @@ export function createArchivesView(elements: ArchivesElements): ArchivesView {
    * Reload the list; an optional request id marks the archive built now.
    */
   async function load(highlightId: string | null = null): Promise<void> {
+    elements.list.setAttribute("aria-busy", "true");
+    if (elements.loading) {
+      toggle(elements.loading, true);
+    }
     try {
       const data = await requestJson("/api/v1/content/archives");
       archives = Array.isArray(data) ? (data as Record<string, unknown>[]) : [];
@@ -40,6 +45,11 @@ export function createArchivesView(elements: ArchivesElements): ArchivesView {
       render();
     } catch (error) {
       setMessage(elements.message, errorMessage(error));
+    } finally {
+      elements.list.setAttribute("aria-busy", "false");
+      if (elements.loading) {
+        toggle(elements.loading, false);
+      }
     }
   }
 

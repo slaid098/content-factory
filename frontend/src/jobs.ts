@@ -97,6 +97,7 @@ export function createJobsView(elements: JobElements, options: JobViewOptions): 
     }
     if (Date.now() - startedAt > POLL_LIMIT_MS) {
       stopPolling();
+      elements.container.setAttribute("aria-busy", "false");
       elements.state.textContent = "ошибка";
       elements.message.classList.add("is-error");
       setMessage(
@@ -117,6 +118,7 @@ export function createJobsView(elements: JobElements, options: JobViewOptions): 
       }
     } catch (error) {
       stopPolling();
+      elements.container.setAttribute("aria-busy", "false");
       if (error instanceof ApiError && error.status === 404) {
         elements.state.textContent = "ошибка";
         elements.message.classList.add("is-error");
@@ -135,6 +137,7 @@ export function createJobsView(elements: JobElements, options: JobViewOptions): 
       return;
     }
     elements.check.disabled = true;
+    elements.check.classList.add("is-busy");
     elements.message.classList.remove("is-error");
     setMessage(elements.message, "Проверяем статус…");
     try {
@@ -148,6 +151,7 @@ export function createJobsView(elements: JobElements, options: JobViewOptions): 
         elements.check.hidden = false;
       }
     } catch (error) {
+      elements.container.setAttribute("aria-busy", "false");
       if (error instanceof ApiError && error.status === 404) {
         elements.state.textContent = "ошибка";
         elements.message.classList.add("is-error");
@@ -160,6 +164,7 @@ export function createJobsView(elements: JobElements, options: JobViewOptions): 
       }
     } finally {
       elements.check.disabled = false;
+      elements.check.classList.remove("is-busy");
     }
   }
 
@@ -174,6 +179,7 @@ export function createJobsView(elements: JobElements, options: JobViewOptions): 
   function show(current: Record<string, unknown>): void {
     const status = String(current.status);
     elements.container.hidden = false;
+    elements.container.setAttribute("aria-busy", String(status === "building"));
     elements.container.classList.remove("is-expired");
     elements.container.classList.toggle("is-error", status === "failed");
     elements.container.classList.toggle("is-ready", status === "ready" || status === "ready_local");

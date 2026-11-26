@@ -32,7 +32,9 @@ interface TopicRow {
 }
 
 const ui = {
+  stockPanel: byId("stock-panel"),
   stockList: byId("stock-list"),
+  stockLoading: byId("stock-loading"),
   stockMessage: byId("stock-message"),
   stockEmpty: byId("stock-empty"),
   stockUpdated: byId("stock-updated"),
@@ -56,6 +58,7 @@ const archives = createArchivesView({
   empty: byId("archives-empty"),
   message: byId("archives-message"),
   summary: byId("archives-summary"),
+  loading: byId("archives-loading"),
 });
 
 const jobs = createJobsView(
@@ -159,6 +162,8 @@ async function refreshAfterJob(job: Record<string, unknown>): Promise<void> {
 
 async function loadStock(): Promise<boolean> {
   const previous = state.language;
+  ui.stockPanel.setAttribute("aria-busy", "true");
+  toggle(ui.stockLoading, true);
   try {
     const data = asObject(await requestJson("/api/v1/stock"));
     const rows = Array.isArray(data.languages) ? data.languages : [];
@@ -188,6 +193,9 @@ async function loadStock(): Promise<boolean> {
     }
   } catch (error) {
     setMessage(ui.stockMessage, errorMessage(error));
+  } finally {
+    ui.stockPanel.setAttribute("aria-busy", "false");
+    toggle(ui.stockLoading, false);
   }
   return state.language !== previous;
 }
@@ -281,9 +289,11 @@ async function loadTopics(): Promise<void> {
     });
     state.unclassified = Number(data.unclassified) || 0;
     setMessage(ui.topicsMessage, "");
+    ui.topicsMessage.classList.remove("is-error");
   } catch (error) {
     if (language === state.language) {
       setMessage(ui.topicsMessage, errorMessage(error));
+      ui.topicsMessage.classList.add("is-error");
     }
   }
   renderTopics();

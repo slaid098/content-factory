@@ -61,6 +61,7 @@ describe("createJobsView", () => {
     expect(link.getAttribute("href")).toBe("https://filebin.example/req-1.zip");
     expect(link.textContent).toBe("Скачать архив");
     expect(node("job-timer").hidden).toBe(false);
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("false");
     expect(onFinished).toHaveBeenCalledWith(result);
     expect(mockFetchCalls()[0]?.url).toBe("/api/v1/content/deliveries/link");
     expect(JSON.parse(String(mockFetchCalls()[0]?.init?.body))).toEqual({
@@ -84,6 +85,7 @@ describe("createJobsView", () => {
     expect(node("job-message").textContent).toBe(
       "Внешняя ссылка недоступна. Архив лежит на сервере. filebin down",
     );
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("false");
   });
 
   it("shows the empty and failed states with a warning badge", async () => {
@@ -93,6 +95,7 @@ describe("createJobsView", () => {
     expect(node("job-state").className).toBe("badge warn");
     expect(node("job-message").textContent).toBe(MESSAGES.empty);
     expect(node("job-timer").hidden).toBe(true);
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("false");
 
     vi.unstubAllGlobals();
     mockFetch(() => jsonResponse(job({ status: "failed", error: "boom" })));
@@ -101,6 +104,7 @@ describe("createJobsView", () => {
     expect(node("delivery-job").classList.contains("is-error")).toBe(true);
     expect(node("job-state").className).toBe("badge warn");
     expect(node("job-message").textContent).toBe("Сборка не удалась: boom");
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("false");
   });
 
   it("polls a building job until it becomes ready", async () => {
@@ -115,6 +119,7 @@ describe("createJobsView", () => {
 
     await view.start("ru", 1, "req-1");
     expect(node("job-state").textContent).toBe("сборка");
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("true");
     expect(node("job-check").hidden).toBe(true);
 
     await vi.advanceTimersByTimeAsync(3000);
@@ -122,6 +127,7 @@ describe("createJobsView", () => {
     expect(mockFetchCalls().length).toBe(2);
     expect(mockFetchCalls()[1]?.url).toBe("/api/v1/content/deliveries/ru/req-1");
     expect(node("job-state").textContent).toBe("готово");
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("false");
     expect(onFinished).toHaveBeenCalledTimes(1);
   });
 
@@ -135,11 +141,33 @@ describe("createJobsView", () => {
     const { view } = createView();
 
     await view.start("ru", 1, "req-1");
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("true");
     await vi.advanceTimersByTimeAsync(3000);
 
     expect(node("job-state").textContent).toBe("ошибка");
     expect(node("job-message").textContent).toBe(MESSAGES.jobGone);
     expect(node<HTMLAnchorElement>("job-link").hidden).toBe(true);
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("false");
+  });
+
+  it("clears the busy state when a poll fails", async () => {
+    let call = 0;
+    mockFetch(() => {
+      call += 1;
+      if (call === 1) {
+        return jsonResponse(job({ status: "building" }));
+      }
+      throw new TypeError("offline");
+    });
+    const { view } = createView();
+
+    await view.start("ru", 1, "req-1");
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("true");
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(node("job-message").textContent).toBe(MESSAGES.offline);
+    expect(node("job-check").hidden).toBe(false);
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("false");
   });
 
   it("stops polling after thirty minutes and offers a manual check", async () => {
@@ -147,6 +175,7 @@ describe("createJobsView", () => {
     const { view } = createView();
 
     await view.start("ru", 1, "req-1");
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("true");
     vi.setSystemTime(NOW.getTime() + 30 * 60 * 1000 + 1);
     await vi.advanceTimersByTimeAsync(3000);
 
@@ -154,18 +183,25 @@ describe("createJobsView", () => {
       "Сборка идёт дольше 30 минут. Опрос остановлен — нажмите «Проверить».",
     );
     expect(node("job-check").hidden).toBe(false);
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("false");
   });
 
   it("checks the status on demand and reports a still running build", async () => {
     mockFetch(() => jsonResponse(job({ status: "building", expires_at: "2026-11-27T11:00:00Z" })));
     const { view } = createView();
     await view.start("ru", 1, "req-1");
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("true");
+
+    vi.setSystemTime(NOW.getTime() + 30 * 60 * 1000 + 1);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("false");
 
     const check = node<HTMLButtonElement>("job-check");
     check.click();
     await vi.advanceTimersByTimeAsync(0);
 
     expect(node("job-message").textContent).toBe("Сборка всё ещё идёт. Нажмите «Проверить» позже.");
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("true");
     expect(check.disabled).toBe(false);
   });
 
@@ -178,12 +214,14 @@ describe("createJobsView", () => {
     );
     const { view } = createView();
     await view.start("ru", 1, "req-1");
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("true");
 
     node<HTMLButtonElement>("job-check").click();
     await vi.advanceTimersByTimeAsync(0);
 
     expect(node("job-message").textContent).toBe(MESSAGES.jobGone);
     expect(node<HTMLAnchorElement>("job-link").hidden).toBe(true);
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("false");
   });
 
   it("reports a network failure on a manual check", async () => {
@@ -197,12 +235,14 @@ describe("createJobsView", () => {
     });
     const { view } = createView();
     await view.start("ru", 1, "req-1");
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("true");
 
     node<HTMLButtonElement>("job-check").click();
     await vi.advanceTimersByTimeAsync(0);
 
     expect(node("job-message").textContent).toBe(MESSAGES.offline);
     expect(node("job-check").hidden).toBe(false);
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("false");
   });
 
   it("expires the ready link and hides it", async () => {

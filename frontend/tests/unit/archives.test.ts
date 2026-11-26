@@ -11,6 +11,7 @@ function createView() {
     empty: node("archives-empty"),
     message: node("archives-message"),
     summary: node("archives-summary"),
+    loading: node("archives-loading"),
   });
 }
 
@@ -100,6 +101,24 @@ describe("createArchivesView", () => {
     expect(node("archives-summary").textContent).toBe("0");
   });
 
+  it("keeps the list busy while archives load", async () => {
+    const pending = deferred<Response>();
+    mockFetch(() => pending.promise);
+    const view = createView();
+
+    const loading = view.load();
+
+    expect(node("archives").getAttribute("aria-busy")).toBe("true");
+    expect(node("archives-loading").hidden).toBe(false);
+
+    pending.resolve(jsonResponse([archive()]));
+    await loading;
+
+    expect(node("archives").getAttribute("aria-busy")).toBe("false");
+    expect(node("archives-loading").hidden).toBe(true);
+    expect(node("archives").children.length).toBe(1);
+  });
+
   it("shows the API error in the message slot", async () => {
     mockFetch(() => jsonResponse({ detail: "нет доступа" }, 401));
     const view = createView();
@@ -143,3 +162,11 @@ describe("createArchivesView", () => {
     expect(fetched.mock.mock.calls.length).toBe(callsAfterLoad);
   });
 });
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
