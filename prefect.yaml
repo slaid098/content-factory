@@ -61,8 +61,13 @@ deployments:
     concurrency_limit: 1
 
   - name: profiles_describe
-    description: "Человекочитаемые названия и пояснения профилей, без расписания"
+    description: "Ежедневное заполнение названий и пояснений профилей"
     entrypoint: src/content_factory/flows/profiles_describe/flow.py:profiles_describe
     work_pool:
       name: content-factory
+    schedules:
+      - slug: daily
+        cron: "0 4 * * *"
+        timezone: UTC
+        active: true
     concurrency_limit: 1

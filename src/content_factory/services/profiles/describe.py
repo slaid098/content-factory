@@ -144,7 +144,7 @@ def _build_prompt(profile: ProfileInfo, data: Mapping[str, Any]) -> tuple[str, s
         "Требования:",
         "- title: 3..80 символов, одна строка, короткое человекочитаемое название;",
         "- summary: 20..300 символов, одна строка, короткое пояснение о профиле;",
-        f"- язык ответа: {profile.language}.",
+        "- язык ответа: русский (всегда, независимо от языка профиля).",
         "",
         f"language (язык): {profile.language}",
         f"category (категория): {profile.category}",

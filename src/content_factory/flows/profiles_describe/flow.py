@@ -1,4 +1,4 @@
-"""Manual flow that describes profiles for the operator."""
+"""Scheduled flow that describes profiles for the operator."""
 
 from __future__ import annotations
 
