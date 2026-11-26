@@ -21,12 +21,20 @@ export interface JobElements {
   check: HTMLButtonElement;
 }
 
+export type DeliveryAddress = { language: string } | { profile: string };
+
+export interface DeliveryJobRequest {
+  address: DeliveryAddress;
+  count: number;
+  requestId: string;
+}
+
 export interface JobViewOptions {
   onFinished: (job: Record<string, unknown>) => void;
 }
 
 export interface JobView {
-  start: (language: string, count: number, requestId: string) => Promise<Record<string, unknown>>;
+  start: (request: DeliveryJobRequest) => Promise<Record<string, unknown>>;
 }
 
 /**
@@ -40,19 +48,15 @@ export function createJobsView(elements: JobElements, options: JobViewOptions): 
   let notified = false;
 
   /**
-   * Start one background build and poll it until a terminal status.
+   * Start one background build from a General or profile address and poll it.
    */
-  async function start(
-    language: string,
-    count: number,
-    requestId: string,
-  ): Promise<Record<string, unknown>> {
+  async function start(request: DeliveryJobRequest): Promise<Record<string, unknown>> {
     const data = await requestJson(
       LINK_URL,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ language, count, request_id: requestId }),
+        body: JSON.stringify(requestBody(request)),
       },
       DELIVERY_TIMEOUT_MS,
     );
@@ -265,6 +269,14 @@ function badgeClass(status: string): string {
     return "accent";
   }
   return "";
+}
+
+function requestBody(request: DeliveryJobRequest): Record<string, unknown> {
+  const address =
+    "language" in request.address
+      ? { language: request.address.language }
+      : { profile: request.address.profile };
+  return { ...address, count: request.count, request_id: request.requestId };
 }
 
 function jobUrl(current: Record<string, unknown>): string {

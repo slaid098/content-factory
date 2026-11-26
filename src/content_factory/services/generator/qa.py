@@ -49,9 +49,9 @@ def check_declared(
 ) -> _MediaInfo:
     """Check the mandatory mp4 and then the final checks a step declares.
 
-    ``media`` is mandatory for every recipe: a step may add final checks but
-    cannot remove the mp4 check. Extra checks run in list order after it and
-    never repeat ``media``.
+    The ``mp4`` check is mandatory for every recipe: a step may add final
+    checks but cannot remove it. Extra checks run in list order after it and
+    never repeat ``mp4``.
 
     Args:
         names: QA names of the production step.
@@ -67,7 +67,7 @@ def check_declared(
         GeneratorError: A declared final check has no handler.
     """
     info = check_video(path, expected_seconds, expect_audio)
-    extra = tuple(name for name in names if name != "media")
+    extra = tuple(name for name in names if name != "mp4")
     if extra:
         reason = production.run_qa(extra, production.QA_FINAL, {})
         if reason is not None:

@@ -22,14 +22,14 @@ DEFAULT_RECIPE = (
         producer=registry.VAST_PRODUCER,
         inputs=(),
         output=ArtifactKind.VIDEO,
-        checks=("media", "clef"),
+        checks=("clef", "mp4"),
     ),
 )
 """Recipe of a profile without a ``production`` block."""
 
-_DEFAULT_QA = ("media", "clef")
+_DEFAULT_QA = ("clef", "mp4")
 _PHOTO_QA = ("image",)
-_VIDEO_ONLY_QA = frozenset({"media", "clef"})
+_VIDEO_ONLY_QA = frozenset({"clef", "mp4"})
 _PHOTO_ONLY_QA = frozenset({"image"})
 
 

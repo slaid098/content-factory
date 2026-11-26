@@ -108,8 +108,8 @@ Vast/ComfyUI и фото-карточки.
 - `card` — `services/production/card.py`, фото-пост из текста и карточки.
 
 Встроенные checks — `ArtifactCheck` в `services/production/checks.py` с
-verifier'ами `media_reason`, `source_reason`, `image_reason`; имена проверок
-в рецепте — `media`, `clef`, `image`. Обязательные проверки внутри producers
+verifier'ами `mp4_reason`, `source_reason`, `image_reason`; имена проверок
+в рецепте — `mp4`, `clef`, `image`. Обязательные проверки внутри producers
 не снимаются.
 
 ## Рецепт профиля
@@ -122,7 +122,7 @@ Layer(
     producer="vast",
     inputs=(),
     output=ArtifactKind.VIDEO,
-    checks=("media", "clef"),
+    checks=("clef", "mp4"),
 )
 ```
 

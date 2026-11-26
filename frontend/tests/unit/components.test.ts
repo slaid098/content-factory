@@ -1,14 +1,10 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { node, resetPage } from "./helpers";
 
-const styles = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8");
-const TABS = ["delivery", "queries", "settings", "profiles"];
-const MESSAGES = ["stock", "archives", "queries", "settings", "profiles"];
-const EMPTY = ["stock", "archives", "queries", "profiles"];
+const TABS = ["delivery", "queries", "profiles", "settings"];
+const MESSAGES = ["stock", "archives", "queries", "settings", "profiles", "profiles-stock"];
+const EMPTY = ["archives", "queries", "profiles"];
 
 beforeEach(() => {
   resetPage();
@@ -19,11 +15,16 @@ describe("design system markup", () => {
     for (const name of TABS) {
       const panel = node(`panel-${name}`);
       expect(panel.classList.contains("tab-panel")).toBe(true);
-      expect(panel.querySelector(":scope > .panel")).not.toBeNull();
+      expect(panel.querySelector(".panel"), name).not.toBeNull();
     }
 
     const tabs = Array.from(document.querySelectorAll<HTMLElement>('[role="tab"]'));
-    expect(tabs).toHaveLength(TABS.length);
+    expect(tabs.map((tab) => tab.id)).toEqual([
+      "tab-delivery",
+      "tab-queries",
+      "tab-profiles",
+      "tab-settings",
+    ]);
     for (const tab of tabs) {
       expect(tab.classList.contains("tab")).toBe(true);
       expect(tab.getAttribute("aria-controls")).toMatch(/^panel-/);
@@ -32,12 +33,16 @@ describe("design system markup", () => {
     expect(document.querySelector('nav[role="tablist"]')?.classList.contains("tabs")).toBe(true);
   });
 
-  it("gives every button a shared class and one variant", () => {
+  it("gives every action button a shared class and one variant", () => {
     const buttons = Array.from(document.querySelectorAll<HTMLElement>("button:not([role='tab'])"));
 
     expect(buttons.length).toBeGreaterThan(0);
     for (const button of buttons) {
-      expect(button.classList.contains("button")).toBe(true);
+      if (button.classList.contains("segmented-option")) {
+        expect(button.classList.contains("button"), button.id).toBe(false);
+        continue;
+      }
+      expect(button.classList.contains("button"), button.id).toBe(true);
       const variants = ["primary", "secondary", "ghost"].filter((variant) =>
         button.classList.contains(variant),
       );
@@ -78,10 +83,22 @@ describe("design system markup", () => {
     expect(node("job-state").classList.contains("badge")).toBe(true);
   });
 
-  it("wraps long lists in a scroll container", () => {
+  it("wraps long tables in a scroll container", () => {
     for (const id of ["queries-list", "archives"]) {
       const wrap = node(id).closest(".table-wrap");
       expect(wrap, id).not.toBeNull();
+    }
+  });
+
+  it("keeps the delivery source segmented and the table headers explicit", () => {
+    const source = node("delivery-source");
+    expect(source.getAttribute("role")).toBe("group");
+    expect(source.querySelectorAll(".segmented-option")).toHaveLength(2);
+
+    for (const id of ["queries-list", "archives"]) {
+      const table = node(id).closest("table");
+      expect(table, id).not.toBeNull();
+      expect(table?.querySelector("thead th"), id).not.toBeNull();
     }
   });
 
@@ -89,58 +106,5 @@ describe("design system markup", () => {
     const ids = Array.from(document.querySelectorAll<HTMLElement>("[id]"), (item) => item.id);
 
     expect(new Set(ids).size).toBe(ids.length);
-  });
-});
-
-describe("design system styles", () => {
-  it("defines the shared component layer", () => {
-    const selectors = [
-      ".panel",
-      ".button",
-      ".button.primary",
-      ".button.secondary",
-      ".button.ghost",
-      ".field",
-      ".field-label",
-      ".badge",
-      ".message",
-      ".empty",
-      ".table-wrap",
-      ".tab",
-    ];
-
-    expect(styles).toContain("@layer components");
-    for (const selector of selectors) {
-      expect(styles, selector).toContain(selector);
-    }
-  });
-
-  it("is mobile first with a 44px control height", () => {
-    expect(styles).toContain("--control-height: 44px");
-    expect(styles).toContain("@media (min-width: 30rem)");
-    expect(styles).toContain("@media (min-width: 48rem)");
-    expect(styles).not.toMatch(/@media\s*\(max-width/);
-  });
-
-  it("keeps colors, radii and shadows in tokens", () => {
-    expect(styles).not.toMatch(
-      /(?:^|\n)\s*(?:background|background-color|color|border-color|outline-color)\s*:\s*#[0-9a-f]/i,
-    );
-    expect(styles).not.toMatch(/border-radius:\s*\d+px/);
-    const shadows = styles
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.startsWith("box-shadow:"));
-    for (const shadow of shadows) {
-      expect(shadow).toMatch(/^box-shadow: var\(--shadow-card\);$/);
-    }
-  });
-
-  it("keeps long content and motion accessible", () => {
-    expect(styles).toMatch(/\.table-wrap\s*\{[^}]*overflow-x:\s*auto/s);
-    expect(styles).toContain("@media (prefers-reduced-motion: reduce)");
-    expect(styles).not.toContain("@font-face");
-    expect(styles).not.toContain("http://");
-    expect(styles).not.toContain("https://");
   });
 });

@@ -374,7 +374,7 @@ def test_profile_outputs_follow_the_production_block(tmp_path: Path) -> None:
         "dating",
         "profile_2",
         production=[
-            {"producer": "vast", "type": "video", "qa": ["media", "clef"]},
+            {"producer": "vast", "type": "video", "qa": ["mp4", "clef"]},
             {"producer": "card", "type": "photo", "qa": ["image"]},
         ],
     )
@@ -418,7 +418,7 @@ def test_production_step_without_type_outputs_video(tmp_path: Path) -> None:
         [{"producer": "unknown", "type": "video"}],
         [{"producer": "card", "type": "video"}],
         [{"producer": "vast", "qa": ["unknown"]}],
-        [{"producer": "card", "type": "photo", "qa": ["media"]}],
+        [{"producer": "card", "type": "photo", "qa": ["mp4"]}],
     ],
 )
 def test_invalid_production_skips_only_that_profile(

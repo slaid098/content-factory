@@ -203,6 +203,7 @@ def _job_archive(
             storage="remote",
             url=job.url,
             files=job.files,
+            profile=job.profile,
         )
     if job.status == "ready_local":
         path = _zip_path(data_dir, job.language, job.request_id)
@@ -223,6 +224,7 @@ def _job_archive(
             expires_at=job.expires_at,
             storage="local",
             files=job.files,
+            profile=job.profile,
         )
     return None
 

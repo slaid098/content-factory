@@ -382,3 +382,85 @@ def test_apply_write_error_returns_500(
     assert response.status_code == 500
     assert response.json()["detail"] == "settings write failed"
     assert path.read_text(encoding="utf-8") == original
+
+
+_GENERATOR_KEYS = {
+    "rent_pool_size",
+    "videos_per_server",
+    "max_servers",
+    "offer_refresh_seconds",
+    "server_ready_timeout",
+    "comfy_health_timeout",
+    "comfy_job_timeout",
+    "comfy_health_interval",
+    "max_cost_per_hour",
+    "stale_instance_hours",
+    "safety_enabled",
+    "safety_frames",
+    "safety_threshold",
+    "safety_nude_threshold",
+    "safety_frame_attempts",
+    "model",
+}
+
+
+def test_generator_settings_return_a_safe_read_only_dto(
+    data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GENERATOR_RENT_POOL_SIZE", "5")
+    monkeypatch.setenv("GENERATOR_VIDEOS_PER_SERVER", "9")
+    monkeypatch.setenv("GENERATOR_MAX_COST_PER_HOUR", "1.25")
+    monkeypatch.setenv("GENERATOR_MODEL", "custom-model")
+    monkeypatch.setenv("VAST_API_TOKEN", "vast-secret")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
+
+    response = _get(_client(), "/api/v1/content/settings/generator")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == _GENERATOR_KEYS
+    assert body["rent_pool_size"] == 5
+    assert body["videos_per_server"] == 9
+    assert body["max_cost_per_hour"] == 1.25
+    assert body["model"] == "custom-model"
+    assert body["max_servers"] == 4
+    assert body["safety_enabled"] is True
+    assert body["safety_frames"] == 12
+    assert body["safety_threshold"] == 0.5
+    assert body["safety_nude_threshold"] == 0.3
+    assert body["safety_frame_attempts"] == 2
+    assert "vast-secret" not in response.text
+    assert "openai-secret" not in response.text
+    assert "vast_api_token" not in response.text
+    assert "api_key" not in response.text
+
+
+def test_generator_settings_require_token(data_dir: Path) -> None:
+    response = _get(_client(), "/api/v1/content/settings/generator", token=None)
+
+    assert response.status_code == 401
+
+
+def test_generator_settings_without_configured_token_return_503(
+    data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CONTENT_FACTORY_DELIVERY_TOKEN")
+
+    response = _get(_client(), "/api/v1/content/settings/generator")
+
+    assert response.status_code == 503
+
+
+def test_generator_settings_invalid_value_returns_500(
+    data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GENERATOR_RENT_POOL_SIZE", "not-a-number")
+
+    response = _get(_client(), "/api/v1/content/settings/generator")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "generator settings unavailable"}
+    assert "not-a-number" not in response.text

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, Literal, cast
 
 from loguru import logger
 
-from content_factory.constants import DB_DIR, DB_FILENAME
+from content_factory.constants import DB_DIR, DB_FILENAME, PROFILES_DIR
 from content_factory.db.connection import connect
 from content_factory.db.errors import DatabaseError
 from content_factory.db.profiles import get_refill, upsert_refill
@@ -18,11 +20,31 @@ from content_factory.exceptions.errors import (
 )
 from content_factory.schemas.config.runtime import GeneratorConfig
 from content_factory.schemas.content.delivery import ContentType
-from content_factory.schemas.profiles.api import ProfileResponse, ProfileUpdateRequest
+from content_factory.schemas.profiles.api import (
+    ProductionCheck,
+    ProductionStep,
+    ProfileDeliverySettings,
+    ProfileDetailResponse,
+    ProfileOverlayStyle,
+    ProfileRentSettings,
+    ProfileResponse,
+    ProfileSettings,
+    ProfileTextSettings,
+    ProfileUpdateRequest,
+    ProfileVideoSettings,
+)
 from content_factory.schemas.profiles.preview import ProfilePreview
 from content_factory.schemas.profiles.refill import ProfileRefill
 from content_factory.schemas.profiles.registry import ProfileInfo
+from content_factory.services import production
+from content_factory.services.generator import load_profile
 from content_factory.services.profiles.preview import profile_preview
+from content_factory.services.profiles.prompts import (
+    read_profile_prompts,
+    write_card_prompt,
+    write_prompt_template,
+    write_text_prompt,
+)
 from content_factory.services.profiles.refill import decide_refill
 from content_factory.services.profiles.registry import (
     get_profile,
@@ -96,6 +118,45 @@ def get_profile_view(
         refills.get(profile.id, _DISABLED),
         output_dir,
         global_config,
+    )
+
+
+def get_profile_detail(
+    data_dir: Path,
+    profile_id: str,
+    *,
+    output_dir: Path,
+    global_config: GeneratorConfig,
+) -> ProfileDetailResponse:
+    """Return one profile with its stock, recipe and safe settings.
+
+    Args:
+        data_dir: Root of the runtime data directory, usually ``app_data``.
+        profile_id: Profile identifier such as ``dating/profile_2``.
+        output_dir: ``generator.output_dir`` of the generator settings.
+        global_config: Global target and refill threshold.
+
+    Returns:
+        The profile view with every production step and settings group.
+
+    Raises:
+        ProfileError: The id is unsafe, the profile is missing or malformed.
+    """
+    info = get_profile(data_dir, profile_id)
+    stock, photo_stock, refills = _counters(data_dir, (info,))
+    view = _view(
+        info,
+        stock.get(info.id, 0),
+        photo_stock.get(info.id, 0),
+        refills.get(info.id, _DISABLED),
+        output_dir,
+        global_config,
+    )
+    loaded = load_profile(profile_id, data_dir / PROFILES_DIR)
+    return ProfileDetailResponse(
+        **view.model_dump(),
+        production=_production(loaded),
+        settings=_settings(loaded, info),
     )
 
 
@@ -186,6 +247,11 @@ def _view(
         width=profile.width,
         height=profile.height,
         audio=profile.audio,
+        outputs=tuple(
+            cast(Literal["video", "photo"], content_type.value)
+            for content_type in (ContentType.VIDEO, ContentType.PHOTO)
+            if content_type in profile.outputs
+        ),
         stock=stock,
         photo_stock=photo_stock,
         target=refill.target if refill.target is not None else global_config.target,
@@ -197,6 +263,64 @@ def _view(
         photo_refill_at=refill.photo_refill_at,
         preview_url=f"/api/v1/content/profiles/{profile.category}/{profile.name}/preview",
         last_run=latest_run(output_dir, profile),
+    )
+
+
+def _production(profile: Any) -> tuple[ProductionStep, ...]:
+    """Build the recipe view in declaration order with resolved QA stages."""
+    return tuple(
+        ProductionStep(
+            producer=layer.producer,
+            type=cast(Literal["video", "photo"], layer.output.value),
+            checks=tuple(
+                ProductionCheck(
+                    name=name,
+                    stage=cast(
+                        Literal["source", "final"],
+                        production.qa.resolve(name).stage,
+                    ),
+                )
+                for name in layer.checks
+            ),
+        )
+        for layer in profile.production
+    )
+
+
+def _settings(profile: Any, info: ProfileInfo) -> ProfileSettings:
+    """Build the safe read-only settings groups of one profile."""
+    title = info.delivery.title
+    return ProfileSettings(
+        video=ProfileVideoSettings(
+            width=profile.width,
+            height=profile.height,
+            frames=profile.frames,
+            frames_jitter=profile.frames_jitter,
+            fps=profile.fps,
+            renderer=profile.renderer,
+            image=profile.image,
+            audio_tracks=len(profile.audio_tracks),
+        ),
+        rent=ProfileRentSettings(
+            gpu=profile.gpu,
+            max_cost=profile.max_cost,
+            disk_space=profile.rent.disk_space,
+            gpu_ram=profile.rent.gpu_ram,
+            inet_down=profile.rent.inet_down,
+            inet_up_cost=profile.rent.inet_up_cost,
+            inet_down_cost=profile.rent.inet_down_cost,
+        ),
+        text=ProfileTextSettings(
+            font=profile.font.name,
+            negative_prompt=profile.negative_prompt,
+            cfg=profile.cfg,
+            style=ProfileOverlayStyle(**asdict(profile.style)),
+        ),
+        delivery=ProfileDeliverySettings(
+            title_mode=title.mode.value,
+            title=title.value,
+            hashtags=info.delivery.hashtags,
+        ),
     )
 
 
@@ -359,10 +483,15 @@ def _counters(
 __all__ = [
     "decide_refill",
     "get_profile",
+    "get_profile_detail",
     "get_profile_view",
     "is_safe_profile_id",
     "list_profile_views",
     "list_profiles",
     "preview_for_profile",
+    "read_profile_prompts",
     "update_profile_settings",
+    "write_card_prompt",
+    "write_prompt_template",
+    "write_text_prompt",
 ]

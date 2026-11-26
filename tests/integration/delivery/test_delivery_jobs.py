@@ -151,6 +151,7 @@ def test_link_returns_building_then_ready_and_removes_zip(
     body = response.json()
     assert body["request_id"] == REQUEST_ID_TEXT
     assert body["language"] == "ru"
+    assert body["profile"] is None
     assert body["status"] == "building"
     assert body["size"] == 0
     assert body["files"] == 0
@@ -165,6 +166,7 @@ def test_link_returns_building_then_ready_and_removes_zip(
     assert final["url"] == url
     assert final["files"] == 1
     assert int(final["size"]) > 0
+    assert final["profile"] is None
     assert final["error"] is None
     assert not (data_dir / ARCHIVE_DIR / "ru" / f"{REQUEST_ID}.zip").exists()
     sidecar = json.loads(
@@ -558,9 +560,11 @@ def test_link_by_profile_uses_request_language(
     assert response.status_code == 202
     body = response.json()
     assert body["language"] == "en"
+    assert body["profile"] == "dating/profile_1"
     assert body["status"] == "building"
     final = _wait(client, REQUEST_ID_TEXT, "ready", language="en")
 
+    assert final["profile"] == "dating/profile_1"
     assert final["url"] == url
     assert final["files"] == 1
     assert not source.exists()

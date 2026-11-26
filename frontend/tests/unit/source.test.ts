@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 
 const SOURCE = fileURLToPath(new URL("../../src", import.meta.url));
 const PAGE = fileURLToPath(new URL("../../index.html", import.meta.url));
+const STYLES = text(join(SOURCE, "styles.css"));
 
 function files(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -57,25 +58,20 @@ describe("source invariants", () => {
     }
   });
 
-  it("keeps profile previews compact and uncropped", () => {
+  it("keeps the profile preview uncropped in a fixed box with a lightbox", () => {
     const css = text(join(SOURCE, "styles.css"));
     const start = css.indexOf("/* Profiles */");
     expect(start).toBeGreaterThan(0);
     const profiles = css.slice(start);
 
     expect(profiles).not.toContain("object-fit: cover");
-    expect(profiles).not.toMatch(/height:\s*150px/);
     expect(profiles).toContain("object-fit: contain");
-    expect(profiles).toContain("--preview-ratio: 1;");
-    expect(profiles).toContain("--preview-height: min(80px, calc(96px / var(--preview-ratio)));");
-    expect(profiles).toContain("--preview-height: min(96px, calc(128px / var(--preview-ratio)));");
-    expect(profiles).toContain("width: calc(var(--preview-height) * var(--preview-ratio));");
-    expect(profiles).toContain("height: var(--preview-height);");
     expect(profiles).toMatch(
-      /\.profile-preview,\s+\.profile-preview-fallback\s*\{[^}]*width: 100%;[^}]*height: 100%;/,
+      /\.profile-preview-box\s*\{[^}]*width:\s*112px;[^}]*height:\s*198px;/s,
     );
-    expect(profiles).toContain("grid-template-columns: repeat(2, minmax(0, 1fr))");
-    expect(profiles).not.toContain("minmax(280px");
+    expect(profiles).toMatch(/\.profile-preview\s*\{[^}]*width:\s*100%;[^}]*height:\s*100%;/s);
+    expect(profiles).toContain(".profile-lightbox");
+    expect(profiles).toContain(".profile-lightbox-image");
   });
 
   it("imports modules without a .js extension", () => {
@@ -117,5 +113,61 @@ describe("source invariants", () => {
       }
       expect(source, `${relativeName(path)}: external URL`).not.toMatch(/https?:\/\//);
     }
+  });
+});
+
+describe("design system styles", () => {
+  it("defines the shared component layer", () => {
+    const selectors = [
+      ".panel",
+      ".button",
+      ".button.primary",
+      ".button.secondary",
+      ".button.ghost",
+      ".field",
+      ".field-label",
+      ".badge",
+      ".message",
+      ".empty",
+      ".table-wrap",
+      ".tab",
+      ".stat-card",
+      ".segmented-option",
+      ".archive-table",
+      ".query-table",
+    ];
+
+    expect(STYLES).toContain("@layer components");
+    for (const selector of selectors) {
+      expect(STYLES, selector).toContain(selector);
+    }
+  });
+
+  it("is mobile first with a 44px control height", () => {
+    expect(STYLES).toContain("--control-height: 44px");
+    expect(STYLES).toContain("@media (min-width: 30rem)");
+    expect(STYLES).toContain("@media (min-width: 48rem)");
+    expect(STYLES).not.toMatch(/@media\s*\(max-width/);
+  });
+
+  it("keeps colors, radii and shadows in tokens", () => {
+    expect(STYLES).not.toMatch(
+      /(?:^|\n)\s*(?:background|background-color|color|border-color|outline-color)\s*:\s*#[0-9a-f]/i,
+    );
+    expect(STYLES).not.toMatch(/border-radius:\s*\d+px/);
+    const shadows = STYLES.split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("box-shadow:"));
+    for (const shadow of shadows) {
+      expect(shadow).toMatch(/^box-shadow: var\(--shadow-card\);$/);
+    }
+  });
+
+  it("keeps long content and motion accessible", () => {
+    expect(STYLES).toMatch(/\.table-wrap\s*\{[^}]*overflow-x:\s*auto/s);
+    expect(STYLES).toContain("@media (prefers-reduced-motion: reduce)");
+    expect(STYLES).not.toContain("@font-face");
+    expect(STYLES).not.toContain("http://");
+    expect(STYLES).not.toContain("https://");
   });
 });

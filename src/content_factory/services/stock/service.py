@@ -17,7 +17,7 @@ from content_factory.schemas.config.runtime import LanguageConfig
 from content_factory.schemas.content.delivery import ContentType
 from content_factory.schemas.state.state import RuntimeState
 from content_factory.schemas.stock.layout import StockFile
-from content_factory.schemas.stock.stock import LanguageStock, StockSnapshot
+from content_factory.schemas.stock.stock import GeneralStock, LanguageStock, StockSnapshot
 from content_factory.services.stock.layout import (
     language_files,
     photo_sidecar,
@@ -70,7 +70,8 @@ def collect_stock(
     rows = tuple(
         _language_stock(code, enabled[code], paths, titles) for code, paths in files.items()
     )
-    snapshot = StockSnapshot(generated_at=now, languages=rows)
+    general = tuple(_general_stock(code, enabled[code], paths) for code, paths in files.items())
+    snapshot = StockSnapshot(generated_at=now, languages=rows, general=general)
     return snapshot, _read_runtime_state(data_dir)
 
 
@@ -92,6 +93,16 @@ def _language_stock(
         untitled=stock - titled,
         video_bytes=sum(_file_size(item.path) for item in files),
     )
+
+
+def _general_stock(
+    code: str,
+    config: LanguageConfig,
+    files: Sequence[StockFile],
+) -> GeneralStock:
+    """Build the General-only video row of one language."""
+    stock = sum(1 for item in files if item.profile_id is None)
+    return GeneralStock(language=code, stock=stock, target=config.stock_target)
 
 
 def _file_size(path: Path) -> int:

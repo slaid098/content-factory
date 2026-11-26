@@ -1,32 +1,32 @@
-/** Runtime settings: read, preview the diff, then apply with a backup. */
+/** Global settings: read-only generator panel and the editable runtime form. */
 
-import { el, setMessage, toggle } from "./dom";
+import { byId, el, setMessage, toggle } from "./dom";
 import { errorMessage } from "./lib/errors";
 import { languageName } from "./lib/format";
 import { ApiError, MESSAGES, requestJson } from "./lib/http";
 
 const SETTINGS_URL = "/api/v1/content/settings";
+const GENERATOR_URL = "/api/v1/content/settings/generator";
 const PREVIEW_URL = "/api/v1/content/settings/preview";
 
-export interface SettingsElements {
-  form: HTMLFormElement;
-  languages: HTMLElement;
-  batch: HTMLInputElement;
-  interval: HTMLInputElement;
-  maxDuration: HTMLInputElement;
-  maxQueries: HTMLInputElement;
-  filterMax: HTMLInputElement;
-  workers: HTMLInputElement;
-  deliveryMax: HTMLInputElement;
-  preview: HTMLButtonElement;
-  apply: HTMLButtonElement;
-  status: HTMLElement;
-  diff: HTMLElement;
-  diffText: HTMLElement;
-  backup: HTMLElement;
-  message: HTMLElement;
-  refresh: HTMLButtonElement;
-}
+const GENERATOR_FIELDS: Array<[string, string]> = [
+  ["rent_pool_size", "Пул аренды"],
+  ["max_servers", "Максимум серверов"],
+  ["videos_per_server", "Видео на сервер"],
+  ["offer_refresh_seconds", "Обновление предложений, с"],
+  ["server_ready_timeout", "Готовность сервера, с"],
+  ["comfy_health_timeout", "Comfy health, с"],
+  ["comfy_job_timeout", "Comfy задание, с"],
+  ["comfy_health_interval", "Comfy интервал, с"],
+  ["stale_instance_hours", "Устаревший инстанс, ч"],
+  ["safety_enabled", "Проверка безопасности"],
+  ["safety_frames", "Кадров проверки"],
+  ["safety_threshold", "Порог безопасности"],
+  ["safety_nude_threshold", "Порог наготы"],
+  ["safety_frame_attempts", "Попыток кадра"],
+  ["max_cost_per_hour", "Максимальная цена, $/ч"],
+  ["model", "Модель"],
+];
 
 export interface SettingsViewOptions {
   onLimits: (settings: Record<string, unknown>) => void;
@@ -42,22 +42,41 @@ interface LanguageRow {
   target: HTMLInputElement;
 }
 
+function settingsUi() {
+  return {
+    form: byId<HTMLFormElement>("settings-form"),
+    languages: byId("settings-languages"),
+    batch: byId<HTMLInputElement>("settings-batch"),
+    interval: byId<HTMLInputElement>("settings-interval"),
+    maxDuration: byId<HTMLInputElement>("settings-max-duration"),
+    maxQueries: byId<HTMLInputElement>("settings-max-queries"),
+    filterMax: byId<HTMLInputElement>("settings-filter-max"),
+    workers: byId<HTMLInputElement>("settings-workers"),
+    deliveryMax: byId<HTMLInputElement>("settings-delivery-max"),
+    preview: byId<HTMLButtonElement>("settings-preview"),
+    apply: byId<HTMLButtonElement>("settings-apply"),
+    status: byId("settings-status"),
+    diff: byId("settings-diff"),
+    diffText: byId("settings-diff-text"),
+    backup: byId("settings-backup"),
+    message: byId("settings-message"),
+    refresh: byId<HTMLButtonElement>("settings-refresh"),
+    generator: byId("settings-generator"),
+    generatorMessage: byId("settings-generator-message"),
+  };
+}
+
 /**
- * Build the settings form and its preview/apply flow.
+ * Build the settings tab: the read-only generator facts and the runtime form.
  */
-export function createSettingsView(
-  elements: SettingsElements,
-  options: SettingsViewOptions,
-): SettingsView {
+export function createSettingsView(options: SettingsViewOptions): SettingsView {
+  const ui = settingsUi();
   let rows: LanguageRow[] = [];
   let loaded = false;
   let busy = false;
   let previewValid = false;
   let previewPayload: string | null = null;
 
-  /**
-   * Load settings once, or again when ``force`` is set.
-   */
   async function load(force = false): Promise<Record<string, unknown> | null> {
     if (busy) {
       return null;
@@ -65,30 +84,58 @@ export function createSettingsView(
     if (loaded && !force) {
       return null;
     }
-    elements.refresh.disabled = true;
-    elements.refresh.classList.add("is-busy");
-    elements.form.setAttribute("aria-busy", "true");
-    setMessage(elements.message, "");
+    ui.refresh.disabled = true;
+    ui.refresh.classList.add("is-busy");
+    ui.form.setAttribute("aria-busy", "true");
+    setMessage(ui.message, "");
+    setMessage(ui.generatorMessage, "");
     setStatus("Загружаем настройки…", false);
     try {
-      const response = await requestJson(SETTINGS_URL);
-      const settings = asSettings(response);
+      const [settingsResult, generatorResult] = await Promise.allSettled([
+        requestJson(SETTINGS_URL),
+        requestJson(GENERATOR_URL),
+      ]);
+      if (generatorResult.status === "fulfilled") {
+        renderGenerator(generatorResult.value);
+      } else {
+        setMessage(ui.generatorMessage, errorMessage(generatorResult.reason));
+      }
+      if (settingsResult.status === "rejected") {
+        loaded = false;
+        setMessage(ui.message, errorMessage(settingsResult.reason));
+        setStatus("Настройки недоступны.", true);
+        return null;
+      }
+      let settings: Record<string, unknown>;
+      try {
+        settings = asSettings(settingsResult.value);
+      } catch (error) {
+        loaded = false;
+        setMessage(ui.message, errorMessage(error));
+        setStatus("Настройки недоступны.", true);
+        return null;
+      }
       fillForm(settings);
       resetDiff();
       setStatus("", false);
       loaded = true;
       options.onLimits(settings);
       return settings;
-    } catch (error) {
-      loaded = false;
-      setMessage(elements.message, errorMessage(error));
-      setStatus("Настройки недоступны.", true);
-      return null;
     } finally {
-      elements.refresh.disabled = busy;
-      elements.refresh.classList.remove("is-busy");
-      elements.form.setAttribute("aria-busy", String(busy));
+      ui.refresh.disabled = busy;
+      ui.refresh.classList.remove("is-busy");
+      ui.form.setAttribute("aria-busy", String(busy));
     }
+  }
+
+  function renderGenerator(value: unknown): void {
+    const generator = asObject(value);
+    const nodes = GENERATOR_FIELDS.map(([key, label]) => {
+      const row = el("div", "settings-row");
+      row.append(el("dt", "", label), el("dd", "", formatValue(generator[key])));
+      return row;
+    });
+    ui.generator.replaceChildren(...nodes);
   }
 
   async function apply(event: SubmitEvent): Promise<void> {
@@ -115,7 +162,7 @@ export function createSettingsView(
       return;
     }
     setBusy(true, "apply");
-    setMessage(elements.message, "");
+    setMessage(ui.message, "");
     setStatus("Применяем настройки…", false);
     try {
       const response = await requestJson(SETTINGS_URL, {
@@ -135,19 +182,20 @@ export function createSettingsView(
         setStatus("Настройки применены.", false);
         const backup = typeof body.backup === "string" ? body.backup : "";
         if (backup) {
-          elements.backup.textContent = `Бэкап: ${backup}`;
-          toggle(elements.backup, true);
+          ui.backup.textContent = `Бэкап: ${backup}`;
+          toggle(ui.backup, true);
         } else {
-          toggle(elements.backup, false);
+          toggle(ui.backup, false);
         }
         options.onLimits(settings);
       } else {
+        resetDiff();
         setStatus("Изменений нет. Файл не изменён.", false);
-        toggle(elements.backup, false);
+        toggle(ui.backup, false);
       }
     } catch (error) {
       setStatus("Применить не удалось.", true);
-      setMessage(elements.message, errorMessage(error));
+      setMessage(ui.message, errorMessage(error));
     } finally {
       setBusy(false);
     }
@@ -166,7 +214,7 @@ export function createSettingsView(
       return;
     }
     setBusy(true, "preview");
-    setMessage(elements.message, "");
+    setMessage(ui.message, "");
     setStatus("Проверяем изменения…", false);
     const sent = JSON.stringify(payload);
     try {
@@ -196,7 +244,7 @@ export function createSettingsView(
     } catch (error) {
       resetDiff();
       setStatus("Проверка не удалась.", true);
-      setMessage(elements.message, errorMessage(error));
+      setMessage(ui.message, errorMessage(error));
     } finally {
       setBusy(false);
     }
@@ -209,7 +257,7 @@ export function createSettingsView(
       const source = asObject(item);
       const code = String(source.code ?? "");
       const row = el("div", "settings-language");
-      const toggle = el("label", "settings-language-toggle");
+      const toggleLabel = el("label", "settings-language-toggle");
       const enabled = el("input");
       enabled.type = "checkbox";
       enabled.className = "settings-enabled";
@@ -224,26 +272,26 @@ export function createSettingsView(
       target.value = String(Number(source.stock_target) || 0);
       target.setAttribute("aria-label", `Целевой остаток: ${languageName(code)}`);
       rows.push({ code, enabled, target });
-      toggle.append(enabled, el("span", "settings-language-code", languageName(code)));
+      toggleLabel.append(enabled, el("span", "settings-language-code", languageName(code)));
       const targetField = el("label", "field");
       targetField.append(el("span", "field-label", "Цель"), target);
-      row.append(toggle, targetField);
+      row.append(toggleLabel, targetField);
       return row;
     });
-    elements.languages.replaceChildren(...cards);
+    ui.languages.replaceChildren(...cards);
 
     const run = asObject(settings.run);
     const search = asObject(settings.search);
     const filter = asObject(settings.filter);
     const download = asObject(settings.download);
     const delivery = asObject(settings.delivery);
-    elements.batch.value = String(Number(run.batch) || 1);
-    elements.interval.value = String(run.interval ?? "");
-    elements.maxDuration.value = String(run.max_duration ?? "");
-    elements.maxQueries.value = String(Number(search.max_queries) || 1);
-    elements.filterMax.value = String(Number(filter.max) || 1);
-    elements.workers.value = String(Number(download.workers) || 1);
-    elements.deliveryMax.value = String(Number(delivery.max_count) || 1);
+    ui.batch.value = String(Number(run.batch) || 1);
+    ui.interval.value = String(run.interval ?? "");
+    ui.maxDuration.value = String(run.max_duration ?? "");
+    ui.maxQueries.value = String(Number(search.max_queries) || 1);
+    ui.filterMax.value = String(Number(filter.max) || 1);
+    ui.workers.value = String(Number(download.workers) || 1);
+    ui.deliveryMax.value = String(Number(delivery.max_count) || 1);
   }
 
   function buildPayload(): Record<string, unknown> {
@@ -254,14 +302,14 @@ export function createSettingsView(
         stock_target: readInt(row.target, `Целевой остаток (${languageName(row.code)})`, 0, 100000),
       })),
       run: {
-        batch: readInt(elements.batch, "run.batch", 1, 1000),
-        interval: readText(elements.interval, "run.interval"),
-        max_duration: readText(elements.maxDuration, "run.max_duration"),
+        batch: readInt(ui.batch, "run.batch", 1, 1000),
+        interval: readText(ui.interval, "run.interval"),
+        max_duration: readText(ui.maxDuration, "run.max_duration"),
       },
-      search: { max_queries: readInt(elements.maxQueries, "search.max_queries", 1, 500) },
-      filter: { max: readInt(elements.filterMax, "filter.max", 1, 10000) },
-      download: { workers: readInt(elements.workers, "download.workers", 1, 8) },
-      delivery: { max_count: readInt(elements.deliveryMax, "delivery.max_count", 1, 300) },
+      search: { max_queries: readInt(ui.maxQueries, "search.max_queries", 1, 500) },
+      filter: { max: readInt(ui.filterMax, "filter.max", 1, 10000) },
+      download: { workers: readInt(ui.workers, "download.workers", 1, 8) },
+      delivery: { max_count: readInt(ui.deliveryMax, "delivery.max_count", 1, 300) },
     };
   }
 
@@ -277,50 +325,50 @@ export function createSettingsView(
     previewValid = false;
     previewPayload = null;
     hideDiff();
-    elements.apply.disabled = true;
+    ui.apply.disabled = true;
   }
 
   function setBusy(value: boolean, action: "preview" | "apply" | null = null): void {
     busy = value;
-    elements.preview.disabled = value;
-    elements.refresh.disabled = value;
-    elements.apply.disabled = value || !previewValid;
-    elements.preview.classList.toggle("is-busy", value && action === "preview");
-    elements.apply.classList.toggle("is-busy", value && action === "apply");
-    elements.form.setAttribute("aria-busy", String(value));
+    ui.preview.disabled = value;
+    ui.refresh.disabled = value;
+    ui.apply.disabled = value || !previewValid;
+    ui.preview.classList.toggle("is-busy", value && action === "preview");
+    ui.apply.classList.toggle("is-busy", value && action === "apply");
+    ui.form.setAttribute("aria-busy", String(value));
   }
 
   function showDiff(diff: string): void {
-    elements.diffText.textContent = diff;
-    toggle(elements.diff, true);
+    ui.diffText.textContent = diff;
+    toggle(ui.diff, true);
   }
 
   function hideDiff(): void {
-    elements.diffText.textContent = "";
-    toggle(elements.diff, false);
+    ui.diffText.textContent = "";
+    toggle(ui.diff, false);
   }
 
   function setStatus(text: string, isError: boolean): void {
-    elements.status.textContent = text;
-    elements.status.classList.toggle("is-error", isError);
+    ui.status.textContent = text;
+    ui.status.classList.toggle("is-error", isError);
   }
 
-  elements.preview.addEventListener("click", () => {
+  ui.preview.addEventListener("click", () => {
     void preview();
   });
-  elements.form.addEventListener("submit", (event) => {
+  ui.form.addEventListener("submit", (event) => {
     void apply(event);
   });
-  elements.form.addEventListener("input", () => {
+  ui.form.addEventListener("input", () => {
     if (busy || !previewValid) {
       return;
     }
     previewValid = false;
     previewPayload = null;
-    elements.apply.disabled = true;
+    ui.apply.disabled = true;
     setStatus("Настройки изменены. Нажмите «Проверить» заново.", false);
   });
-  elements.refresh.addEventListener("click", () => {
+  ui.refresh.addEventListener("click", () => {
     void load(true);
   });
 
@@ -344,6 +392,16 @@ function readText(input: HTMLInputElement, label: string): string {
     throw new Error(`Поле «${label}» не может быть пустым.`);
   }
   return value;
+}
+
+function formatValue(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "—";
+  }
+  if (typeof value === "boolean") {
+    return value ? "да" : "нет";
+  }
+  return String(value);
 }
 
 function asObject(value: unknown): Record<string, unknown> {

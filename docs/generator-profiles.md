@@ -8,7 +8,7 @@
 production:
   - producer: vast
     type: video
-    qa: [media, clef]
+    qa: [clef, mp4]
 ```
 
 Рецепт фото-профиля:
@@ -28,7 +28,7 @@ output=type, checks=qa)`. Например, видео и фото одной к
 production:
   - producer: vast
     type: video
-    qa: [media, clef]
+    qa: [clef, mp4]
   - producer: card
     type: photo
     qa: [image]
@@ -43,9 +43,9 @@ production:
 - `type` — тип контента, по умолчанию `video`; producer должен его
   поддерживать (`vast` производит только видео, `card` — только фото);
 - `qa` — упорядоченный список именованных проверок слоя. По умолчанию он
-  зависит от типа: для `video` — `[media, clef]`, для `photo` — `[image]`.
+  зависит от типа: для `video` — `[clef, mp4]`, для `photo` — `[image]`.
   Пустой список запрещён: рецепт не может отключать QA целиком. Проверки
-  другого типа запрещены при загрузке: `media`/`clef` в photo-шаге и `image`
+  другого типа запрещены при загрузке: `mp4`/`clef` в photo-шаге и `image`
   в video-шаге дают `ProfileError`.
 
 Без блока `production` профиль получает ровно текущее поведение:
@@ -54,7 +54,7 @@ production:
 production:
   - producer: vast
     type: video
-    qa: [media, clef]
+    qa: [clef, mp4]
 ```
 
 Старые `profile.yaml` без блока не мигрируются.
@@ -70,7 +70,7 @@ production:
   список допустимых значений);
 - producer повторяется в рецепте, QA повторяется в шаге;
 - `type` неизвестен или не поддерживается producer'ом;
-- QA не подходит типу шага (`media`/`clef` для `photo`, `image` для
+- QA не подходит типу шага (`mp4`/`clef` для `photo`, `image` для
   `video`).
 
 ## Producers
@@ -130,7 +130,7 @@ production:
 
 В конвейере `qa` слоя — это `LayerCheck`-адаптеры над прежними проверками:
 
-- `media` (`final`) — `qa.check_video`: mp4 читается, содержит видео,
+- `mp4` (`final`) — `qa.check_video`: mp4 читается, содержит видео,
   ожидаемую аудиодорожку и длительность в допуске;
 - `clef` (`source`) — кадры исходника; их проверяет сам генератор до
   наложения текста, поэтому адаптер слоя только пропускает уже собранный

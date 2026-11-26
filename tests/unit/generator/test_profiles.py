@@ -13,7 +13,6 @@ from tests.unit.generator.helpers import fixture_profile, make_profile
 from content_factory.exceptions.generator import ProfileError
 from content_factory.schemas.generator.pipeline import ArtifactKind, Layer
 from content_factory.services.generator.profiles import (
-    _age_text,
     _alpha,
     _bool_or,
     _float_or,
@@ -317,16 +316,6 @@ def test_broken_workflow_json_is_reported(tmp_path: Path) -> None:
         load_profile("dating/profile_2", root)
 
 
-def test_age_phrases_cover_the_profile_window() -> None:
-    assert _age_text(27) == "in her late twenties"
-    assert _age_text(30) == "around thirty"
-    assert _age_text(31) == "around thirty"
-    assert _age_text(32) == "in her early thirties"
-    assert _age_text(34) == "in her mid-thirties"
-    assert _age_text(40) == "in her late thirties"
-    assert _age_text("unknown") == ""
-
-
 def test_optional_profile_values_are_normalized(tmp_path: Path) -> None:
     assert _optional_str(None) is None
     assert _optional_str("  ") is None
@@ -497,7 +486,7 @@ def test_card_flags_must_be_boolean(tmp_path: Path, key: str) -> None:
 def test_recipe_defaults_to_the_old_vast_layer(tmp_path: Path) -> None:
     profile = fixture_profile(tmp_path / "profiles")
 
-    assert profile.production == (Layer("vast", "vast", (), ArtifactKind.VIDEO, ("media", "clef")),)
+    assert profile.production == (Layer("vast", "vast", (), ArtifactKind.VIDEO, ("clef", "mp4")),)
 
 
 def test_recipe_keeps_the_declared_qa_order(tmp_path: Path) -> None:
@@ -505,7 +494,7 @@ def test_recipe_keeps_the_declared_qa_order(tmp_path: Path) -> None:
         tmp_path / "profiles",
         extra={
             "production": [
-                {"producer": "vast", "type": "video", "qa": ["clef", "media"]},
+                {"producer": "vast", "type": "video", "qa": ["clef", "mp4"]},
             ]
         },
     )
@@ -513,7 +502,7 @@ def test_recipe_keeps_the_declared_qa_order(tmp_path: Path) -> None:
     layer = profile.production[0]
     assert layer.producer == "vast"
     assert layer.output is ArtifactKind.VIDEO
-    assert layer.checks == ("clef", "media")
+    assert layer.checks == ("clef", "mp4")
 
 
 def test_recipe_step_defaults_to_video_and_both_checks(tmp_path: Path) -> None:
@@ -524,7 +513,7 @@ def test_recipe_step_defaults_to_video_and_both_checks(tmp_path: Path) -> None:
 
     layer = profile.production[0]
     assert layer.output is ArtifactKind.VIDEO
-    assert layer.checks == ("media", "clef")
+    assert layer.checks == ("clef", "mp4")
 
 
 def test_recipe_of_two_producers_is_two_independent_chains(tmp_path: Path) -> None:
@@ -532,14 +521,14 @@ def test_recipe_of_two_producers_is_two_independent_chains(tmp_path: Path) -> No
         tmp_path / "profiles",
         extra={
             "production": [
-                {"producer": "vast", "type": "video", "qa": ["media", "clef"]},
+                {"producer": "vast", "type": "video", "qa": ["mp4", "clef"]},
                 {"producer": "card", "type": "photo"},
             ]
         },
     )
 
     assert profile.production == (
-        Layer("vast", "vast", (), ArtifactKind.VIDEO, ("media", "clef")),
+        Layer("vast", "vast", (), ArtifactKind.VIDEO, ("mp4", "clef")),
         Layer("card", "card", (), ArtifactKind.PHOTO, ("image",)),
     )
     assert all(layer.inputs == () for layer in profile.production)
@@ -570,7 +559,7 @@ def test_photo_recipe_accepts_the_image_check_explicitly(tmp_path: Path) -> None
 @pytest.mark.parametrize(
     "step",
     [
-        {"producer": "card", "type": "photo", "qa": ["media"]},
+        {"producer": "card", "type": "photo", "qa": ["mp4"]},
         {"producer": "card", "type": "photo", "qa": ["clef"]},
         {"producer": "vast", "type": "video", "qa": ["image"]},
     ],
@@ -579,6 +568,16 @@ def test_recipe_rejects_checks_of_another_type(tmp_path: Path, step: dict[str, A
     make_profile(tmp_path / "profiles", extra={"production": [step]})
 
     with pytest.raises(ProfileError, match="не подходит"):
+        load_profile("dating/profile_2", tmp_path / "profiles")
+
+
+def test_old_media_qa_name_is_an_unknown_check(tmp_path: Path) -> None:
+    make_profile(
+        tmp_path / "profiles",
+        extra={"production": [{"producer": "vast", "qa": ["media"]}]},
+    )
+
+    with pytest.raises(ProfileError, match="неизвестная QA-проверка 'media'"):
         load_profile("dating/profile_2", tmp_path / "profiles")
 
 
@@ -602,7 +601,7 @@ def test_profile_names_are_split_without_blanks_or_repeats() -> None:
         ([{"producer": "unknown"}], "неизвестный producer"),
         ([{"producer": "vast"}, {"producer": "vast"}], "повтор producer"),
         ([{"producer": "vast", "qa": []}], "непустым списком"),
-        ([{"producer": "vast", "qa": ["media", "media"]}], "повтор QA"),
+        ([{"producer": "vast", "qa": ["mp4", "mp4"]}], "повтор QA"),
         ([{"producer": "vast", "qa": ["unknown"]}], "неизвестная QA"),
         ([{"producer": "vast", "type": "photo"}], "не производит"),
         ([{"producer": "vast", "type": "audio"}], "неизвестный type"),
@@ -613,3 +612,50 @@ def test_broken_recipe_fails_before_rent(tmp_path: Path, production: object, mes
 
     with pytest.raises(ProfileError, match=message):
         load_profile("dating/profile_2", tmp_path / "profiles")
+
+
+def test_looks_have_no_prompt_override_by_default(tmp_path: Path) -> None:
+    profile = fixture_profile(tmp_path / "profiles")
+
+    assert all(look.prompt is None for look in profile.looks)
+
+
+def test_look_overrides_are_loaded_and_used_verbatim(tmp_path: Path) -> None:
+    root = tmp_path / "profiles"
+    fixture_profile(root)
+    directory = root / "dating" / "profile_2"
+    (directory / "look_overrides.yaml").write_text(
+        "prompts:\n  c01: 'custom {age} {day|evening}'\n",
+        encoding="utf-8",
+    )
+
+    profile = load_profile("dating/profile_2", root)
+    look = profile.looks[0]
+
+    assert look.prompt == "custom {age} {day|evening}"
+    assert build_prompt(profile, look, random.Random(0)) == "custom {age} {day|evening}"
+    assert profile.looks[1].prompt is None
+
+
+def test_override_of_an_unknown_card_is_rejected(tmp_path: Path) -> None:
+    root = tmp_path / "profiles"
+    make_profile(root)
+    (root / "dating" / "profile_2" / "look_overrides.yaml").write_text(
+        "prompts:\n  c99: missing\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProfileError, match="c99"):
+        load_profile("dating/profile_2", root)
+
+
+def test_broken_look_overrides_are_rejected(tmp_path: Path) -> None:
+    root = tmp_path / "profiles"
+    make_profile(root)
+    (root / "dating" / "profile_2" / "look_overrides.yaml").write_text(
+        "prompts: [",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProfileError, match="overrides"):
+        load_profile("dating/profile_2", root)

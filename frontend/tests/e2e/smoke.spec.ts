@@ -1,4 +1,193 @@
-import { expect, test } from "@playwright/test";
+import { Buffer } from "node:buffer";
+
+import { expect, type Page, test } from "@playwright/test";
+
+const RU_STOCK = {
+  language: "ru",
+  stock: 12,
+  target: 20,
+  deficit: 8,
+  titled: 10,
+  untitled: 2,
+  video_bytes: 1024,
+};
+
+const STOCK = {
+  generated_at: "2026-11-26T10:00:00Z",
+  languages: [RU_STOCK],
+  general: [{ language: "ru", stock: 4, target: 10 }],
+};
+
+const PROFILE = {
+  id: "dating/profile_1",
+  category: "dating",
+  name: "profile_1",
+  language: "ru",
+  niche: "dating",
+  width: 544,
+  height: 960,
+  audio: true,
+  outputs: ["video", "photo"],
+  stock: 8,
+  photo_stock: 14,
+  target: 20,
+  refill_at: 5,
+  photo_target: 30,
+  photo_refill_at: 5,
+  refill_enabled: false,
+  target_override: null,
+  refill_at_override: null,
+  preview_url: "/api/v1/content/profiles/dating/profile_1/preview.png",
+  last_run: null,
+};
+
+async function mockStock(page: Page, stock = STOCK): Promise<void> {
+  await page.route(/\/api\/v1\/stock$/, (route) => route.fulfill({ json: stock }));
+}
+
+async function mockProfiles(page: Page, profiles: unknown[] = [PROFILE]): Promise<void> {
+  await page.route(/\/api\/v1\/content\/profiles$/, (route) =>
+    route.fulfill({ json: { profiles } }),
+  );
+}
+
+const PROFILE_DETAIL = {
+  ...PROFILE,
+  production: [
+    {
+      producer: "vast",
+      type: "video",
+      checks: [
+        { name: "clef", stage: "source" },
+        { name: "mp4", stage: "final" },
+      ],
+    },
+    { producer: "card", type: "photo", checks: [{ name: "image", stage: "final" }] },
+  ],
+  settings: {
+    video: {
+      width: 544,
+      height: 960,
+      frames: 121,
+      frames_jitter: 0,
+      fps: 25,
+      renderer: "default",
+      image: "video-gen:test",
+      audio_tracks: 3,
+    },
+    rent: {
+      gpu: "RTX 4090",
+      max_cost: 0.35,
+      disk_space: 80,
+      gpu_ram: 30,
+      inet_down: 500,
+      inet_up_cost: 0.004,
+      inet_down_cost: 0.004,
+    },
+    text: {
+      font: "arialbd.ttf",
+      negative_prompt: null,
+      cfg: null,
+      style: { font_size: 0.06 },
+    },
+    delivery: { title_mode: "generated", title: null, hashtags: [] },
+  },
+};
+
+const PROMPTS = {
+  template: { filename: "prompt_template.txt", text: "Сцена: {age}" },
+  cards: [
+    {
+      id: "c01",
+      values: {
+        id: "c01",
+        age: 30,
+        hair_color_text: "dark brown",
+        place: "cafe",
+        season: "summer",
+      },
+      prompt: "Женщина 30 лет",
+      overridden: false,
+    },
+  ],
+  photo: { filename: "text_prompt.txt", text: "Голос: спокойный" },
+};
+
+const RUNTIME_SETTINGS = {
+  languages: [
+    { code: "ru", enabled: true, stock_target: 10 },
+    { code: "en", enabled: false, stock_target: 3 },
+  ],
+  run: { batch: 5, interval: "6h", max_duration: "45m" },
+  search: { max_queries: 20 },
+  filter: { max: 100 },
+  download: { workers: 4 },
+  delivery: { max_count: 50 },
+};
+
+const GENERATOR_SETTINGS = {
+  rent_pool_size: 3,
+  videos_per_server: 5,
+  max_servers: 4,
+  offer_refresh_seconds: 60,
+  server_ready_timeout: 900,
+  comfy_health_timeout: 600,
+  comfy_job_timeout: 1800,
+  comfy_health_interval: 15,
+  max_cost_per_hour: 0.35,
+  stale_instance_hours: 6,
+  safety_enabled: true,
+  safety_frames: 12,
+  safety_threshold: 0.5,
+  safety_nude_threshold: 0.3,
+  safety_frame_attempts: 2,
+  model: "gpt-test",
+};
+
+const PREVIEW_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+  "base64",
+);
+
+async function mockProfileDetail(page: Page): Promise<void> {
+  await page.route(/\/api\/v1\/content\/profiles\/dating\/profile_1$/, (route) => {
+    const request = route.request();
+    if (request.method() === "PATCH") {
+      const patch = request.postDataJSON() as Record<string, unknown>;
+      return route.fulfill({ json: { ...PROFILE, ...patch } });
+    }
+    return route.fulfill({ json: PROFILE_DETAIL });
+  });
+  await page.route(/\/api\/v1\/content\/profiles\/dating\/profile_1\/prompts$/, (route) =>
+    route.fulfill({ json: PROMPTS }),
+  );
+  await page.route(/\/api\/v1\/content\/profiles\/dating\/profile_1\/preview\.png$/, (route) =>
+    route.fulfill({ contentType: "image/png", body: PREVIEW_PNG }),
+  );
+}
+
+async function mockSettings(page: Page): Promise<void> {
+  await page.route(/\/api\/v1\/content\/settings$/, (route) => {
+    if (route.request().method() === "PUT") {
+      const payload = route.request().postDataJSON() as typeof RUNTIME_SETTINGS;
+      return route.fulfill({
+        json: {
+          changed: true,
+          diff: "- batch 5\n+ batch 6",
+          backup: "config.yaml.2026.bak",
+          settings: payload,
+        },
+      });
+    }
+    return route.fulfill({ json: RUNTIME_SETTINGS });
+  });
+  await page.route(/\/api\/v1\/content\/settings\/generator$/, (route) =>
+    route.fulfill({ json: GENERATOR_SETTINGS }),
+  );
+  await page.route(/\/api\/v1\/content\/settings\/preview$/, (route) =>
+    route.fulfill({ json: { changed: true, diff: "- batch 5\n+ batch 6" } }),
+  );
+}
 
 test("renders the delivery page without horizontal overflow", async ({ page }) => {
   const consoleErrors: string[] = [];
@@ -7,18 +196,30 @@ test("renders the delivery page without horizontal overflow", async ({ page }) =
       consoleErrors.push(message.text());
     }
   });
+  await mockStock(page);
+  await mockProfiles(page);
 
   await page.goto("/");
 
   await expect(page).toHaveTitle("Выдача видео — content-factory");
   await expect(page.getByRole("heading", { level: 1, name: "Выдача видео" })).toBeVisible();
+  await expect(page.locator(".brand")).toHaveText("content-factory");
+  await expect(page.getByRole("tab")).toHaveText(["Выдача", "Запросы", "Профили", "Настройки"]);
   await expect(page.getByRole("tab", { name: "Выдача" })).toHaveAttribute("aria-selected", "true");
   await expect(page.locator("#panel-delivery")).toBeVisible();
   await expect(page.locator("#panel-queries")).toBeHidden();
-  await expect(page.locator("#stock-title")).toBeVisible();
+  await expect(page.locator("#panel-profiles")).toBeHidden();
+  await expect(page.locator("#panel-settings")).toBeHidden();
+  await expect(page.locator("#general-title")).toBeVisible();
+  await expect(page.locator("#general-value")).toHaveText("4 / 10");
+  await expect(page.locator("#profiles-stat-title")).toBeVisible();
+  await expect(page.locator("#profiles-total")).toHaveText("8");
+  await expect(page.locator("#delivery-source")).toBeVisible();
   await expect(page.locator("#delivery-title")).toBeVisible();
   await expect(page.locator("#archives-title")).toBeVisible();
   await expect(page.locator("#archives-empty")).toBeVisible();
+  await expect(page.locator(".lead")).toHaveCount(0);
+  await expect(page.locator("footer")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Сгенерировать" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Запустить" })).toHaveCount(0);
 
@@ -27,272 +228,6 @@ test("renders the delivery page without horizontal overflow", async ({ page }) =
   );
   expect(overflow).toBeLessThanOrEqual(1);
   expect(consoleErrors).toEqual([]);
-});
-
-test("renders compact profile cards with an uncropped preview and a dialog", async ({ page }) => {
-  const preview = `<svg xmlns="http://www.w3.org/2000/svg" width="544" height="960" viewBox="0 0 544 960"><rect width="544" height="960" fill="#1a63d8"/></svg>`;
-  const profile = {
-    id: "dating/profile_1",
-    category: "dating",
-    name: "profile_1",
-    language: "ru",
-    niche: "dating",
-    width: 544,
-    height: 960,
-    audio: true,
-    stock: 8,
-    photo_stock: 14,
-    target: 20,
-    refill_at: 5,
-    photo_target: 30,
-    photo_refill_at: 5,
-    refill_enabled: false,
-    target_override: null,
-    refill_at_override: null,
-    preview_url: "/api/v1/content/profiles/dating/profile_1/preview.png",
-    last_run: null,
-  };
-
-  await page.route(/\/api\/v1\/content\/profiles$/, (route) =>
-    route.fulfill({ json: { profiles: [profile] } }),
-  );
-  await page.route(/\/api\/v1\/content\/profiles\/dating\/profile_1\/preview\.png$/, (route) =>
-    route.fulfill({ contentType: "image/svg+xml", body: preview }),
-  );
-
-  await page.goto("/");
-  await page.getByRole("tab", { name: "Профили" }).click();
-
-  const hint = page.locator("#panel-profiles .hint");
-  await expect(hint).toContainText("Shorts — добор роликов, посты — добор постов");
-  await expect(hint).toContainText("0 в цели постов выключает добор");
-  await expect(hint).toContainText(
-    "пустое поле цели или порога роликов означает глобальное значение",
-  );
-  await expect(hint).toContainText("запуск партии остаётся за фоновым тиком");
-
-  const card = page.locator(".profile-card").first();
-  await expect(card).toBeVisible();
-  await expect(card).toContainText("Shorts 8 / 20");
-  await expect(card).toContainText("Посты 14 / 30");
-  await expect(card).toContainText("Добор");
-  await expect(card).toContainText("ролики и посты");
-  await expect(card.getByRole("group", { name: "Ролики" })).toBeVisible();
-  await expect(card.getByRole("group", { name: "Посты" })).toBeVisible();
-  await expect(card.getByLabel("Цель постов")).toHaveValue("30");
-  await expect(card.getByLabel("Порог добора постов")).toHaveValue("5");
-  await expect(card.getByLabel("Порог добора постов")).toBeEnabled();
-
-  const image = card.locator(".profile-preview");
-  await expect
-    .poll(() => image.evaluate((node) => (node as HTMLImageElement).naturalWidth))
-    .toBe(544);
-  const metrics = await image.evaluate((node) => {
-    const style = getComputedStyle(node);
-    const rect = node.getBoundingClientRect();
-    return { objectFit: style.objectFit, height: rect.height };
-  });
-  const viewport = page.viewportSize();
-  const maxHeight = (viewport?.width ?? 0) >= 768 ? 96 : 80;
-  expect(metrics.objectFit).toBe("contain");
-  expect(metrics.height).toBeGreaterThan(0);
-  expect(metrics.height).toBeLessThanOrEqual(maxHeight + 0.5);
-
-  const overflow = await page.evaluate(
-    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
-  );
-  expect(overflow).toBeLessThanOrEqual(1);
-
-  const button = card.getByRole("button", { name: "Открыть превью профиля dating/profile_1" });
-  await button.click();
-  const dialog = page.getByRole("dialog");
-  await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText("dating/profile_1 · 544×960");
-
-  await page.keyboard.press("Escape");
-  await expect(dialog).toBeHidden();
-  await expect(button).toBeFocused();
-});
-
-test("disables the photo threshold when the photo goal is zero", async ({ page }) => {
-  const profile = {
-    id: "dating/profile_1",
-    category: "dating",
-    name: "profile_1",
-    language: "ru",
-    niche: "dating",
-    width: 544,
-    height: 960,
-    audio: true,
-    stock: 8,
-    photo_stock: 14,
-    target: 20,
-    refill_at: 5,
-    photo_target: 0,
-    photo_refill_at: 0,
-    refill_enabled: false,
-    target_override: null,
-    refill_at_override: null,
-    preview_url: "",
-    last_run: null,
-  };
-
-  await page.route(/\/api\/v1\/content\/profiles$/, (route) =>
-    route.fulfill({ json: { profiles: [profile] } }),
-  );
-
-  await page.goto("/");
-  await page.getByRole("tab", { name: "Профили" }).click();
-
-  const card = page.locator(".profile-card").first();
-  await expect(card).toBeVisible();
-  await expect(card).toContainText("Посты 14");
-  await expect(card).not.toContainText("Посты 14 /");
-  await expect(card).toContainText("добор постов выключен");
-  await expect(card.getByText("0 — выключить добор постов")).toBeVisible();
-  await expect(card.getByRole("group", { name: "Ролики" })).toBeVisible();
-  await expect(card.getByRole("group", { name: "Посты" })).toBeVisible();
-  await expect(card.getByLabel("Цель постов")).toHaveValue("0");
-  const threshold = card.getByLabel("Порог добора постов");
-  await expect(threshold).toHaveValue("0");
-  await expect(threshold).toBeDisabled();
-
-  const overflow = await page.evaluate(
-    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
-  );
-  expect(overflow).toBeLessThanOrEqual(1);
-});
-
-test("fits photo settings in a narrow card with a horizontal preview", async ({ page }) => {
-  await page.setViewportSize({ width: 360, height: 800 });
-  const profile = {
-    id: "dating/profile_1",
-    category: "dating",
-    name: "profile_1",
-    language: "ru",
-    niche: "dating",
-    width: 1280,
-    height: 720,
-    audio: true,
-    stock: 8,
-    photo_stock: 14,
-    target: 20,
-    refill_at: 5,
-    photo_target: 30,
-    photo_refill_at: 5,
-    refill_enabled: false,
-    target_override: null,
-    refill_at_override: null,
-    preview_url: "",
-    last_run: null,
-  };
-
-  await page.route(/\/api\/v1\/content\/profiles$/, (route) =>
-    route.fulfill({ json: { profiles: [profile] } }),
-  );
-
-  await page.goto("/");
-  await page.getByRole("tab", { name: "Профили" }).click();
-
-  const card = page.locator(".profile-card").first();
-  await expect(card).toBeVisible();
-  await expect(card.getByLabel("Цель постов")).toBeVisible();
-  await expect(card.getByLabel("Порог добора постов")).toBeVisible();
-
-  const media = await card.locator(".profile-media").boundingBox();
-  expect(media).not.toBeNull();
-  expect(media?.width).toBeCloseTo(96, 0);
-
-  const escapes = await card.evaluate((node) => {
-    const cardBox = node.getBoundingClientRect();
-    return Array.from(
-      node.querySelectorAll("fieldset, .profile-groups, .profile-fields, .profile-field"),
-    ).some((child) => {
-      const box = child.getBoundingClientRect();
-      return box.left < cardBox.left - 0.5 || box.right > cardBox.right + 0.5;
-    });
-  });
-  expect(escapes).toBe(false);
-
-  const overflow = await page.evaluate(
-    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
-  );
-  expect(overflow).toBeLessThanOrEqual(1);
-});
-
-test("keeps the preview slot stable when the thumbnail fails", async ({ page }) => {
-  const profile = {
-    id: "dating/profile_1",
-    category: "dating",
-    name: "profile_1",
-    language: "ru",
-    niche: "dating",
-    width: 544,
-    height: 960,
-    audio: true,
-    stock: 8,
-    photo_stock: 14,
-    target: 20,
-    refill_at: 5,
-    photo_target: 30,
-    photo_refill_at: 5,
-    refill_enabled: false,
-    target_override: null,
-    refill_at_override: null,
-    preview_url: "/api/v1/content/profiles/dating/profile_1/preview.png",
-    last_run: null,
-  };
-  const previewGate: { release: () => void } = { release: () => undefined };
-  const gate = new Promise<void>((resolve) => {
-    previewGate.release = () => resolve();
-  });
-
-  await page.route(/\/api\/v1\/content\/profiles$/, (route) =>
-    route.fulfill({ json: { profiles: [profile] } }),
-  );
-  await page.route(
-    /\/api\/v1\/content\/profiles\/dating\/profile_1\/preview\.png$/,
-    async (route) => {
-      await gate;
-      await route.fulfill({ status: 404, body: "not found" });
-    },
-  );
-
-  await page.goto("/");
-  await page.getByRole("tab", { name: "Профили" }).click();
-
-  const card = page.locator(".profile-card").first();
-  const media = card.locator(".profile-media");
-  const image = card.locator(".profile-preview");
-  const fallback = card.locator(".profile-preview-fallback");
-  await expect(media).toBeVisible();
-  const cardBefore = await card.boundingBox();
-  const mediaBefore = await media.boundingBox();
-  expect(cardBefore).not.toBeNull();
-  expect(mediaBefore).not.toBeNull();
-
-  previewGate.release();
-  await expect(fallback).toBeVisible();
-  await expect(fallback).toHaveText("Нет превью");
-  await expect(image).toBeHidden();
-
-  const cardAfter = await card.boundingBox();
-  const mediaAfter = await media.boundingBox();
-  const fallbackAfter = await fallback.boundingBox();
-  expect(cardAfter).not.toBeNull();
-  expect(mediaAfter).not.toBeNull();
-  expect(fallbackAfter).not.toBeNull();
-  if (!cardBefore || !mediaBefore || !cardAfter || !mediaAfter || !fallbackAfter) {
-    throw new Error("preview slot has no box");
-  }
-
-  expect(mediaAfter.width).toBeCloseTo(mediaBefore.width, 1);
-  expect(mediaAfter.height).toBeCloseTo(mediaBefore.height, 1);
-  expect(cardAfter.width).toBeCloseTo(cardBefore.width, 1);
-  expect(cardAfter.height).toBeCloseTo(cardBefore.height, 1);
-  expect(fallbackAfter.width).toBeLessThanOrEqual(mediaAfter.width + 0.5);
-  expect(fallbackAfter.height).toBeLessThanOrEqual(mediaAfter.height + 0.5);
-  expect(mediaAfter.width / mediaAfter.height).toBeCloseTo(544 / 960, 2);
 });
 
 test("serves the built assets with stable names", async ({ page, request }) => {
@@ -318,18 +253,19 @@ test("switches tabs by click and keyboard", async ({ page }) => {
   await expect(page.getByRole("tab", { name: "Запросы" })).toHaveAttribute("aria-selected", "true");
 
   await page.getByRole("tab", { name: "Запросы" }).press("ArrowRight");
+  await expect(page.getByRole("tab", { name: "Профили" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator("#panel-profiles")).toBeVisible();
+  await expect(page.locator("#profiles-title")).toBeVisible();
+
+  await page.getByRole("tab", { name: "Профили" }).press("End");
   await expect(page.getByRole("tab", { name: "Настройки" })).toHaveAttribute(
     "aria-selected",
     "true",
   );
   await expect(page.locator("#panel-settings")).toBeVisible();
+  await expect(page.locator("#settings-title")).toBeVisible();
 
-  await page.getByRole("tab", { name: "Настройки" }).press("End");
-  await expect(page.getByRole("tab", { name: "Профили" })).toHaveAttribute("aria-selected", "true");
-  await expect(page.locator("#panel-profiles")).toBeVisible();
-  await expect(page.locator("#profiles-empty")).toBeVisible();
-
-  await page.getByRole("tab", { name: "Профили" }).press("Home");
+  await page.getByRole("tab", { name: "Настройки" }).press("Home");
   await expect(page.getByRole("tab", { name: "Выдача" })).toHaveAttribute("aria-selected", "true");
   await expect(page.locator("#panel-delivery")).toBeVisible();
 });
@@ -339,22 +275,22 @@ test("keeps every tab inside the viewport", async ({ page }) => {
     {
       name: "Выдача",
       panel: "#panel-delivery",
-      controls: ["#stock-title", "#delivery-form", "#deliver", "#archives-title"],
+      controls: ["#general-title", "#delivery-form", "#deliver", "#archives-title"],
     },
     {
       name: "Запросы",
       panel: "#panel-queries",
-      controls: ["#queries-language", "#queries-search", "#query-add"],
-    },
-    {
-      name: "Настройки",
-      panel: "#panel-settings",
-      controls: ["#settings-form", "#settings-batch", "#settings-preview"],
+      controls: ["#queries-title", "#query-form", "#queries-search", "#query-add"],
     },
     {
       name: "Профили",
       panel: "#panel-profiles",
-      controls: ["#profiles-refresh", "#profiles-empty"],
+      controls: ["#profiles-title"],
+    },
+    {
+      name: "Настройки",
+      panel: "#panel-settings",
+      controls: ["#settings-title"],
     },
   ];
 
@@ -374,18 +310,56 @@ test("keeps every tab inside the viewport", async ({ page }) => {
   }
 });
 
-test("keeps long query content and wide tables inside the scroll container", async ({ page }) => {
-  const longQuery = `длинный-запрос-${"очень-".repeat(60)}конец`;
-  await page.route(/\/api\/v1\/stock$/, (route) =>
+test("switches the delivery source to a profile", async ({ page }) => {
+  await mockStock(page);
+  await mockProfiles(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "Профиль" }).click();
+
+  await expect(page.locator("#profile-field")).toBeVisible();
+  await expect(page.locator("#language-field")).toBeHidden();
+  await expect(page.locator("#delivery-profile")).toHaveValue("dating/profile_1");
+  await expect(page.locator("#count")).toHaveAttribute("max", "8");
+  await expect(page.locator("#available")).toHaveText("доступно 8");
+});
+
+test("builds a general archive from the delivery form", async ({ page }) => {
+  await mockStock(page);
+  await mockProfiles(page, []);
+  await page.route(/\/api\/v1\/content\/deliveries\/link$/, (route) =>
     route.fulfill({
       json: {
-        generated_at: "2026-11-26T10:00:00Z",
-        languages: [
-          { language: "ru", stock: 1, target: 1, titled: 1, untitled: 0, video_bytes: 1024 },
-        ],
+        request_id: "req-1",
+        language: "ru",
+        status: "ready",
+        url: "https://filebin.example/req-1.zip",
+        expires_at: "2026-11-26T11:00:00Z",
       },
     }),
   );
+  await page.goto("/");
+
+  await page.locator("#count").fill("2");
+  await page.getByRole("button", { name: "Собрать" }).click();
+
+  await expect(page.locator("#delivery-job")).toBeVisible();
+  await expect(page.locator("#job-title")).toHaveText("delivery-req-1.zip");
+  await expect(page.locator("#job-link")).toHaveAttribute(
+    "href",
+    "https://filebin.example/req-1.zip",
+  );
+  await expect(page.locator("#delivery-status")).toContainText("Архив готов");
+});
+
+test("keeps long query content and wide tables inside the scroll container", async ({ page }) => {
+  const longQuery = `длинный-запрос-${"очень-".repeat(60)}конец`;
+  await mockStock(page, {
+    ...STOCK,
+    languages: [{ ...RU_STOCK, stock: 1, target: 1, titled: 1, untitled: 0 }],
+    general: [{ language: "ru", stock: 1, target: 1 }],
+  });
+  await mockProfiles(page, []);
   await page.route(/\/api\/v1\/content\/queries\?language=ru$/, (route) =>
     route.fulfill({
       json: { queries: [{ query: longQuery, count: 1, in_file: true }], unclassified: 0, total: 1 },
@@ -393,15 +367,15 @@ test("keeps long query content and wide tables inside the scroll container", asy
   );
 
   await page.goto("/");
-  await expect(page.locator("#stock-list .stock-item")).toContainText("1 из 1");
+  await expect(page.locator("#general-value")).toHaveText("1 / 1");
   await page.getByRole("tab", { name: "Запросы" }).click();
 
   const item = page.locator("#queries-list .query-item").first();
   await expect(item).toBeVisible();
   await expect(item).toContainText("длинный-запрос");
 
-  const wrap = page.locator("#queries-list").locator("xpath=..");
-  await expect(wrap).toHaveClass(/table-wrap/);
+  const wrap = page.locator(".table-wrap").filter({ has: page.locator("#queries-list") });
+  await expect(wrap).toHaveCount(1);
 
   const probe = await wrap.evaluate((element) => {
     const table = document.createElement("table");
@@ -437,6 +411,130 @@ test("keeps long query content and wide tables inside the scroll container", asy
   expect(escapes).toBeLessThanOrEqual(1);
 });
 
+test.describe("profiles", () => {
+  test("opens a profile with the real pipeline, prompts and preview lightbox", async ({ page }) => {
+    await mockStock(page);
+    await mockProfiles(page);
+    await mockProfileDetail(page);
+    await page.goto("/");
+
+    await page.getByRole("tab", { name: "Профили" }).click();
+    const row = page.locator(".profile-row");
+    await expect(row).toContainText("dating/profile_1");
+    await expect(row).toContainText("Русский · dating");
+    await expect(row).toContainText("8 / 20");
+    await expect(row.locator(".profile-preview")).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Открыть профиль dating/profile_1" }).click();
+
+    await expect(page.locator("#profiles-list-view")).toBeHidden();
+    await expect(page.locator("#profile-view-title")).toHaveText("dating/profile_1");
+    await expect(page.locator("#profile-view-meta")).toHaveText(
+      "Русский · dating · 544×960 · видео/фото",
+    );
+    await expect(page.locator("#profile-tab-video")).toHaveText("Видео · 8");
+    await expect(page.locator("#profile-tab-photo")).toHaveText("Фото · 14");
+
+    const box = await page.locator(".profile-preview-box").boundingBox();
+    expect(box?.width).toBe(112);
+    expect(box?.height).toBe(198);
+
+    await expect(page.locator("#profile-video .pipeline-chip")).toHaveText([
+      "vast",
+      "проверка кадров",
+      "текст + музыка",
+      "проверка mp4",
+      "сток",
+      "card",
+      "рендер",
+      "проверка фото",
+      "сток",
+    ]);
+    await expect(page.locator("#profile-video .prompt-card-values")).toContainText("возраст: 30");
+    await expect(page.locator("#profile-video")).toContainText("Из шаблона");
+
+    await page.locator("#profile-preview").click();
+    const lightbox = page.locator("#profile-lightbox");
+    await expect(lightbox).toBeVisible();
+    await expect(page.locator("#profile-lightbox-image")).toHaveAttribute(
+      "src",
+      "/api/v1/content/profiles/dating/profile_1/preview.png",
+    );
+
+    await page.keyboard.press("Escape");
+    await expect(lightbox).toBeHidden();
+    await expect(page.locator("#profile-preview")).toBeFocused();
+
+    await page.getByRole("button", { name: "← Назад" }).click();
+    await expect(page.locator("#profiles-list-view")).toBeVisible();
+    await expect(page.locator("#profile-view")).toBeHidden();
+    await expect(
+      page.getByRole("button", { name: "Открыть профиль dating/profile_1" }),
+    ).toBeFocused();
+  });
+
+  test("toggles refill from the list and keeps the row in sync", async ({ page }) => {
+    await mockStock(page);
+    await mockProfiles(page);
+    await mockProfileDetail(page);
+    await page.goto("/");
+
+    await page.getByRole("tab", { name: "Профили" }).click();
+    await page.getByRole("button", { name: "Включить добор dating/profile_1" }).click();
+
+    await expect(page.getByRole("button", { name: "Пауза добора dating/profile_1" })).toBeVisible();
+  });
+
+  test("shows the photo prompt and read-only settings tabs", async ({ page }) => {
+    await mockStock(page);
+    await mockProfiles(page);
+    await mockProfileDetail(page);
+    await page.goto("/");
+
+    await page.getByRole("tab", { name: "Профили" }).click();
+    await page.getByRole("button", { name: "Открыть профиль dating/profile_1" }).click();
+
+    await page.locator("#profile-tab-photo").click();
+    await expect(page.locator("#profile-photo textarea")).toHaveValue("Голос: спокойный");
+
+    await page.locator("#profile-tab-settings").click();
+    await expect(page.locator("#profile-settings-video")).toContainText("544");
+    await expect(page.locator("#profile-settings-rent")).toContainText("RTX 4090");
+    await expect(page.locator("#profile-settings-text")).toContainText("arialbd.ttf");
+    await expect(page.locator("#profile-settings-delivery")).toContainText("generated");
+  });
+});
+
+test.describe("settings", () => {
+  test("shows the generator panel and applies a previewed runtime change", async ({ page }) => {
+    await mockStock(page);
+    await mockProfiles(page);
+    await mockSettings(page);
+    await page.goto("/");
+
+    await page.getByRole("tab", { name: "Настройки" }).click();
+
+    await expect(page.locator("#settings-generator")).toContainText("Пул аренды");
+    await expect(page.locator("#settings-generator")).toContainText("gpt-test");
+    await expect(page.locator("#settings-generator")).toContainText("Максимум серверов");
+    await expect(page.locator("#settings-languages")).toContainText("Русский");
+    await expect(page.locator("#settings-batch")).toHaveValue("5");
+
+    await page.locator("#settings-batch").fill("6");
+    await page.getByRole("button", { name: "Проверить" }).click();
+
+    await expect(page.locator("#settings-diff")).toBeVisible();
+    await expect(page.locator("#settings-diff-text")).toHaveText("- batch 5\n+ batch 6");
+    await expect(page.locator("#settings-apply")).toBeEnabled();
+
+    await page.getByRole("button", { name: "Применить" }).click();
+
+    await expect(page.locator("#settings-status")).toHaveText("Настройки применены.");
+    await expect(page.locator("#settings-backup")).toHaveText("Бэкап: config.yaml.2026.bak");
+    await expect(page.locator("#settings-apply")).toBeDisabled();
+  });
+});
+
 test.describe("dark color scheme", () => {
   test.use({ colorScheme: "dark" });
 
@@ -455,7 +553,7 @@ test.describe("reduced motion", () => {
     await page.goto("/");
 
     await expect(page.getByRole("heading", { level: 1, name: "Выдача видео" })).toBeVisible();
-    await page.getByRole("tab", { name: "Профили" }).click();
-    await expect(page.locator("#panel-profiles")).toBeVisible();
+    await page.getByRole("tab", { name: "Настройки" }).click();
+    await expect(page.locator("#panel-settings")).toBeVisible();
   });
 });

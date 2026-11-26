@@ -485,6 +485,7 @@ def _job_state(
         files=files,
         url=url,
         error=error,
+        profile=request.profile,
     )
 
 

@@ -43,11 +43,15 @@ afterEach(() => {
 });
 
 describe("createJobsView", () => {
-  it("starts a build and shows an external ready link", async () => {
+  it("starts a general build and shows an external ready link", async () => {
     mockFetch(() => jsonResponse(job({ url: "https://filebin.example/req-1.zip" })));
     const { view, onFinished } = createView();
 
-    const result = await view.start("ru", 2, "req-1");
+    const result = await view.start({
+      address: { language: "ru" },
+      count: 2,
+      requestId: "req-1",
+    });
 
     expect(result.status).toBe("ready");
     expect(node("delivery-job").hidden).toBe(false);
@@ -71,11 +75,31 @@ describe("createJobsView", () => {
     });
   });
 
+  it("starts a profile build with the profile address", async () => {
+    mockFetch(() =>
+      jsonResponse(job({ request_id: "req-2", profile: "dating/profile_1", status: "ready" })),
+    );
+    const { view } = createView();
+
+    await view.start({
+      address: { profile: "dating/profile_1" },
+      count: 1,
+      requestId: "req-2",
+    });
+
+    expect(node("job-title").textContent).toBe("delivery-req-2.zip");
+    expect(JSON.parse(String(mockFetchCalls()[0]?.init?.body))).toEqual({
+      profile: "dating/profile_1",
+      count: 1,
+      request_id: "req-2",
+    });
+  });
+
   it("shows a local archive when the external link is unavailable", async () => {
     mockFetch(() => jsonResponse(job({ status: "ready_local", error: "filebin down" })));
     const { view } = createView();
 
-    await view.start("ru", 2, "req-1");
+    await view.start({ address: { language: "ru" }, count: 2, requestId: "req-1" });
 
     const link = node<HTMLAnchorElement>("job-link");
     expect(link.hidden).toBe(false);
@@ -91,7 +115,7 @@ describe("createJobsView", () => {
   it("shows the empty and failed states with a warning badge", async () => {
     mockFetch(() => jsonResponse(job({ status: "empty" })));
     const { view } = createView();
-    await view.start("ru", 2, "req-1");
+    await view.start({ address: { language: "ru" }, count: 2, requestId: "req-1" });
     expect(node("job-state").className).toBe("badge warn");
     expect(node("job-message").textContent).toBe(MESSAGES.empty);
     expect(node("job-timer").hidden).toBe(true);
@@ -100,7 +124,7 @@ describe("createJobsView", () => {
     vi.unstubAllGlobals();
     mockFetch(() => jsonResponse(job({ status: "failed", error: "boom" })));
     const second = createView();
-    await second.view.start("ru", 2, "req-2");
+    await second.view.start({ address: { language: "ru" }, count: 2, requestId: "req-2" });
     expect(node("delivery-job").classList.contains("is-error")).toBe(true);
     expect(node("job-state").className).toBe("badge warn");
     expect(node("job-message").textContent).toBe("Сборка не удалась: boom");
@@ -117,7 +141,7 @@ describe("createJobsView", () => {
     );
     const { view, onFinished } = createView();
 
-    await view.start("ru", 1, "req-1");
+    await view.start({ address: { language: "ru" }, count: 1, requestId: "req-1" });
     expect(node("job-state").textContent).toBe("сборка");
     expect(node("delivery-job").getAttribute("aria-busy")).toBe("true");
     expect(node("job-check").hidden).toBe(true);
@@ -140,7 +164,7 @@ describe("createJobsView", () => {
     );
     const { view } = createView();
 
-    await view.start("ru", 1, "req-1");
+    await view.start({ address: { language: "ru" }, count: 1, requestId: "req-1" });
     expect(node("delivery-job").getAttribute("aria-busy")).toBe("true");
     await vi.advanceTimersByTimeAsync(3000);
 
@@ -161,7 +185,7 @@ describe("createJobsView", () => {
     });
     const { view } = createView();
 
-    await view.start("ru", 1, "req-1");
+    await view.start({ address: { language: "ru" }, count: 1, requestId: "req-1" });
     expect(node("delivery-job").getAttribute("aria-busy")).toBe("true");
     await vi.advanceTimersByTimeAsync(3000);
 
@@ -174,7 +198,7 @@ describe("createJobsView", () => {
     mockFetch(() => jsonResponse(job({ status: "building", expires_at: "2026-11-27T11:00:00Z" })));
     const { view } = createView();
 
-    await view.start("ru", 1, "req-1");
+    await view.start({ address: { language: "ru" }, count: 1, requestId: "req-1" });
     expect(node("delivery-job").getAttribute("aria-busy")).toBe("true");
     vi.setSystemTime(NOW.getTime() + 30 * 60 * 1000 + 1);
     await vi.advanceTimersByTimeAsync(3000);
@@ -189,7 +213,7 @@ describe("createJobsView", () => {
   it("checks the status on demand and reports a still running build", async () => {
     mockFetch(() => jsonResponse(job({ status: "building", expires_at: "2026-11-27T11:00:00Z" })));
     const { view } = createView();
-    await view.start("ru", 1, "req-1");
+    await view.start({ address: { language: "ru" }, count: 1, requestId: "req-1" });
     expect(node("delivery-job").getAttribute("aria-busy")).toBe("true");
 
     vi.setSystemTime(NOW.getTime() + 30 * 60 * 1000 + 1);
@@ -213,7 +237,7 @@ describe("createJobsView", () => {
       ),
     );
     const { view } = createView();
-    await view.start("ru", 1, "req-1");
+    await view.start({ address: { language: "ru" }, count: 1, requestId: "req-1" });
     expect(node("delivery-job").getAttribute("aria-busy")).toBe("true");
 
     node<HTMLButtonElement>("job-check").click();
@@ -234,7 +258,7 @@ describe("createJobsView", () => {
       throw new TypeError("offline");
     });
     const { view } = createView();
-    await view.start("ru", 1, "req-1");
+    await view.start({ address: { language: "ru" }, count: 1, requestId: "req-1" });
     expect(node("delivery-job").getAttribute("aria-busy")).toBe("true");
 
     node<HTMLButtonElement>("job-check").click();
@@ -249,7 +273,7 @@ describe("createJobsView", () => {
     mockFetch(() => jsonResponse(job({ expires_at: "2026-11-26T09:00:00Z" })));
     const { view } = createView();
 
-    await view.start("ru", 1, "req-1");
+    await view.start({ address: { language: "ru" }, count: 1, requestId: "req-1" });
 
     expect(node("delivery-job").classList.contains("is-expired")).toBe(true);
     expect(node("job-timer").textContent).toBe("срок ссылки истёк");
@@ -260,7 +284,9 @@ describe("createJobsView", () => {
     mockFetch(() => jsonResponse([]));
     const { view } = createView();
 
-    await expect(view.start("ru", 1, "req-1")).rejects.toMatchObject({
+    await expect(
+      view.start({ address: { language: "ru" }, count: 1, requestId: "req-1" }),
+    ).rejects.toMatchObject({
       message: MESSAGES.badResponse,
       status: 0,
     });

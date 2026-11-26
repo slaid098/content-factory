@@ -86,6 +86,7 @@ def _sidecar(
     error: str | None = None,
     language: str = "ru",
     request_id: UUID = REQUEST_ID,
+    profile: str | None = None,
 ) -> DeliveryJobInfo:
     job = DeliveryJobInfo(
         request_id=request_id,
@@ -97,6 +98,7 @@ def _sidecar(
         files=files,
         url=url,
         error=error,
+        profile=profile,
     )
     save_job(data_dir, job)
     return job
@@ -1100,6 +1102,37 @@ def test_list_archives_includes_ready_local_sidecar_with_zip(tmp_path: Path) -> 
     assert archives[0].storage == "local"
     assert archives[0].url is None
     assert archives[0].files == 1
+
+
+@pytest.mark.parametrize("status", ["ready", "ready_local"])
+def test_list_archives_copies_the_sidecar_profile(tmp_path: Path, status: str) -> None:
+    _touch_archive(tmp_path, data=b"local")
+    _sidecar(
+        tmp_path,
+        status=status,
+        size=5,
+        files=1,
+        url=(
+            "https://filebin.net/cf-11111111-1111-4111-8111-111111111111/archive.zip"
+            if status == "ready"
+            else None
+        ),
+        profile="dating/profile_1",
+    )
+
+    archives = list_archives(tmp_path, 24, now=_MOMENT)
+
+    assert len(archives) == 1
+    assert archives[0].profile == "dating/profile_1"
+
+
+def test_list_archives_returns_no_profile_for_a_legacy_zip(tmp_path: Path) -> None:
+    _touch_archive(tmp_path, data=b"legacy")
+
+    archives = list_archives(tmp_path, 24, now=_MOMENT)
+
+    assert len(archives) == 1
+    assert archives[0].profile is None
 
 
 def test_list_archives_skips_ready_local_without_zip(tmp_path: Path) -> None:

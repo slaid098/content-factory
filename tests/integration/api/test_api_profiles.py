@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import stat
 import subprocess
 import time
+from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 from tests.unit.common.profile_helpers import (
     add_profile,
@@ -19,10 +22,13 @@ from tests.unit.common.profile_helpers import (
     set_profile_refill,
     write_run_report,
 )
+from tests.unit.generator.helpers import make_profile
 
 from content_factory.api.app import create_app
-from content_factory.constants import CONFIG_DIR, DB_DIR, PREVIEW_DIR
+from content_factory.constants import CONFIG_DIR, DB_DIR, PREVIEW_DIR, PROFILES_DIR
+from content_factory.services.generator.profiles import _OverlayStyle
 from content_factory.services.profiles import preview
+from content_factory.utils import prompts
 
 _TOKEN = "delivery-secret"
 _PREFIX = "/api/v1/content/profiles"
@@ -68,6 +74,16 @@ def _patch(
     token: str | None = _TOKEN,
 ) -> httpx.Response:
     return client.patch(path, json=payload, headers=_headers(token))
+
+
+def _put(
+    client: TestClient,
+    path: str,
+    payload: dict[str, object],
+    *,
+    token: str | None = _TOKEN,
+) -> httpx.Response:
+    return client.put(path, json=payload, headers=_headers(token))
 
 
 def _fake_extract(calls: list[Path]) -> Any:
@@ -137,6 +153,7 @@ def test_list_returns_profiles_with_stock_overrides_and_last_run(data_dir: Path)
         "photo_refill_at": 0,
         "preview_url": "/api/v1/content/profiles/auto/profile_2/preview",
         "last_run": None,
+        "outputs": ["video"],
     }
     assert second["stock"] == 2
     assert second["photo_stock"] == 1
@@ -237,7 +254,7 @@ def test_list_skips_non_utf8_run_report(
 
 
 def test_get_returns_one_profile(data_dir: Path) -> None:
-    add_profile(data_dir, "dating", "profile_1")
+    _full_profile(data_dir)
     add_profile_video(data_dir, "dating", "profile_1")
     add_profile_photo(data_dir, "dating", "profile_1")
 
@@ -339,7 +356,7 @@ def test_patch_rejects_refill_at_not_less_than_target(data_dir: Path) -> None:
 
 
 def test_patch_stores_photo_target_and_threshold(data_dir: Path) -> None:
-    add_profile(data_dir, "dating", "profile_1")
+    _full_profile(data_dir)
     client = _client()
     path = f"{_PREFIX}/dating/profile_1"
 
@@ -594,6 +611,7 @@ def test_preview_failure_returns_503_without_stderr(
         _PREFIX,
         f"{_PREFIX}/dating/profile_1",
         f"{_PREFIX}/dating/profile_1/preview",
+        f"{_PREFIX}/dating/profile_1/prompts",
     ],
 )
 def test_profile_routes_require_token(data_dir: Path, path: str) -> None:
@@ -601,6 +619,18 @@ def test_profile_routes_require_token(data_dir: Path, path: str) -> None:
 
     assert response.status_code == 401
     assert response.headers["WWW-Authenticate"] == "Bearer"
+
+
+def test_prompt_writes_require_token(data_dir: Path) -> None:
+    client = _client()
+    paths = [
+        f"{_PREFIX}/dating/profile_1/prompts/template",
+        f"{_PREFIX}/dating/profile_1/prompts/cards/c01",
+        f"{_PREFIX}/dating/profile_1/prompts/text",
+    ]
+
+    for path in paths:
+        assert _put(client, path, {"text": "x"}, token=None).status_code == 401
 
 
 def test_patch_requires_token(data_dir: Path) -> None:
@@ -632,3 +662,329 @@ def test_profile_routes_without_configured_token_return_503(
     response = _get(_client(), path)
 
     assert response.status_code == 503
+
+
+def _full_profile(
+    data_dir: Path,
+    name: str = "profile_1",
+    **kwargs: Any,
+) -> Path:
+    """Create a fully valid profile under the runtime profiles root."""
+    return make_profile(data_dir / PROFILES_DIR, f"dating/{name}", **kwargs)
+
+
+def test_get_detail_returns_outputs_recipe_and_safe_settings(data_dir: Path) -> None:
+    _full_profile(
+        data_dir,
+        width=544,
+        height=960,
+        extra={
+            "frames": 121,
+            "frames_jitter": 0,
+            "fps": 25,
+            "gpu": "RTX 4090",
+            "max_cost": 0.35,
+            "image": "video-gen:test",
+            "production": [
+                {"producer": "vast", "type": "video", "qa": ["clef"]},
+                {"producer": "card", "type": "photo", "qa": ["image"]},
+            ],
+        },
+    )
+
+    response = _get(_client(), f"{_PREFIX}/dating/profile_1")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == "dating/profile_1"
+    assert body["outputs"] == ["video", "photo"]
+    assert body["production"] == [
+        {
+            "producer": "vast",
+            "type": "video",
+            "checks": [{"name": "clef", "stage": "source"}],
+        },
+        {
+            "producer": "card",
+            "type": "photo",
+            "checks": [{"name": "image", "stage": "final"}],
+        },
+    ]
+    settings = body["settings"]
+    assert settings["video"] == {
+        "width": 544,
+        "height": 960,
+        "frames": 121,
+        "frames_jitter": 0,
+        "fps": 25,
+        "renderer": "default",
+        "image": "video-gen:test",
+        "audio_tracks": 1,
+    }
+    assert settings["rent"] == {
+        "gpu": "RTX 4090",
+        "max_cost": 0.35,
+        "disk_space": 80,
+        "gpu_ram": 30,
+        "inet_down": 500,
+        "inet_up_cost": 0.004,
+        "inet_down_cost": 0.004,
+    }
+    assert settings["text"]["font"] == "arialbd.ttf"
+    assert settings["text"]["negative_prompt"] == "blurry, low quality"
+    assert settings["text"]["cfg"] is None
+    assert set(settings["text"]["style"]) == {field.name for field in fields(_OverlayStyle)}
+    assert settings["text"]["style"]["font_size"] == 0.06
+    assert settings["text"]["style"]["text_color"] == "#3B2A20"
+    assert settings["delivery"] == {
+        "title_mode": "generated",
+        "title": None,
+        "hashtags": [],
+    }
+    assert str(data_dir) not in response.text
+    assert _TOKEN not in response.text
+
+
+def test_get_detail_uses_the_registry_recipe_order(data_dir: Path) -> None:
+    _full_profile(
+        data_dir,
+        extra={
+            "production": [
+                {"producer": "card", "type": "photo", "qa": ["image"]},
+                {"producer": "vast", "type": "video", "qa": ["clef"]},
+            ]
+        },
+    )
+
+    body = _get(_client(), f"{_PREFIX}/dating/profile_1").json()
+
+    assert body["outputs"] == ["video", "photo"]
+    assert [step["producer"] for step in body["production"]] == ["card", "vast"]
+
+
+def test_prompts_are_stable_and_have_no_photo_without_a_photo_layer(
+    data_dir: Path,
+) -> None:
+    _full_profile(data_dir)
+    client = _client()
+    path = f"{_PREFIX}/dating/profile_1/prompts"
+
+    first = _get(client, path)
+    second = _get(client, path)
+
+    assert first.status_code == 200
+    assert first.json() == second.json()
+    body = first.json()
+    assert body["template"]["filename"] == "prompt_template.txt"
+    assert "{age}" in body["template"]["text"]
+    assert [card["id"] for card in body["cards"]] == ["c01", "c02", "c03"]
+    assert all(card["overridden"] is False for card in body["cards"])
+    assert all("{" not in card["prompt"] for card in body["cards"])
+    assert body["cards"][0]["values"]["hair_color_text"] == "dark brown"
+    assert body["photo"] is None
+
+
+def test_prompts_return_the_photo_text_only_with_a_photo_layer(data_dir: Path) -> None:
+    _full_profile(
+        data_dir,
+        extra={
+            "production": [
+                {"producer": "vast", "type": "video", "qa": ["clef"]},
+                {"producer": "card", "type": "photo", "qa": ["image"]},
+            ]
+        },
+    )
+
+    body = _get(_client(), f"{_PREFIX}/dating/profile_1/prompts").json()
+
+    assert body["photo"] == {
+        "filename": "text_prompt.txt",
+        "text": "Сгенерируй текст карточки.",
+    }
+
+
+def test_prompts_use_the_legacy_template_file_when_the_new_one_is_absent(
+    data_dir: Path,
+) -> None:
+    directory = _full_profile(data_dir)
+    (directory / "prompt_template.txt").unlink()
+    (directory / "video_prompt.txt").write_text("legacy {age}", encoding="utf-8")
+
+    body = _get(_client(), f"{_PREFIX}/dating/profile_1/prompts").json()
+
+    assert body["template"] == {"filename": "video_prompt.txt", "text": "legacy {age}"}
+
+
+def test_put_template_writes_the_used_file_and_keeps_its_mode(data_dir: Path) -> None:
+    directory = _full_profile(data_dir)
+    path = directory / "prompt_template.txt"
+    path.chmod(0o640)
+    client = _client()
+
+    response = _put(
+        client,
+        f"{_PREFIX}/dating/profile_1/prompts/template",
+        {"text": "new scene {age}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"filename": "prompt_template.txt", "text": "new scene {age}"}
+    assert path.read_text(encoding="utf-8") == "new scene {age}"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    assert list(directory.glob(".prompt_template.txt.*.tmp")) == []
+    prompts_body = _get(client, f"{_PREFIX}/dating/profile_1/prompts").json()
+    assert prompts_body["template"]["text"] == "new scene {age}"
+
+
+def test_put_template_updates_the_legacy_file_when_it_is_the_used_one(
+    data_dir: Path,
+) -> None:
+    directory = _full_profile(data_dir)
+    (directory / "prompt_template.txt").unlink()
+    legacy = directory / "video_prompt.txt"
+    legacy.write_text("legacy {age}", encoding="utf-8")
+
+    response = _put(
+        _client(),
+        f"{_PREFIX}/dating/profile_1/prompts/template",
+        {"text": "updated legacy"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"filename": "video_prompt.txt", "text": "updated legacy"}
+    assert legacy.read_text(encoding="utf-8") == "updated legacy"
+
+
+@pytest.mark.parametrize("text", ["", "   ", "x" * 20_001])
+def test_put_template_rejects_invalid_text(data_dir: Path, text: str) -> None:
+    directory = _full_profile(data_dir)
+    path = directory / "prompt_template.txt"
+    original = path.read_text(encoding="utf-8")
+
+    response = _put(
+        _client(),
+        f"{_PREFIX}/dating/profile_1/prompts/template",
+        {"text": text},
+    )
+
+    assert response.status_code == 422
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_put_card_stores_an_override_without_rewriting_looks(data_dir: Path) -> None:
+    directory = _full_profile(data_dir)
+    looks_path = directory / "looks.yaml"
+    looks_before = looks_path.read_bytes()
+    client = _client()
+
+    response = _put(
+        client,
+        f"{_PREFIX}/dating/profile_1/prompts/cards/c01",
+        {"text": "custom {age} {day|evening}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": "c01",
+        "prompt": "custom {age} {day|evening}",
+        "overridden": True,
+    }
+    assert looks_path.read_bytes() == looks_before
+    overrides = yaml.safe_load((directory / prompts.OVERRIDES_FILENAME).read_text(encoding="utf-8"))
+    assert overrides == {"prompts": {"c01": "custom {age} {day|evening}"}}
+    body = _get(client, f"{_PREFIX}/dating/profile_1/prompts").json()
+    assert body["cards"][0]["overridden"] is True
+    assert body["cards"][0]["prompt"] == "custom {age} {day|evening}"
+    assert body["cards"][1]["overridden"] is False
+
+
+def test_put_card_with_empty_text_removes_the_override(data_dir: Path) -> None:
+    directory = _full_profile(data_dir)
+    client = _client()
+    path = f"{_PREFIX}/dating/profile_1/prompts/cards/c01"
+    assert _put(client, path, {"text": "custom"}).status_code == 200
+
+    cleared = _put(client, path, {"text": "   "})
+
+    assert cleared.status_code == 200
+    assert cleared.json()["id"] == "c01"
+    assert cleared.json()["overridden"] is False
+    assert cleared.json()["prompt"] != "custom"
+    assert "{" not in cleared.json()["prompt"]
+    overrides = yaml.safe_load((directory / prompts.OVERRIDES_FILENAME).read_text(encoding="utf-8"))
+    assert overrides == {"prompts": {}}
+
+
+def test_put_card_unknown_look_returns_404_and_writes_nothing(data_dir: Path) -> None:
+    directory = _full_profile(data_dir)
+
+    response = _put(
+        _client(),
+        f"{_PREFIX}/dating/profile_1/prompts/cards/c99",
+        {"text": "custom"},
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "profile not found"}
+    assert not (directory / prompts.OVERRIDES_FILENAME).exists()
+
+
+def test_put_text_writes_the_photo_prompt_and_keeps_its_mode(data_dir: Path) -> None:
+    directory = _full_profile(
+        data_dir,
+        extra={
+            "production": [
+                {"producer": "vast", "type": "video", "qa": ["clef"]},
+                {"producer": "card", "type": "photo", "qa": ["image"]},
+            ]
+        },
+    )
+    path = directory / "text_prompt.txt"
+    path.chmod(0o640)
+
+    response = _put(
+        _client(),
+        f"{_PREFIX}/dating/profile_1/prompts/text",
+        {"text": "Новый текст карточки."},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "filename": "text_prompt.txt",
+        "text": "Новый текст карточки.",
+    }
+    assert path.read_text(encoding="utf-8") == "Новый текст карточки."
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+
+
+def test_put_text_is_missing_for_a_video_only_profile(data_dir: Path) -> None:
+    _full_profile(data_dir)
+
+    response = _put(
+        _client(),
+        f"{_PREFIX}/dating/profile_1/prompts/text",
+        {"text": "Новый текст карточки."},
+    )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize("text", ["", "  ", "x" * 20_001])
+def test_put_text_rejects_invalid_text(data_dir: Path, text: str) -> None:
+    _full_profile(
+        data_dir,
+        extra={
+            "production": [
+                {"producer": "vast", "type": "video", "qa": ["clef"]},
+                {"producer": "card", "type": "photo", "qa": ["image"]},
+            ]
+        },
+    )
+
+    response = _put(
+        _client(),
+        f"{_PREFIX}/dating/profile_1/prompts/text",
+        {"text": text},
+    )
+
+    assert response.status_code == 422

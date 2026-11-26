@@ -24,6 +24,7 @@ function archive(overrides: Record<string, unknown> = {}): Record<string, unknow
     files: 2,
     created_at: "2026-11-26T09:00:00Z",
     expires_at: "2026-11-26T11:00:00Z",
+    profile: null,
     ...overrides,
   };
 }
@@ -39,13 +40,14 @@ afterEach(() => {
 });
 
 describe("createArchivesView", () => {
-  it("renders local and remote archives with a local-only summary", async () => {
+  it("renders general and profile archives with a local-only summary", async () => {
     mockFetch(() =>
       jsonResponse([
         archive(),
         archive({
           request_id: "b2",
           language: "en",
+          profile: "dating/profile_1",
           storage: "remote",
           size: 100,
           files: 1,
@@ -67,27 +69,32 @@ describe("createArchivesView", () => {
       "локальные архивы; удалённые в Filebin диск не занимают",
     );
 
-    const localLink = list.querySelector<HTMLAnchorElement>("a.button");
+    const generalRow = list.children[0];
+    expect(generalRow?.textContent).toContain("Общетематичные");
+    expect(generalRow?.textContent).toContain("2");
+    const localLink = generalRow?.querySelector<HTMLAnchorElement>("a.button");
     expect(localLink?.getAttribute("href")).toBe("/api/v1/content/archives/ru/a1.zip");
     expect(localLink?.download).toBe("delivery-a1.zip");
 
-    const remoteCard = list.children[1];
-    const remoteLink = remoteCard?.querySelector<HTMLAnchorElement>("a.button");
+    const profileRow = list.children[1];
+    expect(profileRow?.textContent).toContain("dating/profile_1");
+    expect(profileRow?.textContent).toContain("Английский");
+    const remoteLink = profileRow?.querySelector<HTMLAnchorElement>("a.button");
     expect(remoteLink?.getAttribute("href")).toBe("https://filebin.example/archive.zip");
     expect(remoteLink?.rel).toBe("noopener");
     expect(remoteLink?.hasAttribute("download")).toBe(false);
-    expect(remoteCard?.textContent).toContain("Litterbox");
+    expect(profileRow?.textContent).toContain("Litterbox");
   });
 
-  it("marks the freshly built archive and shows its badge", async () => {
+  it("marks the freshly built archive", async () => {
     mockFetch(() => jsonResponse([archive()]));
     const view = createView();
 
     await view.load("a1");
 
-    const card = node("archives").querySelector(".archive-card");
-    expect(card?.classList.contains("is-fresh")).toBe(true);
-    expect(card?.textContent).toContain("только что");
+    const row = node("archives").querySelector(".archive-row");
+    expect(row?.classList.contains("is-fresh")).toBe(true);
+    expect(row?.textContent).toContain("только что");
   });
 
   it("shows the empty state and a zero summary without archives", async () => {
@@ -130,7 +137,7 @@ describe("createArchivesView", () => {
     expect(message.textContent).toBe("Нет доступа к API. Откройте страницу с разрешённого адреса.");
   });
 
-  it("expires a card in place and refreshes the list once a minute", async () => {
+  it("expires a row in place and refreshes the list once a minute", async () => {
     const fetched = mockFetch(() =>
       jsonResponse([archive({ expires_at: "2026-11-26T09:00:00Z" })]),
     );
@@ -139,13 +146,13 @@ describe("createArchivesView", () => {
     await view.load();
     await vi.advanceTimersByTimeAsync(1000);
 
-    const card = node("archives").querySelector(".archive-card");
-    const link = card?.querySelector<HTMLAnchorElement>("a.button");
-    expect(card?.classList.contains("is-expired")).toBe(true);
+    const row = node("archives").querySelector(".archive-row");
+    const link = row?.querySelector<HTMLAnchorElement>("a.button");
+    expect(row?.classList.contains("is-expired")).toBe(true);
     expect(link?.hasAttribute("href")).toBe(false);
     expect(link?.getAttribute("aria-disabled")).toBe("true");
     expect(link?.textContent).toBe("Истёк");
-    expect(card?.querySelector(".countdown")?.textContent).toBe("истёк");
+    expect(row?.querySelector(".countdown")?.textContent).toBe("истёк");
     expect(fetched.mock.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 

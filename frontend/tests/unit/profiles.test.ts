@@ -1,870 +1,210 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createProfilesView } from "../../src/profiles";
-import { bodyOf, flush, jsonResponse, mockFetch, node, resetPage } from "./helpers";
+import {
+  bodyOf,
+  type FetchHandler,
+  flush,
+  jsonResponse,
+  mockFetch,
+  node,
+  resetPage,
+} from "./helpers";
 
-function profile(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function summary(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     id: "dating/profile_1",
     category: "dating",
     name: "profile_1",
     language: "ru",
     niche: "dating",
-    width: 1080,
-    height: 1920,
+    width: 544,
+    height: 960,
     audio: true,
-    stock: 4,
+    outputs: ["video", "photo"],
+    stock: 8,
     photo_stock: 14,
-    target: 10,
-    refill_at: 3,
+    target: 20,
+    refill_at: 5,
     photo_target: 30,
     photo_refill_at: 5,
     refill_enabled: false,
-    target_override: 12,
+    target_override: null,
     refill_at_override: null,
-    preview_url: "/api/v1/content/profiles/dating/profile_1/preview.png",
-    last_run: {
-      status: "done",
-      finished_at: "2026-11-26T10:00:00Z",
-      generated: 5,
-      failed: 1,
-      error: "",
-    },
+    preview_url: "/api/v1/content/profiles/dating/profile_1/preview",
+    last_run: null,
     ...overrides,
   };
 }
 
-function createView() {
-  return createProfilesView({
-    list: node("profiles-list"),
-    message: node("profiles-message"),
-    loading: node("profiles-loading"),
-    empty: node("profiles-empty"),
-    refresh: node<HTMLButtonElement>("profiles-refresh"),
-  });
+function detail(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    ...summary(overrides),
+    production: [
+      {
+        producer: "vast",
+        type: "video",
+        checks: [
+          { name: "clef", stage: "source" },
+          { name: "mp4", stage: "final" },
+        ],
+      },
+      {
+        producer: "card",
+        type: "photo",
+        checks: [{ name: "image", stage: "final" }],
+      },
+    ],
+    settings: {
+      video: {
+        width: 544,
+        height: 960,
+        frames: 121,
+        frames_jitter: 0,
+        fps: 25,
+        renderer: "default",
+        image: "video-gen:test",
+        audio_tracks: 3,
+      },
+      rent: {
+        gpu: "RTX 4090",
+        max_cost: 0.35,
+        disk_space: 80,
+        gpu_ram: 30,
+        inet_down: 500,
+        inet_up_cost: 0.004,
+        inet_down_cost: 0.004,
+      },
+      text: {
+        font: "arialbd.ttf",
+        negative_prompt: null,
+        cfg: null,
+        style: { font_size: 0.06, text_color: "#000000" },
+      },
+      delivery: { title_mode: "generated", title: null, hashtags: [] },
+    },
+  };
 }
 
-function card(): HTMLElement {
-  const found = node("profiles-list").querySelector<HTMLElement>(".profile-card");
+function prompts(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    template: { filename: "prompt_template.txt", text: "Сцена: {age}" },
+    cards: [
+      {
+        id: "c01",
+        values: {
+          id: "c01",
+          age: 30,
+          hair_color_text: "dark brown",
+          place: "cafe",
+          season: "summer",
+          pose_text: "standing",
+        },
+        prompt: "Женщина 30 лет",
+        overridden: false,
+      },
+    ],
+    photo: { filename: "text_prompt.txt", text: "Голос: спокойный" },
+    ...overrides,
+  };
+}
+
+function handler(overrides: { detail?: unknown; prompts?: unknown } = {}): FetchHandler {
+  return (input, init) => {
+    const url = String(input);
+    const method = init?.method ?? "GET";
+    if (url === "/api/v1/content/profiles" && method === "GET") {
+      return jsonResponse({ profiles: [summary()] });
+    }
+    if (url === "/api/v1/content/profiles/dating/profile_1" && method === "GET") {
+      return jsonResponse(overrides.detail ?? detail());
+    }
+    if (url === "/api/v1/content/profiles/dating/profile_1/prompts" && method === "GET") {
+      return jsonResponse(overrides.prompts ?? prompts());
+    }
+    if (url.endsWith("/prompts/template") && method === "PUT") {
+      return jsonResponse({ filename: "prompt_template.txt", text: bodyOf(init).text });
+    }
+    if (url.endsWith("/prompts/cards/c01") && method === "PUT") {
+      const text = String(bodyOf(init).text ?? "");
+      const overridden = text.trim() !== "";
+      return jsonResponse({
+        id: "c01",
+        prompt: overridden ? text : "Женщина 30 лет",
+        overridden,
+      });
+    }
+    if (url.endsWith("/prompts/text") && method === "PUT") {
+      return jsonResponse({ filename: "text_prompt.txt", text: bodyOf(init).text });
+    }
+    if (url === "/api/v1/content/profiles/dating/profile_1" && method === "PATCH") {
+      return jsonResponse(summary({ refill_enabled: true, ...bodyOf(init) }));
+    }
+    throw new Error(`unexpected ${method} ${url}`);
+  };
+}
+
+async function loadView(): Promise<ReturnType<typeof createProfilesView>> {
+  const view = createProfilesView();
+  await view.load();
+  return view;
+}
+
+async function openProfile(): Promise<ReturnType<typeof createProfilesView>> {
+  const view = await loadView();
+  const button = gear();
+  button.focus();
+  button.click();
+  await flush();
+  await flush();
+  return view;
+}
+
+function gear(): HTMLButtonElement {
+  const found = node("profiles-list").querySelector<HTMLButtonElement>(".profile-open");
   if (!found) {
-    throw new Error("profile card missing");
+    throw new Error("gear button missing");
   }
   return found;
 }
 
-function mediaButton(): HTMLButtonElement {
-  const found = card().querySelector<HTMLButtonElement>(".profile-media");
+function refillButton(): HTMLButtonElement {
+  const found = node("profiles-list").querySelector<HTMLButtonElement>(".profile-refill");
   if (!found) {
-    throw new Error("profile preview button missing");
+    throw new Error("refill button missing");
   }
   return found;
 }
 
-function dialog(): HTMLElement {
-  const found = document.body.querySelector<HTMLElement>(".profile-dialog");
+function templateTextarea(): HTMLTextAreaElement {
+  const found = node("profile-video").querySelector<HTMLTextAreaElement>(".prompt-text");
   if (!found) {
-    throw new Error("profile dialog missing");
+    throw new Error("template textarea missing");
   }
   return found;
 }
 
-function dialogTitle(): string {
-  return dialog().querySelector(".profile-dialog-title")?.textContent ?? "";
+function cardBlock(): HTMLElement {
+  const found = node("profile-video").querySelector<HTMLElement>(".prompt-card");
+  if (!found) {
+    throw new Error("card block missing");
+  }
+  return found;
 }
 
-function targetInput(): HTMLInputElement {
-  return card().querySelectorAll<HTMLInputElement>("input[type=number]")[0] as HTMLInputElement;
+function cardTextarea(): HTMLTextAreaElement {
+  const found = cardBlock().querySelector<HTMLTextAreaElement>(".prompt-text");
+  if (!found) {
+    throw new Error("card textarea missing");
+  }
+  return found;
 }
 
-function refillInput(): HTMLInputElement {
-  return card().querySelectorAll<HTMLInputElement>("input[type=number]")[1] as HTMLInputElement;
+function chipTexts(container: HTMLElement): string[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(".pipeline-chip"), (chip) => {
+    return chip.textContent ?? "";
+  });
 }
-
-function photoTargetInput(): HTMLInputElement {
-  return card().querySelectorAll<HTMLInputElement>("input[type=number]")[2] as HTMLInputElement;
-}
-
-function photoRefillInput(): HTMLInputElement {
-  return card().querySelectorAll<HTMLInputElement>("input[type=number]")[3] as HTMLInputElement;
-}
-
-function switchInput(): HTMLInputElement {
-  return card().querySelector<HTMLInputElement>("input[type=checkbox]") as HTMLInputElement;
-}
-
-beforeEach(() => {
-  resetPage();
-});
-
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
-
-describe("createProfilesView", () => {
-  it("renders a profile card with counters, settings and the last run", async () => {
-    mockFetch(() => jsonResponse({ profiles: [profile()] }));
-    const view = createView();
-
-    await view.load();
-
-    expect(node("profiles-list").hidden).toBe(false);
-    expect(node("profiles-empty").hidden).toBe(true);
-    expect(card().textContent).toContain("dating/profile_1");
-    expect(card().textContent).toContain("Русский");
-    expect(card().textContent).toContain("dating");
-    expect(card().textContent).toContain("1080×1920");
-    expect(card().textContent).toContain("аудио");
-    expect(card().textContent).toContain("Shorts 4 / 10");
-    expect(card().textContent).toContain("Посты 14 / 30");
-    expect(card().textContent).toContain("Добор");
-    expect(card().textContent).toContain("ролики и посты");
-    expect(card().querySelector(".profile-switch-label")?.textContent).toBe("Добор");
-    expect(card().querySelector(".profile-switch-note")?.textContent).toBe("ролики и посты");
-    expect(
-      Array.from(card().querySelectorAll(".profile-group-title"), (title) => title.textContent),
-    ).toEqual(["Ролики", "Посты"]);
-    expect(targetInput().value).toBe("12");
-    expect(targetInput().placeholder).toBe("10");
-    expect(refillInput().value).toBe("");
-    expect(refillInput().placeholder).toBe("3 (глобально)");
-    expect(photoTargetInput().value).toBe("30");
-    expect(photoRefillInput().value).toBe("5");
-    expect(photoRefillInput().disabled).toBe(false);
-    expect(switchInput().checked).toBe(false);
-    expect(switchInput().getAttribute("role")).toBe("switch");
-    expect(switchInput().getAttribute("aria-checked")).toBe("false");
-    expect(card().textContent).toContain("готово");
-    expect(card().textContent).toContain("партия: 5 готово");
-    expect(card().textContent).toContain("1 с ошибкой");
-    expect(card().textContent).toContain("завершена");
-    expect(card().querySelector<HTMLImageElement>(".profile-preview")?.src).toContain(
-      "/api/v1/content/profiles/dating/profile_1/preview.png",
-    );
-  });
-
-  it("builds a compact, uncropped thumbnail from the profile dimensions", async () => {
-    mockFetch(() => jsonResponse({ profiles: [profile({ width: 544, height: 960 })] }));
-    const view = createView();
-
-    await view.load();
-
-    const image = card().querySelector<HTMLImageElement>(".profile-preview");
-    expect(image).not.toBeNull();
-    expect(image?.getAttribute("width")).toBe("544");
-    expect(image?.getAttribute("height")).toBe("960");
-    expect(image?.getAttribute("loading")).toBe("lazy");
-    expect(image?.getAttribute("decoding")).toBe("async");
-    expect(image?.alt).toBe("Превью профиля dating/profile_1");
-    expect(mediaButton().tagName).toBe("BUTTON");
-    expect(mediaButton().getAttribute("aria-label")).toBe(
-      "Открыть превью профиля dating/profile_1",
-    );
-    expect(mediaButton().getAttribute("aria-haspopup")).toBe("dialog");
-    expect(mediaButton().style.getPropertyValue("--preview-ratio")).toBe(String(544 / 960));
-  });
-
-  it("builds one slot for square, portrait and wide previews", async () => {
-    mockFetch(() =>
-      jsonResponse({
-        profiles: [
-          profile({ id: "dating/square", width: 1080, height: 1080 }),
-          profile({ id: "dating/portrait", width: 544, height: 960 }),
-          profile({ id: "dating/wide", width: 1280, height: 720 }),
-        ],
-      }),
-    );
-    const view = createView();
-
-    await view.load();
-
-    const ratios = Array.from(
-      node("profiles-list").querySelectorAll<HTMLElement>(".profile-media"),
-    ).map((media) => media.style.getPropertyValue("--preview-ratio"));
-    expect(ratios).toEqual(["1", String(544 / 960), String(1280 / 720)]);
-  });
-
-  it("shows the Shorts progress and the photo counter without a goal", async () => {
-    mockFetch(() =>
-      jsonResponse({
-        profiles: [
-          profile({ stock: 4, target: 10, photo_stock: 14, photo_target: 0, photo_refill_at: 0 }),
-        ],
-      }),
-    );
-    const view = createView();
-
-    await view.load();
-
-    const bar = card().querySelector<HTMLElement>(".profile-progress");
-    expect(bar?.getAttribute("role")).toBe("progressbar");
-    expect(bar?.getAttribute("aria-valuenow")).toBe("4");
-    expect(bar?.getAttribute("aria-valuemax")).toBe("10");
-    expect(bar?.getAttribute("aria-valuetext")).toBe("4 из 10");
-    const fill = card().querySelector<HTMLElement>(".profile-progress-fill");
-    expect(fill?.style.width).toBe("40%");
-    expect(card().textContent).toContain("Shorts 4 / 10");
-    expect(card().textContent).toContain("Посты 14");
-    expect(card().textContent).toContain("добор постов выключен");
-    expect(card().querySelector<HTMLElement>(".profile-progress-posts")?.hidden).toBe(true);
-    expect(photoRefillInput().disabled).toBe(true);
-  });
-
-  it("clamps a stock above the target to one hundred percent", async () => {
-    mockFetch(() => jsonResponse({ profiles: [profile({ stock: 12, target: 10 })] }));
-    const view = createView();
-
-    await view.load();
-
-    const fill = card().querySelector<HTMLElement>(".profile-progress-fill");
-    expect(fill?.style.width).toBe("100%");
-    expect(card().textContent).toContain("Shorts 12 / 10");
-  });
-
-  it("shows the photo goal with its value and progress", async () => {
-    mockFetch(() =>
-      jsonResponse({
-        profiles: [profile({ photo_stock: 14, photo_target: 30, photo_refill_at: 5 })],
-      }),
-    );
-    const view = createView();
-
-    await view.load();
-
-    expect(card().textContent).toContain("Посты 14 / 30");
-    expect(card().querySelector<HTMLElement>(".profile-counter-note")?.hidden).toBe(true);
-    const bar = card().querySelector<HTMLElement>(".profile-progress-posts");
-    expect(bar?.hidden).toBe(false);
-    expect(bar?.getAttribute("aria-valuenow")).toBe("14");
-    expect(bar?.getAttribute("aria-valuemax")).toBe("30");
-    expect(bar?.getAttribute("aria-valuetext")).toBe("14 из 30");
-    const fill = bar?.querySelector<HTMLElement>(".profile-progress-fill");
-    expect(Number.parseFloat(fill?.style.width ?? "0")).toBeCloseTo((14 / 30) * 100, 5);
-    expect(photoRefillInput().disabled).toBe(false);
-  });
-
-  it("clamps the photo progress when the stock exceeds the goal", async () => {
-    mockFetch(() => jsonResponse({ profiles: [profile({ photo_stock: 40, photo_target: 30 })] }));
-    const view = createView();
-
-    await view.load();
-
-    const bar = card().querySelector<HTMLElement>(".profile-progress-posts");
-    const fill = bar?.querySelector<HTMLElement>(".profile-progress-fill");
-    expect(bar?.getAttribute("aria-valuenow")).toBe("30");
-    expect(fill?.style.width).toBe("100%");
-    expect(card().textContent).toContain("Посты 40 / 30");
-  });
-
-  it("shows zero counters when the target and the photo stock are zero", async () => {
-    mockFetch(() =>
-      jsonResponse({
-        profiles: [
-          profile({ stock: 0, target: 0, photo_stock: 0, photo_target: 0, photo_refill_at: 0 }),
-        ],
-      }),
-    );
-    const view = createView();
-
-    await view.load();
-
-    expect(card().textContent).toContain("Shorts 0 / 0");
-    expect(card().textContent).toContain("Посты 0");
-    const bar = card().querySelector<HTMLElement>(".profile-progress");
-    expect(bar?.getAttribute("aria-valuenow")).toBe("0");
-    expect(bar?.getAttribute("aria-valuemax")).toBe("0");
-    const fill = card().querySelector<HTMLElement>(".profile-progress-fill");
-    expect(fill?.style.width).toBe("0%");
-    expect(card().querySelector<HTMLElement>(".profile-progress-posts")?.hidden).toBe(true);
-    expect(photoRefillInput().disabled).toBe(true);
-  });
-
-  it("defaults a missing photo stock, goal and threshold to zero", async () => {
-    const row = profile();
-    delete row.photo_stock;
-    delete row.photo_target;
-    delete row.photo_refill_at;
-    mockFetch(() => jsonResponse({ profiles: [row] }));
-    const view = createView();
-
-    await view.load();
-
-    expect(card().textContent).toContain("Посты 0");
-    expect(card().textContent).toContain("добор постов выключен");
-    expect(photoTargetInput().value).toBe("0");
-    expect(photoRefillInput().value).toBe("0");
-    expect(photoRefillInput().disabled).toBe(true);
-  });
-
-  it("keeps the previous photo stock when a PATCH response omits it", async () => {
-    const updated = profile({ refill_enabled: true });
-    delete updated.photo_stock;
-    mockFetch((_input, init) =>
-      init?.method === "PATCH"
-        ? jsonResponse(updated)
-        : jsonResponse({ profiles: [profile({ photo_stock: 14 })] }),
-    );
-    const view = createView();
-    await view.load();
-
-    switchInput().click();
-    await flush();
-
-    expect(card().textContent).toContain("Посты 14 / 30");
-  });
-
-  it("uses neutral fallbacks for missing optional data", async () => {
-    mockFetch(() =>
-      jsonResponse({
-        profiles: [
-          profile({
-            niche: "",
-            audio: false,
-            last_run: { status: "custom", finished_at: null, generated: 0, failed: 0, error: "" },
-          }),
-        ],
-      }),
-    );
-    const view = createView();
-
-    await view.load();
-
-    expect(card().textContent).toContain("без ниши");
-    expect(card().textContent).toContain("без аудио");
-    expect(card().textContent).toContain("custom");
-    expect(card().textContent).toContain("ещё идёт");
-  });
-
-  it("hides the last run when there is none", async () => {
-    mockFetch(() => jsonResponse({ profiles: [profile({ last_run: null })] }));
-    const view = createView();
-
-    await view.load();
-
-    expect(card().querySelector<HTMLElement>(".profile-last-run")?.hidden).toBe(true);
-  });
-
-  it("truncates a long last-run error", async () => {
-    mockFetch(() =>
-      jsonResponse({
-        profiles: [
-          profile({
-            last_run: {
-              status: "failed",
-              finished_at: "2026-11-26T10:00:00Z",
-              generated: 0,
-              failed: 1,
-              error: "x".repeat(210),
-            },
-          }),
-        ],
-      }),
-    );
-    const view = createView();
-
-    await view.load();
-
-    const error = card().querySelector(".profile-error")?.textContent ?? "";
-    expect(error.length).toBe(200);
-    expect(error.endsWith("…")).toBe(true);
-  });
-
-  it("shows the empty state", async () => {
-    mockFetch(() => jsonResponse({ profiles: [] }));
-    const view = createView();
-
-    await view.load();
-
-    expect(node("profiles-list").hidden).toBe(true);
-    expect(node("profiles-empty").hidden).toBe(false);
-    expect(node("profiles-empty").textContent).toBe("Профилей пока нет.");
-  });
-
-  it("shows a list error", async () => {
-    mockFetch(() => jsonResponse({ detail: "nope" }, 500));
-    const view = createView();
-
-    await view.load();
-
-    expect(node("profiles-message").textContent).toBe("nope");
-  });
-
-  it("marks the list busy while loading", async () => {
-    const pending = deferred<Response>();
-    mockFetch(() => pending.promise);
-    const view = createView();
-
-    const loading = view.load();
-
-    expect(node("profiles-list").getAttribute("aria-busy")).toBe("true");
-    expect(node<HTMLButtonElement>("profiles-refresh").disabled).toBe(true);
-    expect(node("profiles-loading").hidden).toBe(false);
-    expect(node("profiles-loading").textContent).toBe("Загружаем профили…");
-
-    pending.resolve(jsonResponse({ profiles: [profile()] }));
-    await loading;
-
-    expect(node("profiles-list").hasAttribute("aria-busy")).toBe(false);
-    expect(node("profiles-loading").hidden).toBe(true);
-    expect(node<HTMLButtonElement>("profiles-refresh").disabled).toBe(false);
-  });
-
-  it("keeps the preview slot stable when the image fails", async () => {
-    mockFetch(() => jsonResponse({ profiles: [profile({ width: 544, height: 960 })] }));
-    const view = createView();
-    await view.load();
-
-    const media = mediaButton();
-    const image = media.querySelector<HTMLImageElement>(".profile-preview");
-    const fallback = media.querySelector<HTMLElement>(".profile-preview-fallback");
-    const slotStyle = media.getAttribute("style");
-    expect(fallback?.hidden).toBe(true);
-
-    image?.dispatchEvent(new Event("error"));
-
-    expect(image?.hidden).toBe(true);
-    expect(fallback?.hidden).toBe(false);
-    expect(fallback?.textContent).toBe("Нет превью");
-    expect(fallback?.getAttribute("role")).toBe("img");
-    expect(fallback?.title).toBe("Превью появится после первого ролика или поста.");
-    expect(fallback?.getAttribute("aria-label")).toBe(
-      "Превью появится после первого ролика или поста.",
-    );
-    expect(mediaButton()).toBe(media);
-    expect(media.getAttribute("style")).toBe(slotStyle);
-    expect(media.style.getPropertyValue("--preview-ratio")).toBe(String(544 / 960));
-    expect(image?.getAttribute("width")).toBe("544");
-    expect(image?.getAttribute("height")).toBe("960");
-  });
-
-  it("opens one shared dialog and restores focus on Escape", async () => {
-    mockFetch(() => jsonResponse({ profiles: [profile()] }));
-    const view = createView();
-    await view.load();
-
-    const button = mediaButton();
-    button.focus();
-    button.click();
-
-    expect(document.body.querySelectorAll(".profile-dialog")).toHaveLength(1);
-    expect(dialog().hidden).toBe(false);
-    expect(dialog().getAttribute("role")).toBe("dialog");
-    expect(dialog().getAttribute("aria-modal")).toBe("true");
-    expect(dialogTitle()).toBe("dating/profile_1 · 1080×1920");
-    const labelledBy = dialog().getAttribute("aria-labelledby") ?? "";
-    expect(dialog().querySelector(`#${labelledBy}`)?.textContent).toBe(
-      "dating/profile_1 · 1080×1920",
-    );
-    const image = dialog().querySelector<HTMLImageElement>(".profile-dialog-image");
-    expect(image?.getAttribute("src")).toContain(
-      "/api/v1/content/profiles/dating/profile_1/preview.png",
-    );
-    const close = dialog().querySelector<HTMLButtonElement>(".profile-dialog-close");
-    expect(close?.getAttribute("aria-label")).toBe("Закрыть превью");
-    expect(document.activeElement).toBe(close);
-
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
-
-    expect(dialog().hidden).toBe(true);
-    expect(document.activeElement).toBe(button);
-  });
-
-  it("keeps focus inside the dialog and restores it to the thumbnail", async () => {
-    mockFetch(() => jsonResponse({ profiles: [profile()] }));
-    const view = createView();
-    await view.load();
-
-    const trigger = mediaButton();
-    trigger.focus();
-    trigger.click();
-
-    const close = dialog().querySelector<HTMLButtonElement>(".profile-dialog-close");
-    expect(close).not.toBeNull();
-    expect(document.activeElement).toBe(close);
-
-    dialog().focus();
-    expect(document.activeElement).toBe(close);
-
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", cancelable: true }));
-    expect(document.activeElement).toBe(close);
-
-    node<HTMLButtonElement>("profiles-refresh").focus();
-    expect(document.activeElement).toBe(close);
-
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
-    expect(dialog().hidden).toBe(true);
-    expect(document.activeElement).toBe(trigger);
-  });
-
-  it("reuses the same dialog for every card", async () => {
-    mockFetch(() =>
-      jsonResponse({
-        profiles: [
-          profile(),
-          profile({ id: "dating/profile_2", name: "profile_2", width: 1080, height: 1080 }),
-        ],
-      }),
-    );
-    const view = createView();
-    await view.load();
-
-    const buttons = node("profiles-list").querySelectorAll<HTMLButtonElement>(".profile-media");
-    expect(document.body.querySelectorAll(".profile-dialog")).toHaveLength(1);
-
-    buttons[0]?.click();
-    expect(dialogTitle()).toContain("dating/profile_1");
-
-    dialog().querySelector<HTMLButtonElement>(".profile-dialog-close")?.click();
-    buttons[1]?.click();
-
-    expect(dialogTitle()).toBe("dating/profile_2 · 1080×1080");
-  });
-
-  it("closes on the backdrop and the close button but keeps clicks inside the panel", async () => {
-    mockFetch(() => jsonResponse({ profiles: [profile()] }));
-    const view = createView();
-    await view.load();
-
-    mediaButton().click();
-    dialog().querySelector<HTMLElement>(".profile-dialog-panel")?.click();
-    expect(dialog().hidden).toBe(false);
-
-    dialog().click();
-    expect(dialog().hidden).toBe(true);
-
-    mediaButton().click();
-    dialog().querySelector<HTMLButtonElement>(".profile-dialog-close")?.click();
-    expect(dialog().hidden).toBe(true);
-  });
-
-  it("saves the refill switch with a PATCH and updates the card", async () => {
-    const fetched = mockFetch((_input, init) =>
-      init?.method === "PATCH"
-        ? jsonResponse(profile({ refill_enabled: true }))
-        : jsonResponse({ profiles: [profile()] }),
-    );
-    const view = createView();
-    await view.load();
-
-    switchInput().click();
-    await flush();
-
-    const patch = fetched.calls().find((call) => call.init?.method === "PATCH");
-    expect(patch?.url).toBe("/api/v1/content/profiles/dating/profile_1");
-    expect(bodyOf(patch?.init)).toEqual({ refill_enabled: true });
-    expect(card().textContent).toContain("Сохранено.");
-    expect(card().getAttribute("aria-busy")).toBe("false");
-    expect(switchInput().getAttribute("aria-checked")).toBe("true");
-    expect(node<HTMLButtonElement>("profiles-refresh").disabled).toBe(false);
-  });
-
-  it("saves a numeric target and an empty target as null", async () => {
-    const fetched = mockFetch((_input, init) => {
-      if (init?.method === "PATCH") {
-        return jsonResponse(profile({ target_override: 15 }));
-      }
-      return jsonResponse({ profiles: [profile()] });
-    });
-    const view = createView();
-    await view.load();
-
-    targetInput().value = "15";
-    targetInput().dispatchEvent(new Event("change", { bubbles: true }));
-    await flush();
-
-    const firstPatch = fetched.calls().find((call) => call.init?.method === "PATCH");
-    expect(bodyOf(firstPatch?.init)).toEqual({ target: 15 });
-
-    targetInput().value = "";
-    targetInput().dispatchEvent(new Event("change", { bubbles: true }));
-    await flush();
-
-    const patches = fetched.calls().filter((call) => call.init?.method === "PATCH");
-    expect(bodyOf(patches[1]?.init)).toEqual({ target: null });
-  });
-
-  it("saves the refill threshold including zero", async () => {
-    const fetched = mockFetch((_input, init) =>
-      init?.method === "PATCH"
-        ? jsonResponse(profile({ refill_at_override: 0 }))
-        : jsonResponse({ profiles: [profile()] }),
-    );
-    const view = createView();
-    await view.load();
-
-    refillInput().value = "0";
-    refillInput().dispatchEvent(new Event("change", { bubbles: true }));
-    await flush();
-
-    const patch = fetched.calls().find((call) => call.init?.method === "PATCH");
-    expect(bodyOf(patch?.init)).toEqual({ refill_at: 0 });
-  });
-
-  it("saves the photo goal and updates the post counter", async () => {
-    const fetched = mockFetch((_input, init) =>
-      init?.method === "PATCH"
-        ? jsonResponse(profile({ photo_target: 40, photo_refill_at: 5 }))
-        : jsonResponse({ profiles: [profile({ photo_target: 30, photo_refill_at: 5 })] }),
-    );
-    const view = createView();
-    await view.load();
-
-    photoTargetInput().value = "40";
-    photoTargetInput().dispatchEvent(new Event("change", { bubbles: true }));
-
-    expect(card().getAttribute("aria-busy")).toBe("true");
-    expect(photoTargetInput().disabled).toBe(true);
-    expect(photoRefillInput().disabled).toBe(true);
-    await flush();
-
-    const patch = fetched.calls().find((call) => call.init?.method === "PATCH");
-    expect(bodyOf(patch?.init)).toEqual({ photo_target: 40 });
-    expect(card().textContent).toContain("Посты 14 / 40");
-    expect(photoTargetInput().value).toBe("40");
-    expect(photoRefillInput().disabled).toBe(false);
-    expect(card().getAttribute("aria-busy")).toBe("false");
-  });
-
-  it("saves the photo threshold when photo refill is on", async () => {
-    const fetched = mockFetch((_input, init) =>
-      init?.method === "PATCH"
-        ? jsonResponse(profile({ photo_target: 30, photo_refill_at: 6 }))
-        : jsonResponse({ profiles: [profile({ photo_target: 30, photo_refill_at: 5 })] }),
-    );
-    const view = createView();
-    await view.load();
-
-    photoRefillInput().value = "6";
-    photoRefillInput().dispatchEvent(new Event("change", { bubbles: true }));
-    await flush();
-
-    const patch = fetched.calls().find((call) => call.init?.method === "PATCH");
-    expect(bodyOf(patch?.init)).toEqual({ photo_refill_at: 6 });
-    expect(photoRefillInput().value).toBe("6");
-  });
-
-  it("turns photo refill off with a zero pair and disables the threshold", async () => {
-    const fetched = mockFetch((_input, init) =>
-      init?.method === "PATCH"
-        ? jsonResponse(profile({ photo_target: 0, photo_refill_at: 0 }))
-        : jsonResponse({ profiles: [profile({ photo_target: 30, photo_refill_at: 5 })] }),
-    );
-    const view = createView();
-    await view.load();
-    expect(photoRefillInput().disabled).toBe(false);
-
-    photoTargetInput().value = "0";
-    photoTargetInput().dispatchEvent(new Event("change", { bubbles: true }));
-
-    expect(photoRefillInput().value).toBe("0");
-    expect(photoRefillInput().disabled).toBe(true);
-    await flush();
-
-    const patch = fetched.calls().find((call) => call.init?.method === "PATCH");
-    expect(bodyOf(patch?.init)).toEqual({ photo_target: 0, photo_refill_at: 0 });
-    expect(card().textContent).toContain("Посты 14");
-    expect(card().textContent).not.toContain("Посты 14 /");
-    expect(card().textContent).toContain("добор постов выключен");
-    expect(card().querySelector<HTMLElement>(".profile-progress-posts")?.hidden).toBe(true);
-    expect(photoTargetInput().value).toBe("0");
-    expect(photoRefillInput().value).toBe("0");
-    expect(photoRefillInput().disabled).toBe(true);
-  });
-
-  it("enables the photo threshold when the goal returns above zero", async () => {
-    const fetched = mockFetch((_input, init) =>
-      init?.method === "PATCH"
-        ? jsonResponse(profile({ photo_target: 12, photo_refill_at: 0 }))
-        : jsonResponse({ profiles: [profile({ photo_target: 0, photo_refill_at: 0 })] }),
-    );
-    const view = createView();
-    await view.load();
-    expect(photoRefillInput().disabled).toBe(true);
-
-    photoTargetInput().value = "12";
-    photoTargetInput().dispatchEvent(new Event("change", { bubbles: true }));
-
-    expect(photoRefillInput().disabled).toBe(true);
-    await flush();
-
-    const patch = fetched.calls().find((call) => call.init?.method === "PATCH");
-    expect(bodyOf(patch?.init)).toEqual({ photo_target: 12 });
-    expect(card().textContent).toContain("Посты 14 / 12");
-    expect(photoRefillInput().disabled).toBe(false);
-  });
-
-  it("rejects an empty or out-of-range photo goal without a request", async () => {
-    const fetched = mockFetch(() => jsonResponse({ profiles: [profile()] }));
-    const view = createView();
-    await view.load();
-
-    photoTargetInput().value = "1.5";
-    photoTargetInput().dispatchEvent(new Event("change", { bubbles: true }));
-    await flush();
-
-    expect(card().textContent).toContain("Введите целое число от 0 до 1000.");
-    expect(photoTargetInput().value).toBe("30");
-
-    photoTargetInput().value = "";
-    photoTargetInput().dispatchEvent(new Event("change", { bubbles: true }));
-    await flush();
-
-    expect(photoTargetInput().value).toBe("30");
-    expect(fetched.calls().filter((call) => call.init?.method === "PATCH")).toHaveLength(0);
-  });
-
-  it("shows a 422 on photo save and restores the threshold", async () => {
-    mockFetch((_input, init) =>
-      init?.method === "PATCH"
-        ? jsonResponse({ detail: "photo_refill_at должен быть меньше photo_target: 10 >= 10" }, 422)
-        : jsonResponse({ profiles: [profile({ photo_target: 10, photo_refill_at: 5 })] }),
-    );
-    const view = createView();
-    await view.load();
-
-    photoRefillInput().value = "10";
-    photoRefillInput().dispatchEvent(new Event("change", { bubbles: true }));
-    await flush();
-
-    expect(card().textContent).toContain("Не сохранено:");
-    expect(card().textContent).toContain("photo_refill_at должен быть меньше photo_target");
-    expect(photoRefillInput().value).toBe("5");
-    expect(photoRefillInput().disabled).toBe(false);
-    expect(card().getAttribute("aria-busy")).toBe("false");
-  });
-
-  it("reports a 500 on photo save and restores the goal", async () => {
-    mockFetch((_input, init) =>
-      init?.method === "PATCH"
-        ? jsonResponse({ detail: "profile settings write failed" }, 500)
-        : jsonResponse({ profiles: [profile()] }),
-    );
-    const view = createView();
-    await view.load();
-
-    photoTargetInput().value = "70";
-    photoTargetInput().dispatchEvent(new Event("change", { bubbles: true }));
-    await flush();
-
-    expect(card().textContent).toContain("Не сохранено: profile settings write failed");
-    expect(photoTargetInput().value).toBe("30");
-    expect(card().getAttribute("aria-busy")).toBe("false");
-  });
-
-  it("rejects a non-integer or out-of-range number without a request", async () => {
-    const fetched = mockFetch(() => jsonResponse({ profiles: [profile()] }));
-    const view = createView();
-    await view.load();
-
-    targetInput().value = "1.5";
-    targetInput().dispatchEvent(new Event("change", { bubbles: true }));
-    await flush();
-
-    expect(card().textContent).toContain("Введите целое число от 1 до 1000.");
-    expect(targetInput().value).toBe("12");
-    expect(fetched.calls().filter((call) => call.init?.method === "PATCH")).toHaveLength(0);
-  });
-
-  it("reports a missing profile on PATCH", async () => {
-    mockFetch((_input, init) =>
-      init?.method === "PATCH"
-        ? jsonResponse({ detail: "gone" }, 404)
-        : jsonResponse({ profiles: [profile()] }),
-    );
-    const view = createView();
-    await view.load();
-
-    switchInput().click();
-    await flush();
-
-    expect(card().textContent).toContain("Профиль не найден");
-    expect(card().querySelector(".profile-status")?.classList.contains("is-error")).toBe(true);
-  });
-
-  it("reports a PATCH failure with the server detail", async () => {
-    mockFetch((_input, init) =>
-      init?.method === "PATCH"
-        ? jsonResponse({ detail: "conflict" }, 409)
-        : jsonResponse({ profiles: [profile()] }),
-    );
-    const view = createView();
-    await view.load();
-
-    switchInput().click();
-    await flush();
-
-    expect(card().textContent).toContain("Не сохранено:");
-    expect(card().textContent).toContain(
-      "Сборка уже идёт. Дождитесь её завершения и попробуйте снова.",
-    );
-  });
-
-  it("locks the card and the refresh during a pending PATCH", async () => {
-    const pending = deferred<Response>();
-    let listCalls = 0;
-    mockFetch((_input, init) => {
-      if (init?.method === "PATCH") {
-        return pending.promise;
-      }
-      listCalls += 1;
-      return jsonResponse({ profiles: [profile()] });
-    });
-    const view = createView();
-    await view.load();
-
-    switchInput().click();
-    expect(node<HTMLButtonElement>("profiles-refresh").disabled).toBe(true);
-    expect(switchInput().disabled).toBe(true);
-    expect(photoTargetInput().disabled).toBe(true);
-    expect(photoRefillInput().disabled).toBe(true);
-    expect(card().getAttribute("aria-busy")).toBe("true");
-
-    await view.load();
-    expect(listCalls).toBe(1);
-
-    pending.resolve(jsonResponse(profile({ refill_enabled: true })));
-    await flush();
-
-    expect(node<HTMLButtonElement>("profiles-refresh").disabled).toBe(false);
-    expect(switchInput().disabled).toBe(false);
-    expect(photoTargetInput().disabled).toBe(false);
-    expect(photoRefillInput().disabled).toBe(false);
-    expect(card().getAttribute("aria-busy")).toBe("false");
-  });
-
-  it("ignores a list response that started before a PATCH", async () => {
-    const staleList = deferred<Response>();
-    let listCalls = 0;
-    mockFetch((_input, init) => {
-      if (init?.method === "PATCH") {
-        return jsonResponse(profile({ stock: 7 }));
-      }
-      listCalls += 1;
-      return listCalls === 1 ? jsonResponse({ profiles: [profile()] }) : staleList.promise;
-    });
-    const view = createView();
-    await view.load();
-
-    const loading = view.load();
-    switchInput().click();
-    await flush();
-    staleList.resolve(jsonResponse({ profiles: [profile({ stock: 99 })] }));
-    await loading;
-
-    expect(card().textContent).toContain("Shorts 7 / 10");
-    expect(card().textContent).not.toContain("Shorts 99");
-  });
-
-  it("reloads from the refresh button", async () => {
-    const fetched = mockFetch(() => jsonResponse({ profiles: [profile()] }));
-    const view = createView();
-    await view.load();
-
-    node<HTMLButtonElement>("profiles-refresh").click();
-    await flush();
-
-    expect(fetched.calls().filter((call) => call.init?.method !== "PATCH")).toHaveLength(2);
-  });
-});
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void;
@@ -873,3 +213,305 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   });
   return { promise, resolve };
 }
+
+beforeEach(() => {
+  resetPage();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
+describe("createProfilesView", () => {
+  it("renders rows without previews and with source flags and counters", async () => {
+    mockFetch(handler());
+
+    await loadView();
+
+    const row = node("profiles-list").querySelector(".profile-row");
+    expect(row).not.toBeNull();
+    expect(row?.textContent).toContain("dating/profile_1");
+    expect(row?.textContent).toContain("Русский · dating");
+    expect(row?.textContent).toContain("музыка");
+    expect(row?.textContent).toContain("544×960");
+    expect(row?.textContent).toContain("видео");
+    expect(row?.textContent).toContain("фото");
+    expect(row?.textContent).toContain("8 / 20");
+    expect(row?.querySelector(".profile-preview")).toBeNull();
+    expect(refillButton().getAttribute("aria-label")).toBe("Включить добор dating/profile_1");
+    expect(gear().getAttribute("aria-label")).toBe("Открыть профиль dating/profile_1");
+  });
+
+  it("patches refill from the list, disables the button while saving and reports the result", async () => {
+    const pending = deferred<Response>();
+    const fetched = mockFetch((input, init) => {
+      if (init?.method === "PATCH") {
+        return pending.promise;
+      }
+      return handler()(input, init);
+    });
+
+    await loadView();
+    refillButton().click();
+    await flush();
+
+    const patch = fetched.calls().find((call) => call.init?.method === "PATCH");
+    expect(patch?.url).toBe("/api/v1/content/profiles/dating/profile_1");
+    expect(bodyOf(patch?.init)).toEqual({ refill_enabled: true });
+    expect(refillButton().disabled).toBe(true);
+
+    pending.resolve(jsonResponse(summary({ refill_enabled: true })));
+    await flush();
+
+    expect(refillButton().disabled).toBe(false);
+    expect(refillButton().getAttribute("aria-label")).toBe("Пауза добора dating/profile_1");
+  });
+
+  it("keeps a refill error visible inline", async () => {
+    mockFetch((input, init) =>
+      init?.method === "PATCH"
+        ? jsonResponse({ detail: "настройки недоступны" }, 500)
+        : handler()(input, init),
+    );
+
+    await loadView();
+    refillButton().click();
+    await flush();
+
+    const status = node("profiles-list").querySelector<HTMLElement>(".profile-row-status");
+    expect(status?.textContent).toBe("настройки недоступны");
+    expect(status?.classList.contains("is-error")).toBe(true);
+    expect(refillButton().disabled).toBe(false);
+  });
+
+  it("opens the detail with meta, output tabs and the recipe chips", async () => {
+    mockFetch(handler());
+
+    await openProfile();
+
+    expect(node("profiles-list-view").hidden).toBe(true);
+    expect(node("profile-view").hidden).toBe(false);
+    expect(node("profile-view-title").textContent).toBe("dating/profile_1");
+    expect(node("profile-view-meta").textContent).toBe("Русский · dating · 544×960 · видео/фото");
+    expect(node("profile-tab-video").textContent).toBe("Видео · 8");
+    expect(node("profile-tab-photo").textContent).toBe("Фото · 14");
+    expect(node("profile-tab-settings").textContent).toBe("Настройки");
+    expect(node("profile-panel-video").hidden).toBe(false);
+    expect(chipTexts(node("profile-video"))).toEqual([
+      "vast",
+      "проверка кадров",
+      "текст + музыка",
+      "проверка mp4",
+      "сток",
+      "card",
+      "рендер",
+      "проверка фото",
+      "сток",
+    ]);
+    expect(cardBlock().querySelector(".prompt-card-values")?.textContent).toBe(
+      "возраст: 30 · волосы: dark brown · место: cafe · сезон: summer · pose_text=standing",
+    );
+  });
+
+  it("shows unknown checks and producers without inventing internal steps", async () => {
+    mockFetch(
+      handler({
+        detail: {
+          ...detail(),
+          production: [
+            {
+              producer: "custom",
+              type: "video",
+              checks: [{ name: "custom-check", stage: "source" }],
+            },
+          ],
+        },
+      }),
+    );
+
+    await openProfile();
+
+    expect(chipTexts(node("profile-video"))).toEqual(["custom", "custom-check", "сток"]);
+  });
+
+  it("toggles refill from the profile header and syncs the list row", async () => {
+    const fetched = mockFetch(handler());
+    await openProfile();
+    const button = node<HTMLButtonElement>("profile-view-refill");
+
+    expect(button.getAttribute("aria-label")).toBe("Включить добор dating/profile_1");
+    button.click();
+    await flush();
+
+    const patch = fetched.calls().find((call) => call.init?.method === "PATCH");
+    expect(bodyOf(patch?.init)).toEqual({ refill_enabled: true });
+    expect(node<HTMLButtonElement>("profile-view-refill").getAttribute("aria-label")).toBe(
+      "Пауза добора dating/profile_1",
+    );
+    expect(node("profiles-list").querySelector(".profile-refill")?.getAttribute("aria-label")).toBe(
+      "Пауза добора dating/profile_1",
+    );
+  });
+
+  it("autosaves the template after 500 ms", async () => {
+    vi.useFakeTimers();
+    const fetched = mockFetch(handler());
+    await openProfile();
+
+    const textarea = templateTextarea();
+    textarea.value = "Новый шаблон";
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(499);
+    expect(fetched.calls().some((call) => call.init?.method === "PUT")).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await flush();
+
+    const put = fetched.calls().find((call) => call.url.endsWith("/prompts/template"));
+    expect(put?.init?.method).toBe("PUT");
+    expect(bodyOf(put?.init)).toEqual({ text: "Новый шаблон" });
+    expect(node("profile-video").querySelector(".prompt-status")?.textContent).toBe("Сохранено.");
+  });
+
+  it("saves a card override and resets it when the text is cleared", async () => {
+    vi.useFakeTimers();
+    const fetched = mockFetch(handler());
+    await openProfile();
+
+    const textarea = cardTextarea();
+    textarea.value = "Мой промт";
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+
+    const override = fetched.calls().find((call) => call.url.endsWith("/prompts/cards/c01"));
+    expect(bodyOf(override?.init)).toEqual({ text: "Мой промт" });
+    expect(cardBlock().textContent).toContain("Свой промт");
+
+    textarea.value = "   ";
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+
+    const reset = fetched
+      .calls()
+      .filter((call) => call.url.endsWith("/prompts/cards/c01"))
+      .at(-1);
+    expect(bodyOf(reset?.init)).toEqual({ text: "   " });
+    expect(textarea.value).toBe("Женщина 30 лет");
+    expect(cardBlock().textContent).toContain("Из шаблона");
+  });
+
+  it("saves the photo prompt from the photo tab", async () => {
+    vi.useFakeTimers();
+    const fetched = mockFetch(handler());
+    await openProfile();
+
+    node<HTMLButtonElement>("profile-tab-photo").click();
+    const textarea = node("profile-photo").querySelector<HTMLTextAreaElement>(".prompt-text");
+    expect(textarea?.value).toBe("Голос: спокойный");
+
+    if (!textarea) {
+      throw new Error("photo textarea missing");
+    }
+    textarea.value = "Новый голос";
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+
+    const put = fetched.calls().find((call) => call.url.endsWith("/prompts/text"));
+    expect(bodyOf(put?.init)).toEqual({ text: "Новый голос" });
+  });
+
+  it("shows that a photo profile has no text prompt", async () => {
+    mockFetch(handler({ prompts: prompts({ photo: null }) }));
+
+    await openProfile();
+    node<HTMLButtonElement>("profile-tab-photo").click();
+
+    expect(node("profile-photo").textContent).toContain("Промтов нет.");
+    expect(node("profile-photo").querySelector("textarea")).toBeNull();
+  });
+
+  it("renders read-only settings and patches the editable refill fields", async () => {
+    const fetched = mockFetch(handler());
+    await openProfile();
+    node<HTMLButtonElement>("profile-tab-settings").click();
+
+    expect(node("profile-settings-video").textContent).toContain("Ширина");
+    expect(node("profile-settings-video").textContent).toContain("544");
+    expect(node("profile-settings-rent").textContent).toContain("RTX 4090");
+    expect(node("profile-settings-text").textContent).toContain("arialbd.ttf");
+    expect(node("profile-settings-delivery").textContent).toContain("generated");
+    expect(node<HTMLInputElement>("profile-target").placeholder).toBe("20");
+    expect(node<HTMLInputElement>("profile-photo-target").value).toBe("30");
+
+    const target = node<HTMLInputElement>("profile-target");
+    target.value = "25";
+    target.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+
+    const patch = fetched.calls().find((call) => call.init?.method === "PATCH");
+    expect(bodyOf(patch?.init)).toMatchObject({ target: 25 });
+    expect(node("profile-settings-status").textContent).toBe("Сохранено.");
+  });
+
+  it("shows cards in the photo tab when the profile has no video output", async () => {
+    mockFetch(handler({ detail: detail({ outputs: ["photo"] }) }));
+
+    await openProfile();
+
+    expect(node("profile-tab-video").hidden).toBe(true);
+    expect(node<HTMLButtonElement>("profile-tab-photo").getAttribute("aria-pressed")).toBe("true");
+    expect(node("profile-panel-video").hidden).toBe(true);
+    expect(node("profile-panel-photo").hidden).toBe(false);
+    expect(node("profile-photo").querySelector(".prompt-card")).not.toBeNull();
+  });
+
+  it("opens the lightbox, closes it on Escape and restores focus", async () => {
+    mockFetch(handler());
+    await openProfile();
+
+    const preview = node<HTMLButtonElement>("profile-preview");
+    preview.click();
+
+    const dialog = node<HTMLDialogElement>("profile-lightbox");
+    expect(dialog.open).toBe(true);
+    expect(node("profile-lightbox-image").getAttribute("src")).toBe(
+      "/api/v1/content/profiles/dating/profile_1/preview",
+    );
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+
+    expect(dialog.open).toBe(false);
+    expect(document.activeElement).toBe(preview);
+  });
+
+  it("closes the lightbox from the close button and the backdrop", async () => {
+    mockFetch(handler());
+    await openProfile();
+    const preview = node<HTMLButtonElement>("profile-preview");
+    const dialog = node<HTMLDialogElement>("profile-lightbox");
+
+    preview.click();
+    node<HTMLButtonElement>("profile-lightbox-close").click();
+    expect(dialog.open).toBe(false);
+
+    preview.click();
+    dialog.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(dialog.open).toBe(false);
+  });
+
+  it("returns from the profile view to the list and restores the gear focus", async () => {
+    mockFetch(handler());
+    await openProfile();
+    const trigger = gear();
+
+    node<HTMLButtonElement>("profile-back").click();
+
+    expect(node("profile-view").hidden).toBe(true);
+    expect(node("profiles-list-view").hidden).toBe(false);
+    expect(document.activeElement).toBe(trigger);
+  });
+});

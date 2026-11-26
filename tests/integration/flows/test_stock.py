@@ -6,12 +6,13 @@ from pathlib import Path
 import pytest
 from loguru import logger
 from tests.unit.common.delivery_helpers import add_title
+from tests.unit.common.profile_helpers import add_profile, add_profile_video
 
 from content_factory.db.connection import connect
 from content_factory.db.runtime_state import save_state
 from content_factory.schemas.config.runtime import LanguageConfig
 from content_factory.schemas.state.state import RuntimeState
-from content_factory.schemas.stock.stock import LanguageStock, StockSnapshot
+from content_factory.schemas.stock.stock import GeneralStock, LanguageStock, StockSnapshot
 from content_factory.services.stock import language_files, stock_files
 from content_factory.services.stock.service import collect_stock, count_stock
 
@@ -161,6 +162,29 @@ def test_collect_stock_reports_enabled_languages_and_state(tmp_path: Path) -> No
     assert loaded.captcha_streak == 2
     assert loaded.zero_runs == 1
     assert loaded.captcha_blocked_until == state.captcha_blocked_until
+
+
+def test_collect_stock_reports_general_videos_only(tmp_path: Path) -> None:
+    _touch(tmp_path / "content" / "general" / "ru" / "a.mp4", b"12")
+    _touch(tmp_path / "content" / "ru" / "b.mp4", b"345")
+    _touch(tmp_path / "content" / "general" / "ru" / "post.jpg", b"photo")
+    _touch(tmp_path / "content" / "general" / "de" / "d.mp4", b"disabled")
+    add_profile(tmp_path)
+    add_profile_video(tmp_path, filename="dating_profile_1_run_001.mp4")
+
+    snapshot, _ = collect_stock(tmp_path, _languages(), now=_MOMENT)
+
+    assert snapshot.general == (
+        GeneralStock(language="en", stock=0, target=5),
+        GeneralStock(language="ru", stock=2, target=10),
+    )
+    assert [row.language for row in snapshot.general] == [
+        row.language for row in snapshot.languages
+    ]
+    assert [(row.language, row.stock) for row in snapshot.languages] == [
+        ("en", 0),
+        ("ru", 3),
+    ]
 
 
 def test_collect_stock_reports_titles_and_disk_usage(tmp_path: Path) -> None:

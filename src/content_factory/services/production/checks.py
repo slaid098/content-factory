@@ -1,4 +1,4 @@
-"""Layer adapters of the existing media, Clef and image checks.
+"""Layer adapters of the existing mp4, Clef and image checks.
 
 A producer keeps rejecting an item before publication, so these adapters are
 the pipeline gate on the produced artifact: a producer that could not build an
@@ -43,7 +43,7 @@ class ArtifactCheck:
         return CheckResult(reason is None, reason)
 
 
-def media_reason(artifact: Artifact) -> str | None:
+def mp4_reason(artifact: Artifact) -> str | None:
     """Probe the final mp4 and return the first defect reason."""
     seconds = _number(artifact.meta.get("expected_seconds"))
     if seconds is None:
@@ -101,4 +101,4 @@ def _integer(value: object) -> int | None:
     return value if value > 0 else None
 
 
-__all__ = ["ArtifactCheck", "image_reason", "media_reason", "source_reason"]
+__all__ = ["ArtifactCheck", "image_reason", "mp4_reason", "source_reason"]
