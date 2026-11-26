@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from tests.unit.common.profile_helpers import add_profile, add_profile_video
 
 from content_factory.config.runtime import default_config
 from content_factory.config.settings import Settings, SupplierSettings
@@ -120,9 +121,12 @@ def _run(
         connection.close()
 
 
-def _content(tmp_path: Path, language: str, count: int) -> None:
+def _content(tmp_path: Path, language: str, count: int, niche: str | None = None) -> None:
+    directory = tmp_path / "app_data" / "content"
+    if niche is not None:
+        directory /= niche
     for index in range(count):
-        _touch(tmp_path / "app_data" / "content" / language / f"{index}.mp4")
+        _touch(directory / language / f"{index}.mp4")
 
 
 def _count_rows(tmp_path: Path) -> int:
@@ -195,6 +199,42 @@ def test_enough_stock_skips_production_and_keeps_state(
     assert alerts.kinds == []
     assert loaded.last_production_at is None
     assert _count_rows(tmp_path) == 0
+
+
+def test_low_general_stock_produces_despite_profile_stock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    produce, _ = _patch(monkeypatch, ProduceResult({"ru": 1}, 1, StopReason.TARGET_REACHED))
+    data_dir = tmp_path / "app_data"
+    add_profile(data_dir)
+    add_profile_video(data_dir)
+    _content(tmp_path, "ru", 99, niche="general")
+    runtime = _runtime(languages={"ru": LanguageConfig(enabled=True, stock_target=100)})
+
+    code, _ = _run(tmp_path, runtime=runtime)
+
+    assert code == "produced"
+    assert produce.calls == [{"ru": 1}]
+
+
+def test_enough_general_stock_skips_production_despite_profile_stock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    produce, alerts = _patch(monkeypatch, ProduceResult({}, 0, StopReason.ENOUGH_STOCK))
+    data_dir = tmp_path / "app_data"
+    add_profile(data_dir)
+    add_profile_video(data_dir)
+    _content(tmp_path, "ru", 100, niche="general")
+    runtime = _runtime(languages={"ru": LanguageConfig(enabled=True, stock_target=100)})
+
+    code, loaded = _run(tmp_path, runtime=runtime)
+
+    assert code == "enough_stock"
+    assert produce.calls == []
+    assert alerts.kinds == []
+    assert loaded.last_production_at is None
 
 
 def test_active_captcha_pause_skips_production(

@@ -37,7 +37,7 @@ from content_factory.schemas.state.state import RuntimeState
 from content_factory.schemas.supplier.results import ProduceResult, StopReason
 from content_factory.services.notify.service import send_critical
 from content_factory.services.planner.service import plan_production
-from content_factory.services.stock.service import count_stock
+from content_factory.services.stock.service import count_general_stock
 from content_factory.services.supplier.service import produce
 
 _ZERO_RUNS_ALERT = 3
@@ -81,7 +81,7 @@ def _tick(
         )
         return "idle"
 
-    counts = count_stock(settings.data_dir / CONTENT_DIR, runtime.languages)
+    counts = count_general_stock(settings.data_dir / CONTENT_DIR, runtime.languages)
     plan = plan_production(counts, runtime.languages, runtime.run.batch)
     if not plan:
         logger.bind(outcome="enough_stock", counts=counts).info("Остатки на цели")

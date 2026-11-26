@@ -14,7 +14,7 @@ from content_factory.schemas.config.runtime import LanguageConfig
 from content_factory.schemas.state.state import RuntimeState
 from content_factory.schemas.stock.stock import GeneralStock, LanguageStock, StockSnapshot
 from content_factory.services.stock import language_files, stock_files
-from content_factory.services.stock.service import collect_stock, count_stock
+from content_factory.services.stock.service import collect_stock, count_general_stock
 
 _MOMENT = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
 
@@ -35,21 +35,21 @@ def test_counts_only_mp4_files_of_each_language(tmp_path: Path) -> None:
     _touch(content_dir / "ru" / "nested" / "inside.mp4")
     (content_dir / "ru" / "directory.mp4").mkdir()
 
-    counts = count_stock(content_dir, ["ru", "en"])
+    counts = count_general_stock(content_dir, ["ru", "en"])
 
     assert counts == {"ru": 2, "en": 0}
 
 
-def test_counts_files_of_two_niches_as_one_language(tmp_path: Path) -> None:
+def test_counts_only_general_videos_of_each_language(tmp_path: Path) -> None:
     content_dir = tmp_path / "content"
-    _touch(content_dir / "ru" / "flat.mp4")
-    _touch(content_dir / "general" / "ru" / "supplier.mp4")
-    _touch(content_dir / "dating" / "ru" / "dating_profile_2_run_001.mp4")
-    _touch(content_dir / "dating" / "en" / "english.mp4")
+    _touch(content_dir / "general" / "ru" / "a.mp4")
+    _touch(content_dir / "general" / "ru" / "b.mp4")
+    add_profile(tmp_path)
+    add_profile_video(tmp_path, filename="dating_profile_1_run_001.mp4")
 
-    counts = count_stock(content_dir, ["ru", "en", "de"])
+    counts = count_general_stock(content_dir, ["ru", "en", "de"])
 
-    assert counts == {"ru": 3, "en": 1, "de": 0}
+    assert counts == {"ru": 2, "en": 0, "de": 0}
 
 
 def test_mp4_files_are_regular_and_sorted_by_name(tmp_path: Path) -> None:
@@ -67,13 +67,13 @@ def test_mp4_files_are_regular_and_sorted_by_name(tmp_path: Path) -> None:
 
 
 def test_missing_language_directory_counts_as_zero(tmp_path: Path) -> None:
-    assert count_stock(tmp_path / "missing", ["ru"]) == {"ru": 0}
+    assert count_general_stock(tmp_path / "missing", ["ru"]) == {"ru": 0}
 
 
 def test_empty_language_directory_counts_as_zero(tmp_path: Path) -> None:
     (tmp_path / "content" / "ru").mkdir(parents=True)
 
-    assert count_stock(tmp_path / "content", ["ru"]) == {"ru": 0}
+    assert count_general_stock(tmp_path / "content", ["ru"]) == {"ru": 0}
 
 
 def test_snapshot_keeps_language_positions() -> None:
@@ -351,7 +351,7 @@ def test_stock_counts_only_videos_and_ignores_photos(tmp_path: Path) -> None:
     _touch(tmp_path / "content" / "dating" / "ru" / "c.png", b"more-photo")
     add_title(tmp_path / "db" / "db.sqlite3", "a", "Название видео")
 
-    assert count_stock(tmp_path / "content", ["ru"]) == {"ru": 1}
+    assert count_general_stock(tmp_path / "content", ["ru"]) == {"ru": 1}
 
     snapshot, _ = collect_stock(
         tmp_path,
