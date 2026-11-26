@@ -33,6 +33,7 @@ ALL_TABLES = (
     "downloads",
     "source_items",
     "source_cursors",
+    "trusted_devices",
 )
 
 

@@ -69,6 +69,26 @@ npm run test
 Playwright (`npm run test:e2e`) гоняется в CI; локально — только если
 установлен Chromium.
 
+## Доступ
+
+Партнёр попадает на `content.slaid098.dev` по одноразовой ссылке на
+устройство, а не по IP-списку NPM. Ссылки выпускает CLI внутри контейнера
+`api`:
+
+```bash
+cd /root/dockers/content-factory
+docker compose exec -T api python scripts/device_access.py issue --label phone
+docker compose exec -T api python scripts/device_access.py list
+docker compose exec -T api python scripts/device_access.py revoke --id <id>
+```
+
+Ссылка одноразовая: после первого открытия URL мёртв, а cookie
+`device_token` host-only живёт до `expires_at` устройства. Без действующей
+cookie API отвечает JSON 403, страницы — HTML 403. Выключить gate можно
+только для отладки: `CONTENT_FACTORY_DEVICE_GATE_ENABLED=false`; тесты
+отключают его фикстурой `tests/conftest.py`. Подробности — `deploy/README.md`
+§12.
+
 ## Генератор
 
 - Аренда серверов: поднимать сразу несколько инстансов (например, три) и

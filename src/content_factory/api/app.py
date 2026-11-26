@@ -9,6 +9,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from content_factory.api.device_gate import DeviceGateMiddleware
+from content_factory.api.device_join import join_router
 from content_factory.api.ui_page import UI_DIR, ui_router
 from content_factory.api.v1.routes.content import content_router
 from content_factory.api.v1.routes.profiles import profiles_router
@@ -45,11 +47,13 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     """Build the FastAPI application."""
     app = FastAPI(title="content-factory", version="0.1.0", lifespan=_lifespan)
+    app.add_middleware(DeviceGateMiddleware)
     app.include_router(stock_router, prefix="/api/v1", tags=["stock"])
     app.include_router(content_router, prefix="/api/v1", tags=["content"])
     app.include_router(profiles_router, prefix="/api/v1", tags=["content"])
     app.include_router(queries_router, prefix="/api/v1", tags=["content"])
     app.include_router(settings_router, prefix="/api/v1", tags=["content"])
+    app.include_router(join_router)
     app.include_router(ui_router)
     app.mount("/ui", StaticFiles(directory=UI_DIR, check_dir=False), name="ui")
     return app

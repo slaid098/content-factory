@@ -216,6 +216,19 @@ check_id = "dead_module"
 path = "src/content_factory/db/migrations/0003_photo_refill.py"
 reason = "миграция подключается по строковому имени из реестра: имя начинается с цифры"
 
+[[tool.audit.ignore]]
+check_id = "dead_module"
+path = "src/content_factory/db/migrations/0004_trusted_devices.py"
+reason = "миграция подключается по строковому имени из реестра: имя начинается с цифры"
+
+# Контракт issue #145 фиксирует четыре типа доступа в одном модуле
+# schemas/device_trust/models.py. Это неизменяемые DTO без логики; разносить
+# их по файлам ради формы проверки значило бы разойтись с контрактом.
+[[tool.audit.ignore]]
+check_id = "one_public_class_per_file"
+path = "src/content_factory/schemas/device_trust/models.py"
+reason = "issue #145 фиксирует DeviceStatus и три DTO в одном модуле"
+
 # Очередь уникализатора — инфраструктурный адаптер: connect(), репозиторий
 # источников и обработка DatabaseError. ORM-моделей и обхода слоя здесь нет;
 # сервисного entry service.py у капсулы нет, вход — CLI main.py.

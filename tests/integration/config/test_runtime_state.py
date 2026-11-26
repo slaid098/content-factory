@@ -173,7 +173,7 @@ def test_save_state_keeps_single_row(connection: Connection) -> None:
 def test_migration_records_its_version_once(connection: Connection) -> None:
     versions = connection.execute("SELECT version FROM schema_migrations").fetchall()
 
-    assert [row[0] for row in versions] == ["0001", "0002", "0003"]
+    assert [row[0] for row in versions] == ["0001", "0002", "0003", "0004"]
 
 
 def test_empty_state_has_zero_counters() -> None:
