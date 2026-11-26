@@ -44,6 +44,8 @@ test("renders compact profile cards with an uncropped preview and a dialog", asy
     photo_stock: 14,
     target: 20,
     refill_at: 5,
+    photo_target: 30,
+    photo_refill_at: 5,
     refill_enabled: false,
     target_override: null,
     refill_at_override: null,
@@ -61,11 +63,25 @@ test("renders compact profile cards with an uncropped preview and a dialog", asy
   await page.goto("/");
   await page.getByRole("tab", { name: "Профили" }).click();
 
+  const hint = page.locator("#panel-profiles .hint");
+  await expect(hint).toContainText("Shorts — добор роликов, посты — добор постов");
+  await expect(hint).toContainText("0 в цели постов выключает добор");
+  await expect(hint).toContainText(
+    "пустое поле цели или порога роликов означает глобальное значение",
+  );
+  await expect(hint).toContainText("запуск партии остаётся за фоновым тиком");
+
   const card = page.locator(".profile-card").first();
   await expect(card).toBeVisible();
   await expect(card).toContainText("Shorts 8 / 20");
-  await expect(card).toContainText("Посты 14");
-  await expect(card).toContainText("только учёт, вне добора");
+  await expect(card).toContainText("Посты 14 / 30");
+  await expect(card).toContainText("Добор");
+  await expect(card).toContainText("ролики и посты");
+  await expect(card.getByRole("group", { name: "Ролики" })).toBeVisible();
+  await expect(card.getByRole("group", { name: "Посты" })).toBeVisible();
+  await expect(card.getByLabel("Цель постов")).toHaveValue("30");
+  await expect(card.getByLabel("Порог добора постов")).toHaveValue("5");
+  await expect(card.getByLabel("Порог добора постов")).toBeEnabled();
 
   const image = card.locator(".profile-preview");
   await expect
@@ -98,6 +114,112 @@ test("renders compact profile cards with an uncropped preview and a dialog", asy
   await expect(button).toBeFocused();
 });
 
+test("disables the photo threshold when the photo goal is zero", async ({ page }) => {
+  const profile = {
+    id: "dating/profile_1",
+    category: "dating",
+    name: "profile_1",
+    language: "ru",
+    niche: "dating",
+    width: 544,
+    height: 960,
+    audio: true,
+    stock: 8,
+    photo_stock: 14,
+    target: 20,
+    refill_at: 5,
+    photo_target: 0,
+    photo_refill_at: 0,
+    refill_enabled: false,
+    target_override: null,
+    refill_at_override: null,
+    preview_url: "",
+    last_run: null,
+  };
+
+  await page.route(/\/api\/v1\/content\/profiles$/, (route) =>
+    route.fulfill({ json: { profiles: [profile] } }),
+  );
+
+  await page.goto("/");
+  await page.getByRole("tab", { name: "Профили" }).click();
+
+  const card = page.locator(".profile-card").first();
+  await expect(card).toBeVisible();
+  await expect(card).toContainText("Посты 14");
+  await expect(card).not.toContainText("Посты 14 /");
+  await expect(card).toContainText("добор постов выключен");
+  await expect(card.getByText("0 — выключить добор постов")).toBeVisible();
+  await expect(card.getByRole("group", { name: "Ролики" })).toBeVisible();
+  await expect(card.getByRole("group", { name: "Посты" })).toBeVisible();
+  await expect(card.getByLabel("Цель постов")).toHaveValue("0");
+  const threshold = card.getByLabel("Порог добора постов");
+  await expect(threshold).toHaveValue("0");
+  await expect(threshold).toBeDisabled();
+
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  expect(overflow).toBeLessThanOrEqual(1);
+});
+
+test("fits photo settings in a narrow card with a horizontal preview", async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  const profile = {
+    id: "dating/profile_1",
+    category: "dating",
+    name: "profile_1",
+    language: "ru",
+    niche: "dating",
+    width: 1280,
+    height: 720,
+    audio: true,
+    stock: 8,
+    photo_stock: 14,
+    target: 20,
+    refill_at: 5,
+    photo_target: 30,
+    photo_refill_at: 5,
+    refill_enabled: false,
+    target_override: null,
+    refill_at_override: null,
+    preview_url: "",
+    last_run: null,
+  };
+
+  await page.route(/\/api\/v1\/content\/profiles$/, (route) =>
+    route.fulfill({ json: { profiles: [profile] } }),
+  );
+
+  await page.goto("/");
+  await page.getByRole("tab", { name: "Профили" }).click();
+
+  const card = page.locator(".profile-card").first();
+  await expect(card).toBeVisible();
+  await expect(card.getByLabel("Цель постов")).toBeVisible();
+  await expect(card.getByLabel("Порог добора постов")).toBeVisible();
+
+  const media = await card.locator(".profile-media").boundingBox();
+  expect(media).not.toBeNull();
+  expect(media?.width).toBeCloseTo(96, 0);
+
+  const escapes = await card.evaluate((node) => {
+    const cardBox = node.getBoundingClientRect();
+    return Array.from(
+      node.querySelectorAll("fieldset, .profile-groups, .profile-fields, .profile-field"),
+    ).some((child) => {
+      const box = child.getBoundingClientRect();
+      return box.left < cardBox.left - 0.5 || box.right > cardBox.right + 0.5;
+    });
+  });
+  expect(escapes).toBe(false);
+
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  expect(overflow).toBeLessThanOrEqual(1);
+});
+
 test("keeps the preview slot stable when the thumbnail fails", async ({ page }) => {
   const profile = {
     id: "dating/profile_1",
@@ -112,6 +234,8 @@ test("keeps the preview slot stable when the thumbnail fails", async ({ page }) 
     photo_stock: 14,
     target: 20,
     refill_at: 5,
+    photo_target: 30,
+    photo_refill_at: 5,
     refill_enabled: false,
     target_override: null,
     refill_at_override: null,
