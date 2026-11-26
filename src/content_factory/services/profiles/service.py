@@ -9,7 +9,13 @@ from typing import Any, Literal, cast
 
 from loguru import logger
 
-from content_factory.constants import DB_DIR, DB_FILENAME, PROFILES_DIR
+from content_factory.constants import (
+    DB_DIR,
+    DB_FILENAME,
+    LANGUAGE_LABELS,
+    PROFILES_DIR,
+    language_label,
+)
 from content_factory.db.connection import connect
 from content_factory.db.errors import DatabaseError
 from content_factory.db.profiles import get_refill, upsert_refill
@@ -21,6 +27,7 @@ from content_factory.exceptions.errors import (
 from content_factory.schemas.config.runtime import GeneratorConfig
 from content_factory.schemas.content.delivery import ContentType
 from content_factory.schemas.profiles.api import (
+    LanguageOption,
     ProductionCheck,
     ProductionStep,
     ProfileDeliverySettings,
@@ -29,6 +36,7 @@ from content_factory.schemas.profiles.api import (
     ProfileRentSettings,
     ProfileResponse,
     ProfileSettings,
+    ProfilesResponse,
     ProfileTextSettings,
     ProfileUpdateRequest,
     ProfileVideoSettings,
@@ -65,29 +73,68 @@ def list_profile_views(
     *,
     output_dir: Path,
     global_config: GeneratorConfig,
+    language: str | None = None,
+    niche: str | None = None,
 ) -> tuple[ProfileResponse, ...]:
-    """Return every registry profile with stock and refill settings.
+    """Return registry profiles with stock and refill settings.
 
     Args:
         data_dir: Root of the runtime data directory, usually ``app_data``.
         output_dir: ``generator.output_dir`` of the generator settings.
         global_config: Global target and refill threshold.
+        language: Exact language code to keep, or ``None`` for every profile.
+        niche: Exact niche to keep, or ``None`` for every profile.
 
     Returns:
-        Profiles in id order; an empty tuple when the registry is empty.
+        Matching profiles in id order; an empty tuple when none match.
+    """
+    return _views(
+        data_dir,
+        list_profiles(data_dir),
+        output_dir=output_dir,
+        global_config=global_config,
+        language=language,
+        niche=niche,
+    )
+
+
+def list_profiles_response(
+    data_dir: Path,
+    *,
+    output_dir: Path,
+    global_config: GeneratorConfig,
+    language: str | None = None,
+    niche: str | None = None,
+) -> ProfilesResponse:
+    """Return the filtered profile list with its filter catalog.
+
+    ``languages`` and ``niches`` describe every registry profile, while
+    ``total`` counts them before filtering, so the client keeps the filter
+    options even when the filtered list is empty.
+
+    Args:
+        data_dir: Root of the runtime data directory, usually ``app_data``.
+        output_dir: ``generator.output_dir`` of the generator settings.
+        global_config: Global target and refill threshold.
+        language: Exact language code to keep, or ``None`` for every profile.
+        niche: Exact niche to keep, or ``None`` for every profile.
+
+    Returns:
+        The matching profile views and the unfiltered catalog.
     """
     profiles = list_profiles(data_dir)
-    stock, photo_stock, refills = _counters(data_dir, profiles)
-    return tuple(
-        _view(
-            profile,
-            stock.get(profile.id, 0),
-            photo_stock.get(profile.id, 0),
-            refills.get(profile.id, _DISABLED),
-            output_dir,
-            global_config,
-        )
-        for profile in profiles
+    return ProfilesResponse(
+        profiles=_views(
+            data_dir,
+            profiles,
+            output_dir=output_dir,
+            global_config=global_config,
+            language=language,
+            niche=niche,
+        ),
+        languages=_language_options(profiles),
+        niches=tuple(sorted({profile.niche for profile in profiles})),
+        total=len(profiles),
     )
 
 
@@ -227,6 +274,49 @@ def preview_for_profile(data_dir: Path, profile_id: str) -> ProfilePreview | Non
     return profile_preview(data_dir, get_profile(data_dir, profile_id))
 
 
+def _views(
+    data_dir: Path,
+    profiles: tuple[ProfileInfo, ...],
+    *,
+    output_dir: Path,
+    global_config: GeneratorConfig,
+    language: str | None,
+    niche: str | None,
+) -> tuple[ProfileResponse, ...]:
+    """Build views of the profiles that match both filters, in id order."""
+    selected = tuple(
+        profile
+        for profile in profiles
+        if (language is None or profile.language == language)
+        and (niche is None or profile.niche == niche)
+    )
+    stock, photo_stock, refills = _counters(data_dir, selected)
+    return tuple(
+        _view(
+            profile,
+            stock.get(profile.id, 0),
+            photo_stock.get(profile.id, 0),
+            refills.get(profile.id, _DISABLED),
+            output_dir,
+            global_config,
+        )
+        for profile in selected
+    )
+
+
+def _language_options(
+    profiles: tuple[ProfileInfo, ...],
+) -> tuple[LanguageOption, ...]:
+    """Return the full catalog plus profile codes outside it, by label."""
+    labels = dict(LANGUAGE_LABELS)
+    for profile in profiles:
+        labels.setdefault(profile.language, language_label(profile.language))
+    return tuple(
+        LanguageOption(code=code, label=label)
+        for code, label in sorted(labels.items(), key=lambda item: item[1])
+    )
+
+
 def _view(
     profile: ProfileInfo,
     stock: int,
@@ -241,6 +331,7 @@ def _view(
         category=profile.category,
         name=profile.name,
         language=profile.language,
+        language_label=language_label(profile.language),
         niche=profile.niche,
         title=profile.title,
         summary=profile.summary,
@@ -488,6 +579,7 @@ __all__ = [
     "is_safe_profile_id",
     "list_profile_views",
     "list_profiles",
+    "list_profiles_response",
     "preview_for_profile",
     "read_profile_prompts",
     "update_profile_settings",

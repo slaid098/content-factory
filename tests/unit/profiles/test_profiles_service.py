@@ -13,6 +13,7 @@ from tests.unit.common.profile_helpers import (
     set_profile_refill,
 )
 
+from content_factory.constants import LANGUAGE_LABELS
 from content_factory.db.errors import OperationalError
 from content_factory.exceptions.errors import (
     ProfileStorageError,
@@ -20,7 +21,11 @@ from content_factory.exceptions.errors import (
 )
 from content_factory.schemas.config.runtime import GeneratorConfig
 from content_factory.schemas.database.port import Connection
-from content_factory.schemas.profiles.api import ProfileResponse, ProfileUpdateRequest
+from content_factory.schemas.profiles.api import (
+    LanguageOption,
+    ProfileResponse,
+    ProfileUpdateRequest,
+)
 from content_factory.schemas.profiles.preview import ProfilePreview
 from content_factory.services.profiles import service as profiles_service
 from content_factory.services.profiles.registry import get_profile
@@ -52,6 +57,144 @@ def test_list_profile_views_without_profiles_is_empty(tmp_path: Path) -> None:
         )
         == ()
     )
+
+
+def test_list_profile_views_filters_by_language(tmp_path: Path) -> None:
+    add_profile(tmp_path, "dating", "profile_1", language="de")
+    add_profile(tmp_path, "dating", "profile_2", language="en")
+    add_profile(tmp_path, "auto", "profile_3", language="de", niche="auto")
+
+    views = profiles_service.list_profile_views(
+        tmp_path,
+        output_dir=tmp_path / "generated",
+        global_config=_GLOBAL,
+        language="de",
+    )
+
+    assert [view.id for view in views] == ["auto/profile_3", "dating/profile_1"]
+    assert all(view.language_label == "Немецкий" for view in views)
+
+
+def test_list_profile_views_filters_by_niche(tmp_path: Path) -> None:
+    add_profile(tmp_path, "dating", "profile_1", niche="dating")
+    add_profile(tmp_path, "dating", "profile_2", niche="overlay")
+    add_profile(tmp_path, "auto", "profile_3", niche="dating")
+
+    views = profiles_service.list_profile_views(
+        tmp_path,
+        output_dir=tmp_path / "generated",
+        global_config=_GLOBAL,
+        niche="dating",
+    )
+
+    assert [view.id for view in views] == ["auto/profile_3", "dating/profile_1"]
+
+
+def test_list_profile_views_combines_language_and_niche(tmp_path: Path) -> None:
+    add_profile(tmp_path, "dating", "profile_1", language="de", niche="dating")
+    add_profile(tmp_path, "dating", "profile_2", language="de", niche="overlay")
+    add_profile(tmp_path, "auto", "profile_3", language="en", niche="dating")
+
+    views = profiles_service.list_profile_views(
+        tmp_path,
+        output_dir=tmp_path / "generated",
+        global_config=_GLOBAL,
+        language="de",
+        niche="dating",
+    )
+
+    assert [view.id for view in views] == ["dating/profile_1"]
+
+
+def test_list_profile_views_returns_empty_for_an_unknown_language(tmp_path: Path) -> None:
+    add_profile(tmp_path, language="de")
+
+    views = profiles_service.list_profile_views(
+        tmp_path,
+        output_dir=tmp_path / "generated",
+        global_config=_GLOBAL,
+        language="ka",
+    )
+
+    assert views == ()
+
+
+def test_list_profile_views_counts_stock_only_for_matching_profiles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_profile(tmp_path, "dating", "profile_1", language="de")
+    add_profile(tmp_path, "dating", "profile_2", language="en")
+    counted: list[str] = []
+
+    def _count(
+        _connection: Connection,
+        profile_id: str,
+        **_kwargs: object,
+    ) -> int:
+        counted.append(profile_id)
+        return 0
+
+    monkeypatch.setattr(profiles_service, "count_by_profile", _count)
+
+    views = profiles_service.list_profile_views(
+        tmp_path,
+        output_dir=tmp_path / "generated",
+        global_config=_GLOBAL,
+        language="de",
+    )
+
+    assert [view.id for view in views] == ["dating/profile_1"]
+    assert counted and set(counted) == {"dating/profile_1"}
+
+
+def test_list_profiles_response_counts_before_filter(tmp_path: Path) -> None:
+    add_profile(tmp_path, "dating", "profile_1", language="de", niche="dating")
+    add_profile(tmp_path, "dating", "profile_2", language="en", niche="overlay")
+    add_profile(tmp_path, "auto", "profile_3", language="en", niche="dating")
+
+    response = profiles_service.list_profiles_response(
+        tmp_path,
+        output_dir=tmp_path / "generated",
+        global_config=_GLOBAL,
+        language="de",
+        niche="dating",
+    )
+
+    assert [profile.id for profile in response.profiles] == ["dating/profile_1"]
+    assert response.total == 3
+    assert response.niches == ("dating", "overlay")
+    assert len(response.languages) == len(LANGUAGE_LABELS)
+
+
+def test_list_profiles_response_adds_an_unknown_profile_language(tmp_path: Path) -> None:
+    add_profile(tmp_path, language="kaz")
+
+    response = profiles_service.list_profiles_response(
+        tmp_path,
+        output_dir=tmp_path / "generated",
+        global_config=_GLOBAL,
+    )
+
+    assert response.profiles[0].language_label == "KAZ"
+    assert LanguageOption(code="kaz", label="KAZ") in response.languages
+    codes = [option.code for option in response.languages]
+    assert len(set(codes)) == len(codes)
+
+
+def test_list_profiles_response_without_profiles_returns_the_catalog(
+    tmp_path: Path,
+) -> None:
+    response = profiles_service.list_profiles_response(
+        tmp_path,
+        output_dir=tmp_path / "generated",
+        global_config=_GLOBAL,
+    )
+
+    assert response.profiles == ()
+    assert response.total == 0
+    assert response.niches == ()
+    assert len(response.languages) == len(LANGUAGE_LABELS)
 
 
 def test_update_rejects_oversized_stored_target(tmp_path: Path) -> None:
