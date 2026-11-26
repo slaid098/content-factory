@@ -135,11 +135,33 @@ describe("createJobsView", () => {
     const { view } = createView();
 
     await view.start("ru", 1, "req-1");
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("true");
     await vi.advanceTimersByTimeAsync(3000);
 
     expect(node("job-state").textContent).toBe("ошибка");
     expect(node("job-message").textContent).toBe(MESSAGES.jobGone);
     expect(node<HTMLAnchorElement>("job-link").hidden).toBe(true);
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("false");
+  });
+
+  it("clears the busy state when a poll fails", async () => {
+    let call = 0;
+    mockFetch(() => {
+      call += 1;
+      if (call === 1) {
+        return jsonResponse(job({ status: "building" }));
+      }
+      throw new TypeError("offline");
+    });
+    const { view } = createView();
+
+    await view.start("ru", 1, "req-1");
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("true");
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(node("job-message").textContent).toBe(MESSAGES.offline);
+    expect(node("job-check").hidden).toBe(false);
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("false");
   });
 
   it("stops polling after thirty minutes and offers a manual check", async () => {
@@ -147,6 +169,7 @@ describe("createJobsView", () => {
     const { view } = createView();
 
     await view.start("ru", 1, "req-1");
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("true");
     vi.setSystemTime(NOW.getTime() + 30 * 60 * 1000 + 1);
     await vi.advanceTimersByTimeAsync(3000);
 
@@ -154,6 +177,7 @@ describe("createJobsView", () => {
       "Сборка идёт дольше 30 минут. Опрос остановлен — нажмите «Проверить».",
     );
     expect(node("job-check").hidden).toBe(false);
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("false");
   });
 
   it("checks the status on demand and reports a still running build", async () => {
@@ -178,12 +202,14 @@ describe("createJobsView", () => {
     );
     const { view } = createView();
     await view.start("ru", 1, "req-1");
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("true");
 
     node<HTMLButtonElement>("job-check").click();
     await vi.advanceTimersByTimeAsync(0);
 
     expect(node("job-message").textContent).toBe(MESSAGES.jobGone);
     expect(node<HTMLAnchorElement>("job-link").hidden).toBe(true);
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("false");
   });
 
   it("reports a network failure on a manual check", async () => {
@@ -197,12 +223,14 @@ describe("createJobsView", () => {
     });
     const { view } = createView();
     await view.start("ru", 1, "req-1");
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("true");
 
     node<HTMLButtonElement>("job-check").click();
     await vi.advanceTimersByTimeAsync(0);
 
     expect(node("job-message").textContent).toBe(MESSAGES.offline);
     expect(node("job-check").hidden).toBe(false);
+    expect(node("delivery-job").getAttribute("aria-busy")).toBe("false");
   });
 
   it("expires the ready link and hides it", async () => {

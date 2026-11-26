@@ -97,6 +97,7 @@ export function createJobsView(elements: JobElements, options: JobViewOptions): 
     }
     if (Date.now() - startedAt > POLL_LIMIT_MS) {
       stopPolling();
+      elements.container.setAttribute("aria-busy", "false");
       elements.state.textContent = "ошибка";
       elements.message.classList.add("is-error");
       setMessage(
@@ -117,6 +118,7 @@ export function createJobsView(elements: JobElements, options: JobViewOptions): 
       }
     } catch (error) {
       stopPolling();
+      elements.container.setAttribute("aria-busy", "false");
       if (error instanceof ApiError && error.status === 404) {
         elements.state.textContent = "ошибка";
         elements.message.classList.add("is-error");
@@ -149,6 +151,7 @@ export function createJobsView(elements: JobElements, options: JobViewOptions): 
         elements.check.hidden = false;
       }
     } catch (error) {
+      elements.container.setAttribute("aria-busy", "false");
       if (error instanceof ApiError && error.status === 404) {
         elements.state.textContent = "ошибка";
         elements.message.classList.add("is-error");
