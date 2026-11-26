@@ -20,6 +20,7 @@ from content_factory.db.connection import connect
 from content_factory.db.device_trust import (
     activate,
     find_active,
+    find_pending,
     insert_pending,
     list_rows,
     revoke,
@@ -110,6 +111,11 @@ def redeem_link(
 ) -> RedeemedDevice | None:
     """Consume a pending link and return the new device token.
 
+    A read-only lookup rejects a token that matches no pending row before the
+    conditional update, so a garbage or reused ``/join/<token>`` leaves the
+    table alone. The update still owns the race between two browsers opening
+    the same link.
+
     Args:
         db_path: Operational database of the service.
         token: Raw one-time link token from the ``/join/{token}`` path.
@@ -122,12 +128,15 @@ def redeem_link(
     if not token:
         return None
     moment = _moment(now)
+    link_hash = _hash_token(token)
     device_token = secrets.token_urlsafe(_TOKEN_BYTES)
     connection = connect(db_path)
     try:
+        if find_pending(connection, link_hash) is None:
+            return None
         row = activate(
             connection,
-            link_hash=_hash_token(token),
+            link_hash=link_hash,
             token_hash=_hash_token(device_token),
             now=_store(moment),
         )

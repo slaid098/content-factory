@@ -46,6 +46,8 @@ def join_device(token: str) -> Response:
         return invalid_link_page()
     max_age = max(0, int((redeemed.expires_at - datetime.now(UTC)).total_seconds()))
     response = RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cache-Control"] = "no-store"
     response.set_cookie(
         key=DEVICE_COOKIE_NAME,
         value=redeemed.token,

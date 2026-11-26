@@ -6,7 +6,17 @@ import hmac
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.responses import FileResponse, RedirectResponse
 from loguru import logger
 
@@ -32,9 +42,22 @@ content_router = APIRouter()
 
 
 def require_delivery_token(
+    request: Request,
     authorization: Annotated[str | None, Header()] = None,
 ) -> Settings:
-    """Check the Bearer token and return the settings of this request.
+    """Accept a trusted-device cookie or the Bearer token of this request.
+
+    The partner browser proves itself with the device cookie checked by
+    :class:`~content_factory.api.device_gate.DeviceGateMiddleware`; the
+    YouTube Kit worker has no cookie and sends its own Bearer token.
+
+    Args:
+        request: Incoming request; the gate marks it ``device_trusted`` after a
+            successful cookie check.
+        authorization: Raw ``Authorization`` header of a service client.
+
+    Returns:
+        Settings of this request.
 
     Raises:
         HTTPException: 503 when delivery is not configured, 401 otherwise.
@@ -45,6 +68,8 @@ def require_delivery_token(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="delivery is disabled",
         )
+    if getattr(request.state, "device_trusted", False):
+        return settings
     token = _bearer_token(authorization)
     if token is None or not hmac.compare_digest(
         token.encode(),

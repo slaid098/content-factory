@@ -1,8 +1,14 @@
 """Trusted-device gate middleware.
 
-Every request except the one-time join route and the deployment probes must
-carry an active ``device_token`` cookie. The check asks the device-trust capsule
-on each request, so revoking a device denies the very next request.
+Every request except the one-time join route, the deployment probe and the
+delivery API must carry an active ``device_token`` cookie. The check asks the
+device-trust capsule on each request, so revoking a device denies the very next
+request.
+
+The delivery API accepts either the trusted-device cookie or its own Bearer
+token: the partner page calls it from a browser, while the YouTube Kit worker
+has no cookie. A cookie on that prefix is still verified, so a stale or revoked
+device is denied instead of silently falling back to the Bearer check.
 
 Two paths stay open. ``/join`` is the only way to earn a cookie. The stock
 endpoint of the local deploy healthcheck answers ``{"status": "ok"}`` only for
@@ -39,11 +45,14 @@ _LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost"})
 _PROXY_HEADERS = ("x-forwarded-for", "x-real-ip")
 
 
+def _is_content_api(path: str) -> bool:
+    """Return True for the delivery API, which also accepts a Bearer token."""
+    return path.startswith(_CONTENT_PREFIX)
+
+
 def _is_open(request: Request) -> bool:
-    """Return True when the request needs no device cookie."""
+    """Return True when the request needs no device cookie at all."""
     path = request.url.path
-    if path.startswith(_CONTENT_PREFIX):
-        return True
     return request.method == "GET" and (path == _JOIN_PATH or path.startswith(f"{_JOIN_PATH}/"))
 
 
@@ -95,6 +104,8 @@ class DeviceGateMiddleware(BaseHTTPMiddleware):
         settings = get_settings()
         if not settings.device_gate_enabled:
             return await call_next(request)
+        if _is_content_api(request.url.path):
+            return await self._delivery(request, settings, call_next)
         if _is_open(request):
             return await call_next(request)
         if _is_local_healthcheck(request):
@@ -111,6 +122,34 @@ class DeviceGateMiddleware(BaseHTTPMiddleware):
             return _unavailable(request)
         if device is None:
             return _deny(request)
+        return await call_next(request)
+
+    async def _delivery(
+        self,
+        request: Request,
+        settings: Settings,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
+        """Trust a valid device cookie on the delivery API, else keep Bearer.
+
+        A browser without any cookie is let through to the route, which still
+        requires its Bearer token (the YouTube Kit worker). A cookie that is
+        present but invalid is denied here: silently downgrading to Bearer
+        would let a revoked device keep reading deliveries.
+        """
+        token = request.cookies.get(DEVICE_COOKIE_NAME, "")
+        if not token:
+            return await call_next(request)
+        try:
+            device = await asyncio.to_thread(authenticate, _db_path(settings), token)
+        except (DatabaseError, OSError) as ex:
+            logger.bind(error=ex, error_type=type(ex).__name__).error(
+                "device gate: delivery cookie check failed"
+            )
+            return _unavailable(request)
+        if device is None:
+            return _deny(request)
+        request.state.device_trusted = True
         return await call_next(request)
 
     async def _healthcheck(self, settings: Settings) -> Response:

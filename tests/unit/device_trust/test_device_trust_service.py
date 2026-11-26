@@ -85,6 +85,31 @@ def test_redeem_swaps_the_link_for_a_device_token(db_path: Path) -> None:
     assert redeem_link(db_path, issued.token, now=_NOW + timedelta(hours=2)) is None
 
 
+def test_raw_tokens_stay_out_of_the_dataclass_repr(db_path: Path) -> None:
+    issued = issue_link(db_path, "phone", 24, 180, now=_NOW)
+    redeemed = redeem_link(db_path, issued.token, now=_NOW)
+    assert redeemed is not None
+
+    assert issued.token
+    assert issued.token not in repr(issued)
+    assert redeemed.token not in repr(redeemed)
+
+
+def test_redeem_unknown_token_skips_the_update(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    issue_link(db_path, "phone", 24, 180, now=_NOW)
+
+    def _fail(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("activate must not run for an unknown token")
+
+    monkeypatch.setattr("content_factory.services.device_trust.service.activate", _fail)
+
+    assert redeem_link(db_path, "unknown-token", now=_NOW) is None
+    assert list_devices(db_path, now=_NOW)[0].status == "pending"
+
+
 def test_authenticate_rejects_unknown_and_revoked_tokens(db_path: Path) -> None:
     issued = issue_link(db_path, "phone", 24, 180, now=_NOW)
     redeemed = redeem_link(db_path, issued.token, now=_NOW)

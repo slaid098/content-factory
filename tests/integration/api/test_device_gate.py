@@ -103,6 +103,8 @@ def test_join_sets_host_only_cookie_and_grants_access(
 
     assert response.status_code == 303
     assert response.headers["location"] == "/"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert response.headers["cache-control"] == "no-store"
     cookie = response.headers["set-cookie"]
     assert cookie.startswith("device_token=")
     assert "Path=/" in cookie
@@ -155,7 +157,101 @@ def test_garbage_or_foreign_cookie_is_denied(client: TestClient) -> None:
     assert client.get("/docs", cookies={"other": "value"}).status_code == 403
 
 
-def test_content_prefix_needs_no_cookie(
+def _device_cookie(client: TestClient, db_path: Path) -> str:
+    """Issue a link, redeem it through the route and return the cookie value."""
+    issued = issue_link(db_path, "phone", 24, _DEVICE_TTL_DAYS)
+    response = client.get(f"/join/{issued.token}", follow_redirects=False)
+    assert response.status_code == 303
+    return response.cookies["device_token"]
+
+
+def test_content_api_without_cookie_or_bearer_is_401(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CONTENT_FACTORY_DELIVERY_TOKEN", "secret")
+
+    response = client.get("/api/v1/content/archives")
+
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+def test_content_api_with_trusted_cookie_needs_no_bearer(
+    client: TestClient,
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CONTENT_FACTORY_DELIVERY_TOKEN", "secret")
+    token = _device_cookie(client, db_path)
+
+    response = client.get(
+        "/api/v1/content/archives",
+        cookies={"device_token": token},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_content_api_with_garbage_cookie_is_403(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CONTENT_FACTORY_DELIVERY_TOKEN", "secret")
+
+    response = client.get(
+        "/api/v1/content/archives",
+        cookies={"device_token": "garbage"},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "device not trusted"}
+
+
+def test_content_api_with_revoked_cookie_is_403(
+    client: TestClient,
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CONTENT_FACTORY_DELIVERY_TOKEN", "secret")
+    issued = issue_link(db_path, "phone", 24, _DEVICE_TTL_DAYS)
+    joined = client.get(f"/join/{issued.token}", follow_redirects=False)
+    token = joined.cookies["device_token"]
+    assert revoke_device(db_path, issued.device_id)
+
+    response = client.get(
+        "/api/v1/content/archives",
+        cookies={"device_token": token},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "device not trusted"}
+
+
+def test_content_api_cookie_database_failure_returns_503(
+    client: TestClient,
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CONTENT_FACTORY_DELIVERY_TOKEN", "secret")
+    token = _device_cookie(client, db_path)
+
+    def _fail(*_args: object, **_kwargs: object) -> None:
+        raise DatabaseError("database is down")
+
+    monkeypatch.setattr("content_factory.api.device_gate.authenticate", _fail)
+
+    response = client.get(
+        "/api/v1/content/archives",
+        cookies={"device_token": token},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "device check unavailable"}
+
+
+def test_content_api_with_bearer_needs_no_cookie(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
