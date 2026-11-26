@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -36,6 +37,7 @@ class ProfileResponse(BaseModel):
     width: int
     height: int
     audio: bool
+    outputs: tuple[Literal["video", "photo"], ...]
     stock: int = Field(ge=0)
     photo_stock: int = Field(ge=0)
     target: int
@@ -55,6 +57,165 @@ class ProfilesResponse(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     profiles: tuple[ProfileResponse, ...]
+
+
+class ProductionCheck(BaseModel):
+    """One QA check of a production step and the stage that runs it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    stage: Literal["source", "final"]
+
+
+class ProductionStep(BaseModel):
+    """One step of the profile production recipe in declaration order."""
+
+    model_config = ConfigDict(frozen=True)
+
+    producer: str
+    type: Literal["video", "photo"]
+    checks: tuple[ProductionCheck, ...]
+
+
+class ProfileOverlayStyle(BaseModel):
+    """Every text card geometry and colour field of a profile."""
+
+    model_config = ConfigDict(frozen=True)
+
+    font_size: float
+    block1_y: float
+    block2_y: float | None
+    gap: float
+    hug_text: bool
+    max_text_width: float
+    card_width: float | None
+    text_pad_x: float
+    cta_scale: float
+    cta_divider: bool
+    merge_blocks: bool
+    text_color: str
+    text_bg_color: str
+    text_bg_alpha: int
+    block2_bg: str | None
+    block2_text: str | None
+    block2_alpha: int | None
+
+
+class ProfileVideoSettings(BaseModel):
+    """Read-only video parameters of one profile."""
+
+    model_config = ConfigDict(frozen=True)
+
+    width: int
+    height: int
+    frames: int
+    frames_jitter: int
+    fps: int
+    renderer: str
+    image: str
+    audio_tracks: int
+
+
+class ProfileRentSettings(BaseModel):
+    """Read-only server rent filters of one profile."""
+
+    model_config = ConfigDict(frozen=True)
+
+    gpu: str
+    max_cost: float
+    disk_space: int
+    gpu_ram: int
+    inet_down: int
+    inet_up_cost: float
+    inet_down_cost: float
+
+
+class ProfileTextSettings(BaseModel):
+    """Read-only text card parameters; the font is a file name, not a path."""
+
+    model_config = ConfigDict(frozen=True)
+
+    font: str
+    negative_prompt: str | None
+    cfg: float | None
+    style: ProfileOverlayStyle
+
+
+class ProfileDeliverySettings(BaseModel):
+    """Read-only delivery policy of one profile."""
+
+    model_config = ConfigDict(frozen=True)
+
+    title_mode: Literal["generated", "fixed"]
+    title: str | None
+    hashtags: tuple[str, ...]
+
+
+class ProfileSettings(BaseModel):
+    """Safe read-only settings groups of one profile."""
+
+    model_config = ConfigDict(frozen=True)
+
+    video: ProfileVideoSettings
+    rent: ProfileRentSettings
+    text: ProfileTextSettings
+    delivery: ProfileDeliverySettings
+
+
+class ProfileDetailResponse(ProfileResponse):
+    """One profile with its recipe and safe settings."""
+
+    production: tuple[ProductionStep, ...]
+    settings: ProfileSettings
+
+
+class PromptFile(BaseModel):
+    """Text of one prompt file with the name the profile uses."""
+
+    model_config = ConfigDict(frozen=True)
+
+    filename: str
+    text: str
+
+
+class PromptCard(BaseModel):
+    """One appearance card with its stable prompt and override flag."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    values: dict[str, object]
+    prompt: str
+    overridden: bool
+
+
+class ProfilePrompts(BaseModel):
+    """Prompt files and cards of one profile."""
+
+    model_config = ConfigDict(frozen=True)
+
+    template: PromptFile
+    cards: tuple[PromptCard, ...]
+    photo: PromptFile | None
+
+
+class PromptTextRequest(BaseModel):
+    """New text of a template, a card override or a photo prompt."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    text: str
+
+
+class PromptCardResponse(BaseModel):
+    """Rebuilt prompt of one card after an override change."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    prompt: str
+    overridden: bool
 
 
 class ProfileUpdateRequest(BaseModel):
@@ -88,8 +249,22 @@ class ProfileUpdateRequest(BaseModel):
 
 
 __all__ = [
+    "ProductionCheck",
+    "ProductionStep",
+    "ProfileDeliverySettings",
+    "ProfileDetailResponse",
     "ProfileLastRun",
+    "ProfileOverlayStyle",
+    "ProfilePrompts",
+    "ProfileRentSettings",
     "ProfileResponse",
+    "ProfileSettings",
+    "ProfileTextSettings",
     "ProfileUpdateRequest",
+    "ProfileVideoSettings",
     "ProfilesResponse",
+    "PromptCard",
+    "PromptCardResponse",
+    "PromptFile",
+    "PromptTextRequest",
 ]

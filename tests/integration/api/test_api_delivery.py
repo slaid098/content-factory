@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import time
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -134,6 +135,28 @@ def _post(
     )
 
 
+def _wait_job(
+    client: TestClient,
+    language: str,
+    status: str,
+    *,
+    timeout: float = 10.0,
+) -> dict[str, object]:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        response = _get(
+            client,
+            f"/api/v1/content/deliveries/{language}/{REQUEST_ID}",
+        )
+        assert response.status_code == 200
+        body = response.json()
+        if body["status"] == status:
+            return body
+        assert body["status"] == "building", body
+        time.sleep(0.01)
+    raise AssertionError(f"delivery did not reach {status}")
+
+
 def test_delivery_without_configured_token_returns_503(
     data_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -263,6 +286,40 @@ def test_delivery_returns_zip_with_stored_title_and_removes_stock(data_dir: Path
             "untitled": 1,
             "video_bytes": 6,
         }
+    ]
+
+
+def test_stock_reports_general_videos_separately(data_dir: Path) -> None:
+    _write_config(
+        data_dir,
+        """
+languages:
+  ru:
+    enabled: true
+    stock_target: 10
+  en:
+    enabled: true
+    stock_target: 5
+""",
+    )
+    add_profile(data_dir)
+    add_profile_video(data_dir, filename="dating_profile_1_run_001.mp4")
+    touch_mp4(data_dir / CONTENT_DIR / "general" / "ru" / "a.mp4")
+    touch_mp4(data_dir / CONTENT_DIR / "general" / "ru" / "b.mp4")
+    touch_photo(data_dir / CONTENT_DIR / "general" / "ru" / "post.jpg", text="Текст поста")
+
+    body = _client().get("/api/v1/stock").json()
+
+    assert body["general"] == [
+        {"language": "en", "stock": 0, "target": 5},
+        {"language": "ru", "stock": 2, "target": 10},
+    ]
+    assert [row["language"] for row in body["general"]] == [
+        row["language"] for row in body["languages"]
+    ]
+    assert [(row["language"], row["stock"], row["target"]) for row in body["languages"]] == [
+        ("en", 0, 5),
+        ("ru", 3, 10),
     ]
 
 
@@ -465,6 +522,32 @@ def test_topics_returns_stock_breakdown(data_dir: Path) -> None:
             {"query": "заправка", "count": 1},
             {"query": "курятник", "count": 2},
         ],
+        "unclassified": 1,
+    }
+
+
+def test_topics_counts_only_general_videos(data_dir: Path) -> None:
+    db_path = data_dir / "db" / "db.sqlite3"
+    general_hash = "a" * 64
+    touch_mp4(data_dir / CONTENT_DIR / "general" / "ru" / f"{general_hash}.mp4")
+    touch_mp4(data_dir / CONTENT_DIR / "general" / "ru" / ("b" * 64 + ".mp4"))
+    add_downloaded_video(db_path, general_hash, "Первое", query="курятник")
+    add_profile(data_dir)
+    add_profile_video(data_dir, filename="dating_profile_1_run_001.mp4")
+    add_downloaded_video(
+        db_path,
+        "dating_profile_1_run_001",
+        "Профильное",
+        query="заправка",
+    )
+    touch_photo(data_dir / CONTENT_DIR / "general" / "ru" / "post.jpg", text="Текст поста")
+
+    response = _get(_client(), "/api/v1/content/topics?language=ru")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "language": "ru",
+        "topics": [{"query": "курятник", "count": 1}],
         "unclassified": 1,
     }
 
@@ -872,6 +955,181 @@ def test_delivery_general_profile_alias_returns_general_stock(data_dir: Path) ->
         assert archive.read("001.mp4") == b"general"
     assert not general.exists()
     assert profile.is_file()
+
+
+def test_general_delivery_returns_only_general_stock(data_dir: Path) -> None:
+    add_profile(data_dir)
+    general_hash = "a" * 64
+    general = touch_mp4(
+        data_dir / CONTENT_DIR / "general" / "ru" / f"{general_hash}.mp4",
+        b"general",
+    )
+    profile = add_profile_video(
+        data_dir,
+        filename="dating_profile_1_run_001.mp4",
+        data=b"profile",
+    )
+    unassigned = touch_mp4(
+        data_dir / CONTENT_DIR / "dating" / "ru" / "manual.mp4",
+        b"manual",
+    )
+    add_title(data_dir / "db" / "db.sqlite3", general_hash, "Общее")
+    add_title(data_dir / "db" / "db.sqlite3", "dating_profile_1_run_001", "Профильное")
+    add_title(data_dir / "db" / "db.sqlite3", "manual", "Ручное")
+
+    response = _post(_client())
+
+    assert response.status_code == 200
+    assert response.headers["Content-Type"] == "application/zip"
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert archive.namelist() == ["001.mp4", "001.json"]
+        assert archive.read("001.mp4") == b"general"
+        assert json.loads(archive.read("001.json")) == {
+            "type": "video",
+            "language": "ru",
+            "profile_id": None,
+            "title": "Общее",
+        }
+    assert not general.exists()
+    assert profile.is_file()
+    assert unassigned.is_file()
+
+
+def test_profile_delivery_uses_profile_language_and_stock(data_dir: Path) -> None:
+    add_profile(data_dir, language="en")
+    add_profile(data_dir, name="profile_2", language="en")
+    first = add_profile_video(
+        data_dir,
+        language="en",
+        filename="dating_profile_1_run_001.mp4",
+        data=b"first",
+    )
+    other = add_profile_video(
+        data_dir,
+        name="profile_2",
+        language="en",
+        filename="dating_profile_2_run_001.mp4",
+        data=b"other",
+    )
+    general = touch_mp4(
+        data_dir / CONTENT_DIR / "general" / "en" / ("a" * 64 + ".mp4"),
+        b"general",
+    )
+    add_title(data_dir / "db" / "db.sqlite3", "dating_profile_1_run_001", "Первое")
+    add_title(data_dir / "db" / "db.sqlite3", "dating_profile_2_run_001", "Второе")
+    add_title(data_dir / "db" / "db.sqlite3", "a" * 64, "Общее")
+
+    response = _post(_client(), language=None, profile="dating/profile_1")
+
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert archive.namelist() == ["001.mp4", "001.json"]
+        assert archive.read("001.mp4") == b"first"
+        assert json.loads(archive.read("001.json")) == {
+            "type": "video",
+            "language": "en",
+            "profile_id": "dating/profile_1",
+            "title": "Первое",
+        }
+    assert not first.exists()
+    assert other.is_file()
+    assert general.is_file()
+
+
+def test_link_general_job_returns_only_general_stock(
+    data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    general_hash = "a" * 64
+    general = touch_mp4(
+        data_dir / CONTENT_DIR / "general" / "ru" / f"{general_hash}.mp4",
+        b"general",
+    )
+    add_title(data_dir / "db" / "db.sqlite3", general_hash, "Общее")
+    add_profile(data_dir)
+    profile = add_profile_video(
+        data_dir,
+        filename="dating_profile_1_run_001.mp4",
+        data=b"profile",
+    )
+    add_title(data_dir / "db" / "db.sqlite3", "dating_profile_1_run_001", "Профильное")
+    url = "https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip"
+    monkeypatch.setattr(
+        "content_factory.services.delivery.jobs.upload_archive",
+        lambda _archive: url,
+    )
+    client = _client()
+
+    response = client.post(
+        "/api/v1/content/deliveries/link",
+        json=_body(),
+        headers=_headers(),
+    )
+
+    assert response.status_code == 202
+    started = response.json()
+    assert started["request_id"] == REQUEST_ID_TEXT
+    assert started["language"] == "ru"
+    assert started["status"] == "building"
+    assert started["files"] == 0
+    assert started["url"] is None
+    assert started["error"] is None
+    final = _wait_job(client, "ru", "ready")
+
+    assert final["url"] == url
+    assert final["files"] == 1
+    assert not general.exists()
+    assert profile.is_file()
+
+
+def test_link_profile_job_resolves_language_from_profile(
+    data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_profile(data_dir, language="en")
+    first = add_profile_video(
+        data_dir,
+        language="en",
+        filename="dating_profile_1_run_001.mp4",
+        data=b"first",
+    )
+    add_title(data_dir / "db" / "db.sqlite3", "dating_profile_1_run_001", "Первое")
+    add_profile(data_dir, name="profile_2", language="en")
+    other = add_profile_video(
+        data_dir,
+        name="profile_2",
+        language="en",
+        filename="dating_profile_2_run_001.mp4",
+        data=b"other",
+    )
+    add_title(data_dir / "db" / "db.sqlite3", "dating_profile_2_run_001", "Второе")
+    general = touch_mp4(
+        data_dir / CONTENT_DIR / "general" / "en" / ("a" * 64 + ".mp4"),
+        b"general",
+    )
+    add_title(data_dir / "db" / "db.sqlite3", "a" * 64, "Общее")
+    url = "https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip"
+    monkeypatch.setattr(
+        "content_factory.services.delivery.jobs.upload_archive",
+        lambda _archive: url,
+    )
+    client = _client()
+
+    response = client.post(
+        "/api/v1/content/deliveries/link",
+        json=_body(language=None, profile="dating/profile_1"),
+        headers=_headers(),
+    )
+
+    assert response.status_code == 202
+    assert response.json()["language"] == "en"
+    final = _wait_job(client, "en", "ready")
+
+    assert final["url"] == url
+    assert final["files"] == 1
+    assert not first.exists()
+    assert other.is_file()
+    assert general.is_file()
 
 
 def test_delivery_by_profile_without_stock_returns_204(data_dir: Path) -> None:

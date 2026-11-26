@@ -4,7 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-from tests.unit.common.delivery_helpers import add_downloaded_video, touch_mp4
+from tests.unit.common.delivery_helpers import add_downloaded_video, touch_mp4, touch_photo
+from tests.unit.common.profile_helpers import add_profile, add_profile_video
 
 from content_factory.constants import CONTENT_DIR, QUERIES_DIR
 from content_factory.db.delivery import load_language_queries
@@ -87,6 +88,29 @@ def test_list_returns_file_order_counts_and_database_queries(tmp_path: Path) -> 
     ]
     assert response.unclassified == 2
     assert response.total == 5
+
+
+def test_list_counts_only_general_videos(tmp_path: Path) -> None:
+    _write_queries(tmp_path, "курятник\n")
+    _add_stock(tmp_path, "a" * 64, "курятник")
+    touch_mp4(tmp_path / CONTENT_DIR / "ru" / ("b" * 64 + ".mp4"))
+    add_profile(tmp_path)
+    add_profile_video(tmp_path, filename="dating_profile_1_run_001.mp4")
+    add_downloaded_video(
+        tmp_path / "db" / "db.sqlite3",
+        "dating_profile_1_run_001",
+        "Профильное",
+        query="курятник",
+    )
+    touch_photo(tmp_path / CONTENT_DIR / "ru" / "general.jpg", text="Текст поста")
+
+    response = list_language_queries(tmp_path, "ru")
+
+    assert [(item.query, item.count, item.in_file) for item in response.queries] == [
+        ("курятник", 1, True),
+    ]
+    assert response.unclassified == 1
+    assert response.total == 2
 
 
 def test_list_without_file_returns_database_queries(tmp_path: Path) -> None:

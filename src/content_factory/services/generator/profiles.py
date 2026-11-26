@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import math
 import random
-import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -28,6 +27,12 @@ from content_factory.utils.profiles import (
     read_profile_niche,
     read_profile_positive_int,
 )
+from content_factory.utils.prompts import (
+    card_prompt,
+    read_look_overrides,
+    read_template_file,
+    read_text_prompt_file,
+)
 from content_factory.utils.run_id import profile_slug
 
 _SHARED_DIR = "_shared"
@@ -41,15 +46,19 @@ _DEFAULT_MAX_TEXT_WIDTH = 0.86
 _REQUIRED_KEYS = ("count", "width", "height", "frames", "fps", "image", "gpu", "max_cost")
 _MAX_IMAGE_SIDE = 8192
 _MAX_IMAGE_PIXELS = 16_777_216
-_SPIN = re.compile(r"\{([^{}|]+(?:\|[^{}]+)+)\}")
 
 
 @dataclass(frozen=True, slots=True)
 class _Look:
-    """One appearance card of ``looks.yaml``."""
+    """One appearance card of ``looks.yaml``.
+
+    ``prompt`` is an optional override from ``look_overrides.yaml``; when it
+    is set, :func:`build_prompt` returns it verbatim.
+    """
 
     id: str
     values: Mapping[str, object]
+    prompt: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,23 +328,18 @@ def prompt_template(profile: _Profile) -> str:
         Text of ``prompt_template.txt`` or, for older profiles, ``video_prompt.txt``.
 
     Raises:
-        ProfileError: Neither prompt file exists.
+        ProfileError: Neither prompt file exists or it is empty.
     """
-    for name in ("prompt_template.txt", "video_prompt.txt"):
-        path = profile.dir / name
-        if path.is_file():
-            text = path.read_text(encoding="utf-8")
-            if not text.strip():
-                raise ProfileError(f"пустой промпт {path}")
-            return text
-    raise ProfileError(f"нет prompt_template.txt или video_prompt.txt: {profile.dir}")
+    _, text = read_template_file(profile.dir)
+    return text
 
 
 def build_prompt(profile: _Profile, look: _Look, rng: random.Random) -> str:
     """Fill the scene template with one appearance card.
 
-    Card fields replace their ``{placeholders}`` before the ``{a|b}`` spin
-    options are expanded, so a card value never becomes a spin token.
+    A card override is returned verbatim: placeholders and spin options are
+    not expanded. Otherwise card fields replace their ``{placeholders}``
+    before the ``{a|b}`` spin options are expanded.
 
     Args:
         profile: Loaded profile.
@@ -345,28 +349,24 @@ def build_prompt(profile: _Profile, look: _Look, rng: random.Random) -> str:
     Returns:
         Final scene prompt for the ComfyUI text node.
     """
-    template = prompt_template(profile)
-    values = dict(look.values)
-    values["age_text"] = _age_text(values.get("age"))
-    text = template
-    for key, value in values.items():
-        text = text.replace("{" + key + "}", str(value))
-    return _SPIN.sub(lambda match: rng.choice(match.group(1).split("|")), text)
+    _, template = read_template_file(profile.dir)
+    return card_prompt(template, look.values, look.prompt, rng)
 
 
 def text_prompt(profile: _Profile) -> str:
     """Return the system prompt of the text model.
 
+    Args:
+        profile: Loaded profile.
+
+    Returns:
+        Stripped text of ``text_prompt.txt``.
+
     Raises:
         ProfileError: ``text_prompt.txt`` is missing or empty.
     """
-    path = profile.dir / "text_prompt.txt"
-    if not path.is_file():
-        raise ProfileError(f"нет text_prompt.txt: {path}")
-    text = path.read_text(encoding="utf-8").strip()
-    if not text:
-        raise ProfileError(f"пустой text_prompt.txt: {path}")
-    return text
+    _, text = read_text_prompt_file(profile.dir)
+    return text.strip()
 
 
 def _profile_name(directory: Path, root: Path) -> str:
@@ -407,7 +407,7 @@ def _read_workflow(directory: Path, root: Path) -> Mapping[str, Any]:
 
 
 def _read_looks(directory: Path) -> tuple[_Look, ...]:
-    """Read appearance cards from ``looks.yaml``."""
+    """Read appearance cards from ``looks.yaml`` and their prompt overrides."""
     path = directory / "looks.yaml"
     try:
         payload: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -418,6 +418,7 @@ def _read_looks(directory: Path) -> tuple[_Look, ...]:
     items = payload.get("looks") if isinstance(payload, dict) else payload
     if not isinstance(items, list) or not items:
         raise ProfileError(f"looks.yaml не содержит карточек: {path}")
+    overrides = read_look_overrides(directory)
     looks: list[_Look] = []
     seen: set[str] = set()
     for item in items:
@@ -429,7 +430,16 @@ def _read_looks(directory: Path) -> tuple[_Look, ...]:
         if look_id in seen:
             raise ProfileError(f"повтор id карточки {look_id} в {path}")
         seen.add(look_id)
-        looks.append(_Look(id=look_id, values=dict(item)))
+        looks.append(
+            _Look(
+                id=look_id,
+                values=dict(item),
+                prompt=overrides.pop(look_id, None),
+            )
+        )
+    if overrides:
+        unknown = ", ".join(sorted(overrides))
+        raise ProfileError(f"override неизвестной карточки в {path}: {unknown}")
     return tuple(looks)
 
 
@@ -482,23 +492,6 @@ def _overlay_style(data: Mapping[str, Any]) -> _OverlayStyle:
         block2_text=_optional_str(data.get("block2_text")),
         block2_alpha=_optional_int(data.get("block2_alpha")),
     )
-
-
-def _age_text(age: object) -> str:
-    """Return an age phrase; the model holds words better than bare numbers."""
-    try:
-        value = int(str(age))
-    except (TypeError, ValueError):
-        return ""
-    if value < 30:
-        return "in her late twenties"
-    if value <= 31:
-        return "around thirty"
-    if value <= 33:
-        return "in her early thirties"
-    if value <= 35:
-        return "in her mid-thirties"
-    return "in her late thirties"
 
 
 def _string(data: Mapping[str, Any], key: str, name: str) -> str:

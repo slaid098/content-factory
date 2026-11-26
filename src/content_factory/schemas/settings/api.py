@@ -123,3 +123,30 @@ class SettingsApplyResponse(BaseModel):
     diff: str
     backup: str | None
     settings: RuntimeSettings
+
+
+class GeneratorSettingsResponse(BaseModel):
+    """Safe read-only slice of the generator settings.
+
+    Secrets (``vast_api_token`` and the OpenAI ``api_key``) and the output
+    directory stay out of the response.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    rent_pool_size: int
+    videos_per_server: int
+    max_servers: int
+    offer_refresh_seconds: int
+    server_ready_timeout: int
+    comfy_health_timeout: int
+    comfy_job_timeout: int
+    comfy_health_interval: int
+    max_cost_per_hour: float | None
+    stale_instance_hours: int
+    safety_enabled: bool
+    safety_frames: int
+    safety_threshold: float
+    safety_nude_threshold: float
+    safety_frame_attempts: int
+    model: str

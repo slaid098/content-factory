@@ -183,7 +183,7 @@ def test_mixed_profile_fills_video_before_photo(tmp_path: Path) -> None:
     _make_profile(
         tmp_path,
         production=[
-            {"producer": "vast", "type": "video", "qa": ["media", "clef"]},
+            {"producer": "vast", "type": "video", "qa": ["mp4", "clef"]},
             {"producer": "card", "type": "photo", "qa": ["image"]},
         ],
     )
@@ -200,7 +200,7 @@ def test_mixed_profile_with_full_video_fills_photo(tmp_path: Path) -> None:
     _make_profile(
         tmp_path,
         production=[
-            {"producer": "vast", "type": "video", "qa": ["media", "clef"]},
+            {"producer": "vast", "type": "video", "qa": ["mp4", "clef"]},
             {"producer": "card", "type": "photo", "qa": ["image"]},
         ],
     )
@@ -217,7 +217,7 @@ def test_mixed_profile_with_full_video_fills_photo(tmp_path: Path) -> None:
 
 def test_photo_of_first_profile_is_not_blocked_by_video_of_second(tmp_path: Path) -> None:
     mixed = [
-        {"producer": "vast", "type": "video", "qa": ["media", "clef"]},
+        {"producer": "vast", "type": "video", "qa": ["mp4", "clef"]},
         {"producer": "card", "type": "photo", "qa": ["image"]},
     ]
     _make_profile(tmp_path, "a", "profile_1", production=mixed)
@@ -225,7 +225,7 @@ def test_photo_of_first_profile_is_not_blocked_by_video_of_second(tmp_path: Path
         tmp_path,
         "b",
         "profile_1",
-        production=[{"producer": "vast", "type": "video", "qa": ["media", "clef"]}],
+        production=[{"producer": "vast", "type": "video", "qa": ["mp4", "clef"]}],
     )
     _set_refill(tmp_path, "a/profile_1", ProfileRefill(True, None, None, 10, 0))
     _set_refill(tmp_path, "b/profile_1", ProfileRefill(True, None, None))

@@ -20,7 +20,7 @@ class _Profile:
     language: str = "ru"
 
 
-_VIDEO = Layer("vast", "vast", (), ArtifactKind.VIDEO, ("media", "clef"))
+_VIDEO = Layer("vast", "vast", (), ArtifactKind.VIDEO, ("mp4", "clef"))
 _PHOTO = Layer("card", "card", (), ArtifactKind.PHOTO, ("image",))
 
 
@@ -67,11 +67,11 @@ def test_a_mixed_recipe_is_one_group_of_independent_chains() -> None:
 @pytest.mark.parametrize(
     "other",
     [
-        Layer("other", "vast", (), ArtifactKind.VIDEO, ("media", "clef")),
-        Layer("vast", "other", (), ArtifactKind.VIDEO, ("media", "clef")),
-        Layer("vast", "vast", ("source",), ArtifactKind.VIDEO, ("media", "clef")),
-        Layer("vast", "vast", (), ArtifactKind.PHOTO, ("media", "clef")),
-        Layer("vast", "vast", (), ArtifactKind.VIDEO, ("clef", "media")),
+        Layer("other", "vast", (), ArtifactKind.VIDEO, ("mp4", "clef")),
+        Layer("vast", "other", (), ArtifactKind.VIDEO, ("mp4", "clef")),
+        Layer("vast", "vast", ("source",), ArtifactKind.VIDEO, ("mp4", "clef")),
+        Layer("vast", "vast", (), ArtifactKind.PHOTO, ("mp4", "clef")),
+        Layer("vast", "vast", (), ArtifactKind.VIDEO, ("clef", "mp4")),
     ],
 )
 def test_any_layer_field_changes_the_recipe_signature(other: Layer) -> None:

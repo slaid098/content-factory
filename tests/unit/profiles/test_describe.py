@@ -96,7 +96,7 @@ def test_valid_answer_is_written_and_keeps_other_keys(tmp_path: Path) -> None:
         "dating",
         "profile_1",
         looks=[{"age": 30, "hair": "dark"}],
-        production=[{"producer": "vast", "type": "video", "qa": ["media", "clef"]}],
+        production=[{"producer": "vast", "type": "video", "qa": ["mp4", "clef"]}],
     )
 
     _describe(tmp_path, _Writer(_answer()))
@@ -106,7 +106,7 @@ def test_valid_answer_is_written_and_keeps_other_keys(tmp_path: Path) -> None:
     assert data["summary"] == _VALID_SUMMARY
     assert data["language"] == "ru"
     assert data["looks"] == [{"age": 30, "hair": "dark"}]
-    assert data["production"] == [{"producer": "vast", "type": "video", "qa": ["media", "clef"]}]
+    assert data["production"] == [{"producer": "vast", "type": "video", "qa": ["mp4", "clef"]}]
 
 
 def test_second_call_does_not_ask_the_model(tmp_path: Path) -> None:

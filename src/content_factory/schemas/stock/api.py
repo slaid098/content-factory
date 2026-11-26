@@ -21,6 +21,16 @@ class LanguageStockResponse(BaseModel):
     video_bytes: int = Field(ge=0)
 
 
+class GeneralStockResponse(BaseModel):
+    """General video stock of one language in the API response."""
+
+    model_config = ConfigDict(frozen=True)
+
+    language: str
+    stock: int = Field(ge=0)
+    target: int
+
+
 class StockResponse(BaseModel):
     """Stock, loop state and snapshot time returned by the stock endpoint."""
 
@@ -32,3 +42,4 @@ class StockResponse(BaseModel):
     captcha_streak: int
     zero_runs: int
     languages: tuple[LanguageStockResponse, ...]
+    general: tuple[GeneralStockResponse, ...]

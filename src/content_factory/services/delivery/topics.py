@@ -12,10 +12,11 @@ from content_factory.services.stock import language_files
 
 
 def collect_topics(data_dir: Path, language: str) -> TopicsResponse:
-    """Count stock mp4 files by their exact ``videos.query`` topic.
+    """Count General stock mp4 files by their exact ``videos.query`` topic.
 
-    Files of every niche are counted; files without a database row or with an
-    empty query are reported as unclassified. Any missing content directory
+    Only General videos are counted: files with a profile id are left out of
+    the breakdown and of ``unclassified``. Files without a database row or with
+    an empty query are reported as unclassified. Any missing content directory
     yields an empty breakdown.
 
     Args:
@@ -42,5 +43,7 @@ def collect_topics(data_dir: Path, language: str) -> TopicsResponse:
 
 
 def _stock_hashes(content_dir: Path, language: str) -> list[str]:
-    """Return SHA-256 stems of the language files across every niche."""
-    return [item.path.stem for item in language_files(content_dir, language)]
+    """Return SHA-256 stems of the General video files of one language."""
+    return [
+        item.path.stem for item in language_files(content_dir, language) if item.profile_id is None
+    ]

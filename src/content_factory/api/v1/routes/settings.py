@@ -9,13 +9,14 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from loguru import logger
 
 from content_factory.api.v1.routes.content import require_delivery_token
-from content_factory.config.settings import Settings
+from content_factory.config.settings import Settings, load_generator_settings
 from content_factory.exceptions.errors import (
     ConfigError,
     SettingsValidationError,
     SettingsWriteError,
 )
 from content_factory.schemas.settings.api import (
+    GeneratorSettingsResponse,
     RuntimeSettings,
     SettingsApplyResponse,
     SettingsPreviewResponse,
@@ -56,6 +57,45 @@ def get_settings(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(ex),
         ) from ex
+
+
+@settings_router.get(
+    "/content/settings/generator",
+    response_model=GeneratorSettingsResponse,
+    responses=_READ_RESPONSES,
+)
+def get_generator_settings(
+    settings: Annotated[Settings, Depends(require_delivery_token)],
+) -> GeneratorSettingsResponse:
+    """Return the safe read-only slice of the generator settings."""
+    try:
+        generator = load_generator_settings()
+    except ConfigError as ex:
+        logger.bind(error=ex, error_type=type(ex).__name__).error(
+            "Не удалось прочитать настройки генератора"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="generator settings unavailable",
+        ) from ex
+    return GeneratorSettingsResponse(
+        rent_pool_size=generator.rent_pool_size,
+        videos_per_server=generator.videos_per_server,
+        max_servers=generator.max_servers,
+        offer_refresh_seconds=generator.offer_refresh_seconds,
+        server_ready_timeout=generator.server_ready_timeout,
+        comfy_health_timeout=generator.comfy_health_timeout,
+        comfy_job_timeout=generator.comfy_job_timeout,
+        comfy_health_interval=generator.comfy_health_interval,
+        max_cost_per_hour=generator.max_cost_per_hour,
+        stale_instance_hours=generator.stale_instance_hours,
+        safety_enabled=generator.safety_enabled,
+        safety_frames=generator.safety_frames,
+        safety_threshold=generator.safety_threshold,
+        safety_nude_threshold=generator.safety_nude_threshold,
+        safety_frame_attempts=generator.safety_frame_attempts,
+        model=generator.model,
+    )
 
 
 @settings_router.post(

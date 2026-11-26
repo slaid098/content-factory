@@ -28,12 +28,10 @@ export interface QueriesView {
 interface QueryItem {
   query: string;
   count: number;
-  in_file: boolean;
 }
 
 interface QueriesData {
   queries: QueryItem[];
-  unclassified: number;
   total: number;
 }
 
@@ -93,14 +91,11 @@ export function createQueriesView(elements: QueriesElements): QueriesView {
       : data.queries;
 
     const rows = visible.map((item) => {
-      const row = el("li", item.count === 0 ? "query-item is-zero" : "query-item");
-      row.append(el("span", "query-name", item.query));
-      const tags = el("span", "query-tags");
-      tags.append(el("span", "badge", `${formatCount(item.count)} видео`));
-      if (!item.in_file) {
-        tags.append(el("span", "badge warn", "нет в файле"));
-      }
-      row.append(tags);
+      const row = el("tr", item.count === 0 ? "query-item is-zero" : "query-item");
+      row.append(el("td", "query-name", item.query));
+      const count = el("td", "query-count");
+      count.append(el("span", "badge", formatCount(item.count)));
+      row.append(count);
       return row;
     });
 
@@ -110,12 +105,7 @@ export function createQueriesView(elements: QueriesElements): QueriesView {
     elements.empty.textContent =
       data.queries.length === 0 ? "Запросов пока нет." : "Ничего не найдено.";
 
-    const inFile = data.queries.filter((item) => item.in_file).length;
-    const extra = data.queries.length - inFile;
-    elements.summary.textContent =
-      `Запросов: ${formatCount(data.queries.length)}, в файле: ${formatCount(inFile)}, ` +
-      `только в базе: ${formatCount(extra)}. Видео по темам: ${formatCount(data.total)}, ` +
-      `без темы: ${formatCount(data.unclassified)}.`;
+    elements.summary.textContent = `Запросов: ${formatCount(data.queries.length)} · видео: ${formatCount(data.total)}.`;
   }
 
   async function add(event: SubmitEvent): Promise<void> {
@@ -182,13 +172,11 @@ function normalize(response: unknown): QueriesData {
       return {
         query: String(item.query ?? ""),
         count: Number(item.count) || 0,
-        in_file: Boolean(item.in_file),
       };
     })
     .filter((item) => item.query !== "");
   return {
     queries,
-    unclassified: Number(body.unclassified) || 0,
     total: Number(body.total) || 0,
   };
 }

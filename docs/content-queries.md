@@ -48,8 +48,8 @@ GET /api/v1/content/queries?language=ru
 | `queries[].query` | Строка запроса без комментариев и пустых строк |
 | `queries[].count` | Остаток `.mp4` этого языка, найденных запросом |
 | `queries[].in_file` | Запрос есть в `<language>.txt` |
-| `unclassified` | Файлы без строки в `downloads`/`videos` или с пустым `videos.query` |
-| `total` | Весь остаток языка: сумма `count` плюс `unclassified` |
+| `unclassified` | Файлы без строки в `downloads`/`videos` или с пустым `videos.query`; в `count`, `unclassified` и `total` входят только General-видео, профильные файлы — нет |
+| `total` | Весь остаток General-видео языка: сумма `count` плюс `unclassified` |
 
 Сначала идут все строки файла в исходном порядке, включая запросы с нулевым
 остатком. Затем — запросы из `videos.query` этого языка, которых нет в файле:

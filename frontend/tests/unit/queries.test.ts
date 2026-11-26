@@ -43,7 +43,18 @@ afterEach(() => {
 });
 
 describe("createQueriesView", () => {
-  it("renders rows, badges and the summary", async () => {
+  it("puts the add form on top and the language with refresh in the panel head", () => {
+    createView();
+
+    const form = node("query-form");
+    const search = node("queries-search");
+    expect(form.compareDocumentPosition(search) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(node("queries-language").closest(".panel-head")).not.toBeNull();
+    expect(node("queries-refresh").closest(".panel-head")).not.toBeNull();
+    expect(node("queries-list").closest(".table-wrap")).not.toBeNull();
+  });
+
+  it("renders rows with count pills and the summary", async () => {
     mockFetch(() => jsonResponse(responseBody));
     const view = createView();
 
@@ -53,10 +64,8 @@ describe("createQueriesView", () => {
     expect(list.hidden).toBe(false);
     expect(list.children.length).toBe(2);
     expect(list.children[1]?.classList.contains("is-zero")).toBe(true);
-    expect(list.children[1]?.textContent).toContain("нет в файле");
-    expect(node("queries-summary").textContent).toBe(
-      "Запросов: 2, в файле: 1, только в базе: 1. Видео по темам: 5, без темы: 2.",
-    );
+    expect(list.children[0]?.querySelector(".badge")?.textContent).toBe("3");
+    expect(node("queries-summary").textContent).toBe("Запросов: 2 · видео: 5.");
   });
 
   it("marks the list busy while queries load", async () => {

@@ -70,7 +70,7 @@ def test_mixed_recipe_publishes_video_and_photo_in_one_run(
         height=960,
         extra={
             "production": [
-                {"producer": "vast", "type": "video", "qa": ["media", "clef"]},
+                {"producer": "vast", "type": "video", "qa": ["mp4", "clef"]},
                 {"producer": "card", "type": "photo"},
             ]
         },
@@ -95,7 +95,7 @@ def test_mixed_recipe_publishes_video_and_photo_in_one_run(
             status=RunStatus.DONE,
             profiles=["dating/profile_2"],
             count=1,
-            production=[RunStep(producer="vast", type="video", qa=["media", "clef"])],
+            production=[RunStep(producer="vast", type="video", qa=["mp4", "clef"])],
             items=[
                 RunItem(
                     file=name,
@@ -128,7 +128,7 @@ def test_mixed_recipe_publishes_video_and_photo_in_one_run(
     report_path = next((tmp_path / "generated").rglob("run.json"))
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["production"] == [
-        {"producer": "vast", "type": "video", "qa": ["media", "clef"]},
+        {"producer": "vast", "type": "video", "qa": ["mp4", "clef"]},
         {"producer": "card", "type": "photo", "qa": ["image"]},
     ]
     assert [item["type"] for item in report["items"]] == ["video", "photo"]

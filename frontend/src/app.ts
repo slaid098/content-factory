@@ -1,13 +1,13 @@
-/** Partner delivery page: stock, async archive build, queries and settings. */
+/** Partner delivery page: stock counters, archive build, queries and archives. */
 
 import "./styles.css";
 
 import { createArchivesView } from "./archives";
 import { byId, el, setMessage, setText, toggle } from "./dom";
-import { createJobsView } from "./jobs";
+import { createJobsView, type DeliveryAddress } from "./jobs";
 import { formatDateTime } from "./lib/datetime";
 import { errorMessage } from "./lib/errors";
-import { formatBytes, formatCount, languageName } from "./lib/format";
+import { formatCount, languageName } from "./lib/format";
 import { MESSAGES, requestJson } from "./lib/http";
 import { createProfilesView } from "./profiles";
 import { createQueriesView } from "./queries";
@@ -21,29 +21,42 @@ interface LanguageRow {
   language: string;
   stock: number;
   target: number;
-  titled: number;
-  untitled: number;
-  videoBytes: number;
 }
 
-interface TopicRow {
-  query: string;
-  count: number;
+interface GeneralRow {
+  language: string;
+  stock: number;
+  target: number;
 }
+
+interface ProfileRow {
+  id: string;
+  stock: number;
+  target: number;
+}
+
+type DeliverySource = "general" | "profile";
 
 const ui = {
   stockPanel: byId("stock-panel"),
-  stockList: byId("stock-list"),
   stockLoading: byId("stock-loading"),
   stockMessage: byId("stock-message"),
-  stockEmpty: byId("stock-empty"),
   stockUpdated: byId("stock-updated"),
+  generalLanguage: byId("general-language"),
+  generalValue: byId("general-value"),
+  generalBar: byId("general-bar"),
+  generalBarFill: byId("general-bar-fill"),
+  generalHint: byId("general-hint"),
+  profilesTotal: byId("profiles-total"),
+  profilesStatHint: byId("profiles-stat-hint"),
+  profilesStock: byId("profiles-stock"),
+  profilesStockMessage: byId("profiles-stock-message"),
+  languageField: byId("language-field"),
   language: byId<HTMLSelectElement>("language"),
-  queriesLanguage: byId<HTMLSelectElement>("queries-language"),
-  topicList: byId("topic-list"),
-  topicsLanguage: byId("topics-language"),
-  topicsMessage: byId("topics-message"),
-  unclassified: byId("unclassified"),
+  profileField: byId("profile-field"),
+  profileSelect: byId<HTMLSelectElement>("delivery-profile"),
+  sourceGeneral: byId<HTMLButtonElement>("source-general"),
+  sourceProfile: byId<HTMLButtonElement>("source-profile"),
   form: byId<HTMLFormElement>("delivery-form"),
   count: byId<HTMLInputElement>("count"),
   countHint: byId("count-hint"),
@@ -51,6 +64,8 @@ const ui = {
   available: byId("available"),
   deliveryStatus: byId("delivery-status"),
   refresh: byId<HTMLButtonElement>("refresh"),
+  queriesLanguage: byId<HTMLSelectElement>("queries-language"),
+  settingsMessage: byId("settings-message"),
 };
 
 const archives = createArchivesView({
@@ -74,14 +89,6 @@ const jobs = createJobsView(
   { onFinished: (job) => void refreshAfterJob(job) },
 );
 
-const profiles = createProfilesView({
-  list: byId("profiles-list"),
-  message: byId("profiles-message"),
-  loading: byId("profiles-loading"),
-  empty: byId("profiles-empty"),
-  refresh: byId<HTMLButtonElement>("profiles-refresh"),
-});
-
 const queries = createQueriesView({
   language: ui.queriesLanguage,
   search: byId<HTMLInputElement>("queries-search"),
@@ -96,100 +103,58 @@ const queries = createQueriesView({
   refresh: byId<HTMLButtonElement>("queries-refresh"),
 });
 
-const settings = createSettingsView(
-  {
-    form: byId<HTMLFormElement>("settings-form"),
-    languages: byId("settings-languages"),
-    batch: byId<HTMLInputElement>("settings-batch"),
-    interval: byId<HTMLInputElement>("settings-interval"),
-    maxDuration: byId<HTMLInputElement>("settings-max-duration"),
-    maxQueries: byId<HTMLInputElement>("settings-max-queries"),
-    filterMax: byId<HTMLInputElement>("settings-filter-max"),
-    workers: byId<HTMLInputElement>("settings-workers"),
-    deliveryMax: byId<HTMLInputElement>("settings-delivery-max"),
-    preview: byId<HTMLButtonElement>("settings-preview"),
-    apply: byId<HTMLButtonElement>("settings-apply"),
-    status: byId("settings-status"),
-    diff: byId("settings-diff"),
-    diffText: byId("settings-diff-text"),
-    backup: byId("settings-backup"),
-    message: byId("settings-message"),
-    refresh: byId<HTMLButtonElement>("settings-refresh"),
-  },
-  { onLimits: applyLimits },
-);
+const profilesView = createProfilesView();
+const settingsView = createSettingsView({ onLimits: applyRuntimeLimits });
 
 const tabs = createTabs({
-  tabs: [byId("tab-delivery"), byId("tab-queries"), byId("tab-settings"), byId("tab-profiles")],
+  tabs: [byId("tab-delivery"), byId("tab-queries"), byId("tab-profiles"), byId("tab-settings")],
   panels: [
     byId("panel-delivery"),
     byId("panel-queries"),
-    byId("panel-settings"),
     byId("panel-profiles"),
+    byId("panel-settings"),
   ],
   onChange: onTabChange,
 });
 
 const state = {
   languages: [] as LanguageRow[],
+  general: [] as GeneralRow[],
+  profiles: [] as ProfileRow[],
   language: null as string | null,
-  topics: [] as TopicRow[],
-  unclassified: 0,
+  profile: null as string | null,
+  source: "general" as DeliverySource,
   maxCount: MAX_COUNT_FALLBACK,
   busy: false,
   refreshing: false,
   queriesLoaded: false,
-  profilesLoaded: false,
-  activePanel: "panel-delivery",
 };
 
-async function refreshAfterJob(job: Record<string, unknown>): Promise<void> {
-  const ready = job.status === "ready" || job.status === "ready_local";
-  setStatus(
-    job.status === "ready"
-      ? "Архив готов — скачайте его по ссылке."
-      : job.status === "ready_local"
-        ? "Архив готов локально — скачайте его с сервера."
-        : "",
-    false,
-  );
-  await loadStock();
-  await Promise.allSettled([loadTopics(), archives.load(ready ? String(job.request_id) : null)]);
-  if (state.queriesLoaded && state.language !== null) {
-    await queries.load(state.language);
-  }
-}
-
-async function loadStock(): Promise<boolean> {
+async function loadStock(): Promise<void> {
   const previous = state.language;
   ui.stockPanel.setAttribute("aria-busy", "true");
   toggle(ui.stockLoading, true);
   try {
     const data = asObject(await requestJson("/api/v1/stock"));
-    const rows = Array.isArray(data.languages) ? data.languages : [];
-    state.languages = rows.map((row) => {
-      const item = asObject(row);
-      return {
-        language: String(item.language),
-        stock: Number(item.stock) || 0,
-        target: Number(item.target) || 0,
-        titled: Number(item.titled) || 0,
-        untitled: Number(item.untitled) || 0,
-        videoBytes: Number(item.video_bytes) || 0,
-      };
-    });
+    state.languages = rows(data.languages).map((item) => ({
+      language: String(item.language),
+      stock: Number(item.stock) || 0,
+      target: Number(item.target) || 0,
+    }));
+    state.general = rows(data.general).map((item) => ({
+      language: String(item.language),
+      stock: Number(item.stock) || 0,
+      target: Number(item.target) || 0,
+    }));
     if (!state.languages.some((row) => row.language === state.language)) {
-      const first = state.languages[0];
-      state.language = first ? first.language : null;
+      state.language = state.languages[0]?.language ?? null;
     }
-    renderStock();
+    renderGeneral();
     syncLanguageSelects();
     setMessage(ui.stockMessage, "");
     setText(ui.stockUpdated, `обновлено ${formatDateTime(String(data.generated_at))}`);
-    if (state.language !== previous) {
-      state.topics = [];
-      state.unclassified = 0;
-      renderTopics();
+    if (state.language !== previous && state.queriesLoaded && state.language !== null) {
+      void queries.load(state.language);
     }
   } catch (error) {
     setMessage(ui.stockMessage, errorMessage(error));
@@ -197,51 +162,106 @@ async function loadStock(): Promise<boolean> {
     ui.stockPanel.setAttribute("aria-busy", "false");
     toggle(ui.stockLoading, false);
   }
-  return state.language !== previous;
 }
 
-function renderStock(): void {
-  const items = state.languages.map((row) => {
-    const item = el("li", "stock-item");
-    const head = el("div", "stock-head");
-    head.append(
-      el("span", "stock-name", languageName(row.language)),
-      el("span", "stock-value", `${formatCount(row.stock)} из ${formatCount(row.target)}`),
-    );
+async function loadProfiles(): Promise<void> {
+  try {
+    const data = asObject(await requestJson("/api/v1/content/profiles"));
+    state.profiles = rows(data.profiles).map((item) => ({
+      id: String(item.id),
+      stock: Number(item.stock) || 0,
+      target: Number(item.target) || 0,
+    }));
+    if (!state.profiles.some((row) => row.id === state.profile)) {
+      state.profile = state.profiles[0]?.id ?? null;
+    }
+    renderProfiles();
+    syncProfileSelect();
+    setMessage(ui.profilesStockMessage, "");
+  } catch (error) {
+    setMessage(ui.profilesStockMessage, errorMessage(error));
+  }
+}
 
-    const bar = el("div", "bar");
-    bar.setAttribute("role", "progressbar");
-    bar.setAttribute("aria-label", `${languageName(row.language)}: ${row.stock} из ${row.target}`);
-    bar.setAttribute("aria-valuemin", "0");
-    bar.setAttribute("aria-valuemax", String(row.target));
-    bar.setAttribute("aria-valuenow", String(row.stock));
+async function loadSettings(): Promise<void> {
+  try {
+    const data = asObject(await requestJson("/api/v1/content/settings"));
+    applyRuntimeLimits(data);
+    setMessage(ui.settingsMessage, "");
+  } catch (error) {
+    setMessage(ui.settingsMessage, errorMessage(error));
+  }
+  updateAvailability();
+}
+
+function applyRuntimeLimits(settings: Record<string, unknown>): void {
+  const delivery = asObject(settings.delivery);
+  const raw = Number(delivery.max_count);
+  state.maxCount = Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : MAX_COUNT_FALLBACK;
+  updateAvailability();
+}
+
+function renderGeneral(): void {
+  const row = generalRow();
+  const stock = row?.stock ?? 0;
+  const target = row?.target ?? 0;
+  setText(ui.generalLanguage, state.language === null ? "—" : languageName(state.language));
+  setText(ui.generalValue, `${formatCount(stock)} / ${formatCount(target)}`);
+  setBar(ui.generalBar, ui.generalBarFill, stock, target, "Общетематичные");
+  setText(
+    ui.generalHint,
+    stock === 0 ? "Видео без профиля пока нет." : `Готово к выдаче: ${formatCount(stock)}.`,
+  );
+  updateAvailability();
+}
+
+function renderProfiles(): void {
+  const total = state.profiles.reduce((sum, row) => sum + row.stock, 0);
+  setText(ui.profilesTotal, formatCount(total));
+  setText(
+    ui.profilesStatHint,
+    state.profiles.length === 0
+      ? "Профилей пока нет."
+      : `Профилей: ${formatCount(state.profiles.length)} · видео: ${formatCount(total)}.`,
+  );
+  const items = state.profiles.map((row) => {
+    const item = el("li", "mini-row");
+    item.append(el("span", "mini-name", row.id));
+    item.append(el("span", "mini-value", `${formatCount(row.stock)} / ${formatCount(row.target)}`));
+    const bar = el("div", "bar mini-bar");
     const fill = el("span", "bar-fill");
-    const share = row.target > 0 ? (row.stock / row.target) * 100 : 0;
-    fill.style.width = `${Math.min(100, Math.max(0, share))}%`;
     bar.append(fill);
-
-    const meta = el(
-      "p",
-      "stock-meta",
-      `${formatCount(row.titled)} с названием · ${formatCount(row.untitled)} без · ${formatBytes(row.videoBytes)}`,
-    );
-
-    item.append(head, bar, meta);
+    setBar(bar, fill, row.stock, row.target, row.id);
+    item.append(bar);
     return item;
   });
+  ui.profilesStock.replaceChildren(...items);
+  toggle(ui.profilesStock, items.length !== 0);
+  updateAvailability();
+}
 
-  ui.stockList.replaceChildren(...items);
-  toggle(ui.stockList, items.length !== 0);
-  toggle(ui.stockEmpty, !state.languages.some((row) => row.stock > 0));
+function setBar(
+  bar: HTMLElement,
+  fill: HTMLElement,
+  stock: number,
+  target: number,
+  label: string,
+): void {
+  const share = target > 0 ? (stock / target) * 100 : 0;
+  fill.style.width = `${Math.min(100, Math.max(0, share))}%`;
+  bar.setAttribute("aria-label", `${label}: ${stock} из ${target}`);
+  bar.setAttribute("aria-valuemin", "0");
+  bar.setAttribute("aria-valuemax", String(Math.max(target, stock, 1)));
+  bar.setAttribute("aria-valuenow", String(stock));
 }
 
 function syncLanguageSelects(): void {
-  fillLanguageSelect(ui.language, true);
-  fillLanguageSelect(ui.queriesLanguage, false);
-  updateAvailable();
+  fillLanguageSelect(ui.language);
+  fillLanguageSelect(ui.queriesLanguage);
+  updateAvailability();
 }
 
-function fillLanguageSelect(select: HTMLSelectElement, withStock: boolean): void {
+function fillLanguageSelect(select: HTMLSelectElement): void {
   if (state.languages.length === 0) {
     const placeholder = el("option", "", "Нет доступных языков");
     placeholder.disabled = true;
@@ -251,10 +271,7 @@ function fillLanguageSelect(select: HTMLSelectElement, withStock: boolean): void
     return;
   }
   const options = state.languages.map((row) => {
-    const label = withStock
-      ? `${languageName(row.language)} — ${formatCount(row.titled)}`
-      : languageName(row.language);
-    const option = el("option", "", label);
+    const option = el("option", "", languageName(row.language));
     option.value = row.language;
     return option;
   });
@@ -265,76 +282,45 @@ function fillLanguageSelect(select: HTMLSelectElement, withStock: boolean): void
   }
 }
 
-async function loadTopics(): Promise<void> {
-  const language = state.language;
-  if (language === null) {
-    state.topics = [];
-    state.unclassified = 0;
-    renderTopics();
+function syncProfileSelect(): void {
+  if (state.profiles.length === 0) {
+    const placeholder = el("option", "", "Нет доступных профилей");
+    placeholder.disabled = true;
+    placeholder.selected = true;
+    ui.profileSelect.replaceChildren(placeholder);
+    ui.profileSelect.disabled = true;
     return;
   }
-  try {
-    const data = asObject(
-      await requestJson(`/api/v1/content/topics?language=${encodeURIComponent(language)}`),
-    );
-    if (language !== state.language) {
-      return;
-    }
-    state.topics = (Array.isArray(data.topics) ? data.topics : []).map((row) => {
-      const item = asObject(row);
-      return {
-        query: String(item.query),
-        count: Number(item.count) || 0,
-      };
-    });
-    state.unclassified = Number(data.unclassified) || 0;
-    setMessage(ui.topicsMessage, "");
-    ui.topicsMessage.classList.remove("is-error");
-  } catch (error) {
-    if (language === state.language) {
-      setMessage(ui.topicsMessage, errorMessage(error));
-      ui.topicsMessage.classList.add("is-error");
-    }
+  const options = state.profiles.map((row) => {
+    const option = el("option", "", row.id);
+    option.value = row.id;
+    return option;
+  });
+  ui.profileSelect.replaceChildren(...options);
+  ui.profileSelect.disabled = false;
+  if (state.profile !== null) {
+    ui.profileSelect.value = state.profile;
   }
-  renderTopics();
 }
 
-function renderTopics(): void {
-  const total = stockCount();
-  const cards = [buildTopic("Все темы", total)];
-  for (const topic of state.topics) {
-    cards.push(buildTopic(topic.query, topic.count));
+function generalRow(): GeneralRow | null {
+  return state.general.find((row) => row.language === state.language) ?? null;
+}
+
+function selectedProfile(): ProfileRow | null {
+  return state.profiles.find((row) => row.id === state.profile) ?? null;
+}
+
+function sourceStock(): number {
+  if (state.source === "profile") {
+    return selectedProfile()?.stock ?? 0;
   }
-  ui.topicList.replaceChildren(...cards);
-  setText(ui.topicsLanguage, state.language === null ? "" : languageName(state.language));
-  toggle(ui.unclassified, state.unclassified !== 0);
-  ui.unclassified.textContent = state.unclassified
-    ? `Без темы: ${formatCount(state.unclassified)} — они входят в «Все темы».`
-    : "";
-  updateAvailable();
+  return generalRow()?.stock ?? 0;
 }
 
-function buildTopic(label: string, count: number): HTMLElement {
-  const row = el("li", "topic");
-  row.append(el("span", "topic-name", label), el("span", "topic-count", formatCount(count)));
-  return row;
-}
-
-function stockCount(): number {
-  const row = state.languages.find((item) => item.language === state.language);
-  return row ? row.stock : 0;
-}
-
-function stockTotal(): number {
-  const row = state.languages.find((item) => item.language === state.language);
-  return row ? row.titled : 0;
-}
-
-function updateAvailable(): void {
-  const total = stockTotal();
-  const row = state.languages.find((item) => item.language === state.language);
-  const stock = row ? row.stock : 0;
-  const limit = Math.max(1, Math.min(state.maxCount, total));
+function updateAvailability(): void {
+  const stock = sourceStock();
+  const limit = Math.max(1, Math.min(state.maxCount, stock));
   ui.count.max = String(limit);
   const current = Number.parseInt(ui.count.value, 10);
   if (!Number.isFinite(current) || current < 1) {
@@ -344,24 +330,22 @@ function updateAvailable(): void {
   }
 
   if (stock === 0) {
-    ui.available.textContent = "видео пока нет";
-    ui.countHint.textContent = "Видео этого языка пока нет — выберите другой язык.";
-  } else if (total === 0) {
-    ui.available.textContent = "ждём обработку названий";
-    ui.countHint.textContent =
-      "Видео уже скачаны, но названий пока нет — они появятся здесь после обработки.";
+    setText(ui.available, "видео пока нет");
+    setText(ui.countHint, "Видео этого источника пока нет.");
   } else {
-    ui.available.textContent = `доступно ${formatCount(total)}`;
-    const suffix = state.maxCount < total ? " (лимит из настроек)" : "";
-    ui.countHint.textContent = `Не больше ${formatCount(limit)} за раз${suffix}.`;
+    setText(ui.available, `доступно ${formatCount(stock)}`);
+    const suffix = state.maxCount < stock ? " (лимит из настроек)" : "";
+    setText(ui.countHint, `Не больше ${formatCount(limit)} за раз${suffix}.`);
   }
-  ui.count.disabled = state.busy || total === 0;
-  ui.deliver.disabled = state.busy || total === 0;
+
+  const disabled = state.busy || stock === 0;
+  ui.count.disabled = disabled;
+  ui.deliver.disabled = disabled;
   ui.deliver.title =
-    stock === 0
-      ? "В стоке выбранного языка нет видео"
-      : total === 0
-        ? "Ждём обработку названий видео"
+    state.source === "profile" && state.profiles.length === 0
+      ? "Нет доступных профилей"
+      : stock === 0
+        ? "В стоке выбранного источника нет видео"
         : "";
 }
 
@@ -369,12 +353,24 @@ function setBusy(busy: boolean): void {
   state.busy = busy;
   ui.form.setAttribute("aria-busy", String(busy));
   ui.deliver.classList.toggle("is-busy", busy);
-  updateAvailable();
+  updateAvailability();
 }
 
 function setStatus(text: string, isError: boolean): void {
   ui.deliveryStatus.textContent = text;
   ui.deliveryStatus.classList.toggle("is-error", isError);
+}
+
+function setSource(source: DeliverySource): void {
+  state.source = source;
+  const general = source === "general";
+  ui.sourceGeneral.setAttribute("aria-pressed", String(general));
+  ui.sourceProfile.setAttribute("aria-pressed", String(!general));
+  ui.sourceGeneral.classList.toggle("is-active", general);
+  ui.sourceProfile.classList.toggle("is-active", !general);
+  toggle(ui.languageField, general);
+  toggle(ui.profileField, !general);
+  updateAvailability();
 }
 
 function selectLanguage(code: string): void {
@@ -383,29 +379,46 @@ function selectLanguage(code: string): void {
     return;
   }
   state.language = code;
-  state.topics = [];
-  state.unclassified = 0;
+  renderGeneral();
   syncLanguageSelects();
-  renderTopics();
-  void loadTopics();
   if (state.queriesLoaded) {
     void queries.load(code);
   }
 }
 
-async function submitDelivery(event: SubmitEvent): Promise<void> {
-  event.preventDefault();
-  const total = stockTotal();
-  if (state.busy || state.language === null || total === 0) {
+function selectProfile(id: string): void {
+  if (!id) {
+    syncProfileSelect();
     return;
   }
-  const count = clampCount(ui.count.value, total);
+  state.profile = id;
+  syncProfileSelect();
+  updateAvailability();
+}
+
+function deliveryAddress(): DeliveryAddress | null {
+  if (state.source === "profile") {
+    return state.profile === null ? null : { profile: state.profile };
+  }
+  return state.language === null ? null : { language: state.language };
+}
+
+async function submitDelivery(event: SubmitEvent): Promise<void> {
+  event.preventDefault();
+  const stock = sourceStock();
+  if (state.busy || stock === 0) {
+    return;
+  }
+  const address = deliveryAddress();
+  if (address === null) {
+    return;
+  }
+  const count = clampCount(ui.count.value, stock);
   ui.count.value = String(count);
-  const requestId = createRequestId();
   setBusy(true);
   setStatus(`Собираем ${formatCount(count)} видео. Это может занять несколько минут.`, false);
   try {
-    const job = await jobs.start(state.language, count, requestId);
+    const job = await jobs.start({ address, count, requestId: createRequestId() });
     if (job.status === "building") {
       setStatus("Сборка идёт. Статус обновляется автоматически.", false);
     } else if (job.status === "empty") {
@@ -422,35 +435,45 @@ async function submitDelivery(event: SubmitEvent): Promise<void> {
   }
 }
 
-function clampCount(raw: string, total: number): number {
+function clampCount(raw: string, stock: number): number {
   const parsed = Number.parseInt(raw, 10);
   const requested = Number.isFinite(parsed) ? Math.max(1, parsed) : 1;
-  return Math.min(state.maxCount, total, requested);
+  return Math.min(state.maxCount, stock, requested);
 }
 
-function applyLimits(settings: Record<string, unknown>): void {
-  // settings.delivery.max_count приходит из GET /api/v1/content/settings; без него — 100.
-  const delivery = settings.delivery;
-  const raw =
-    delivery && typeof delivery === "object" && !Array.isArray(delivery)
-      ? Number((delivery as Record<string, unknown>).max_count)
-      : Number.NaN;
-  state.maxCount = Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : MAX_COUNT_FALLBACK;
-  updateAvailable();
+async function refreshAfterJob(job: Record<string, unknown>): Promise<void> {
+  const status = String(job.status);
+  setStatus(
+    status === "ready"
+      ? "Архив готов — скачайте его по ссылке."
+      : status === "ready_local"
+        ? "Архив готов локально — скачайте его с сервера."
+        : "",
+    false,
+  );
+  await loadStock();
+  await Promise.allSettled([
+    loadProfiles(),
+    archives.load(status === "ready" || status === "ready_local" ? String(job.request_id) : null),
+    loadSettings(),
+  ]);
+  if (state.queriesLoaded && state.language !== null) {
+    await queries.load(state.language);
+  }
 }
 
 function onTabChange(panelId: string): void {
-  state.activePanel = panelId;
-  if (panelId === "panel-queries" && !state.queriesLoaded && state.language !== null) {
+  if (panelId === "panel-queries" && !state.queriesLoaded) {
     state.queriesLoaded = true;
-    void queries.load(state.language);
+    if (state.language !== null) {
+      void queries.load(state.language);
+    }
+  }
+  if (panelId === "panel-profiles") {
+    void profilesView.load();
   }
   if (panelId === "panel-settings") {
-    void settings.load();
-  }
-  if (panelId === "panel-profiles" && !state.profilesLoaded) {
-    state.profilesLoaded = true;
-    void profiles.load();
+    void settingsView.load();
   }
 }
 
@@ -461,9 +484,15 @@ async function refreshAll(): Promise<void> {
   state.refreshing = true;
   try {
     await loadStock();
-    await Promise.allSettled([loadTopics(), archives.load()]);
+    await Promise.allSettled([loadProfiles(), archives.load(), loadSettings()]);
     if (state.queriesLoaded && state.language !== null) {
       await queries.load(state.language);
+    }
+    if (!byId("panel-profiles").hidden) {
+      await profilesView.load();
+    }
+    if (!byId("panel-settings").hidden) {
+      await settingsView.load(true);
     }
   } finally {
     state.refreshing = false;
@@ -495,30 +524,47 @@ function bindEvents(): void {
   ui.queriesLanguage.addEventListener("change", () => {
     selectLanguage(ui.queriesLanguage.value);
   });
+  ui.profileSelect.addEventListener("change", () => {
+    selectProfile(ui.profileSelect.value);
+  });
+  ui.sourceGeneral.addEventListener("click", () => {
+    setSource("general");
+  });
+  ui.sourceProfile.addEventListener("click", () => {
+    setSource("profile");
+  });
   ui.form.addEventListener("submit", (event) => {
     void submitDelivery(event);
   });
   ui.refresh.addEventListener("click", () => {
     void refreshAll();
   });
-  ui.count.addEventListener("change", updateAvailable);
+  ui.count.addEventListener("change", updateAvailability);
 }
 
 async function init(): Promise<void> {
   bindEvents();
+  setSource("general");
   tabs.show("panel-delivery");
   await loadStock();
-  await Promise.allSettled([loadTopics(), archives.load(), settings.load()]);
+  await Promise.allSettled([loadProfiles(), archives.load(), loadSettings()]);
   window.setInterval(() => {
     void refreshAll();
-    if (state.activePanel === "panel-profiles") {
-      void profiles.load();
-    }
   }, REFRESH_MS);
 }
 
+function rows(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => isObject(item))
+    : [];
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function asObject(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+  return isObject(value) ? value : {};
 }
 
 void init();

@@ -178,12 +178,14 @@ POST /api/v1/content/deliveries/link
   "size": 0,
   "files": 0,
   "url": null,
-  "error": null
+  "error": null,
+  "profile": null
 }
 ```
 
 `language` в ответе — вычисленный язык адреса: у профильного запроса без
 `language` это язык профиля. Дальше job запрашивается по этому языку.
+`profile` — профиль адреса, `null` у General и у старых sidecar без поля.
 
 Архив собирается существующим `deliver()` в фоне с тем же `type`, что и у
 запроса. Исходные медиа и sidecar фото удаляются только после успешной записи
@@ -272,7 +274,8 @@ app_data/archive/<language>/<request_id>.json
   "size": 303000000,
   "files": 100,
   "url": "https://filebin.net/cf-11111111-1111-4111-8111-111111111111/11111111-1111-4111-8111-111111111111.zip",
-  "error": null
+  "error": null,
+  "profile": null
 }
 ```
 
@@ -288,7 +291,9 @@ app_data/archive/<language>/<request_id>.json
 GET /api/v1/content/topics?language=ru
 ```
 
-Ответ — остаток видео по темам для одного языка; фото в разбивку не входят:
+Ответ — остаток General-видео по темам для одного языка: `topics` и
+`unclassified` считают только файлы без профиля; профильные файлы и фото в
+разбивку не входят:
 
 ```json
 {
@@ -413,7 +418,8 @@ GET /api/v1/content/archives
     "expires_at": "2026-05-02T12:00:00Z",
     "storage": "remote",
     "url": "https://filebin.net/cf-3f1c1b0e-6f1a-4f6e-9d2e-0f6a7b8c9d10/3f1c1b0e-6f1a-4f6e-9d2e-0f6a7b8c9d10.zip",
-    "files": 100
+    "files": 100,
+    "profile": null
   }
 ]
 ```
@@ -421,6 +427,8 @@ GET /api/v1/content/archives
 - `storage=remote` — архив на Filebin, `url` заполнен, `files` берётся из
   sidecar;
 - `storage=local` — zip на диске, `url=null`;
+- `profile` — профиль архива, `null` для General и для старого zip без
+  sidecar;
 - для старого локального архива без sidecar `files=null`, `size` — размер файла;
 - `created_at`/`expires_at` берутся из sidecar, для старого архива — из mtime
   файла.

@@ -33,20 +33,37 @@ def test_root_returns_partner_page(client: TestClient) -> None:
     html = response.text
     assert 'lang="ru"' in html
     assert 'name="viewport"' in html
-    assert 'id="topics"' in html
+    assert 'id="topics"' not in html
     assert 'id="archives"' in html
     assert 'id="delivery-form"' in html
+    assert 'id="delivery-source"' in html
+    assert 'id="general-title"' in html
+    assert 'id="profiles-stock"' in html
 
 
 def test_root_page_has_four_tabs_and_panels(client: TestClient) -> None:
     html = client.get("/").text
 
     assert 'role="tablist"' in html
-    for name in ("delivery", "queries", "settings", "profiles"):
+    assert re.findall(r'id="tab-([a-z]+)"', html) == [
+        "delivery",
+        "queries",
+        "profiles",
+        "settings",
+    ]
+    for name in ("delivery", "queries", "profiles", "settings"):
         assert f'id="tab-{name}"' in html
         assert f'id="panel-{name}"' in html
         assert f'aria-controls="panel-{name}"' in html
         assert f'aria-labelledby="tab-{name}"' in html
+
+
+def test_root_page_has_no_hero_or_footer(client: TestClient) -> None:
+    html = client.get("/").text
+
+    assert "<footer" not in html
+    assert 'class="lead"' not in html
+    assert 'class="eyebrow"' not in html
 
 
 def test_delivery_panel_is_open_by_default(client: TestClient) -> None:

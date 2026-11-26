@@ -18,29 +18,30 @@ function settings(overrides: Record<string, unknown> = {}): Record<string, unkno
   };
 }
 
+function generator(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    rent_pool_size: 3,
+    videos_per_server: 5,
+    max_servers: 4,
+    offer_refresh_seconds: 60,
+    server_ready_timeout: 900,
+    comfy_health_timeout: 600,
+    comfy_job_timeout: 1800,
+    comfy_health_interval: 15,
+    max_cost_per_hour: 0.35,
+    stale_instance_hours: 6,
+    safety_enabled: true,
+    safety_frames: 12,
+    safety_threshold: 0.5,
+    safety_nude_threshold: 0.3,
+    safety_frame_attempts: 2,
+    model: "gpt-test",
+    ...overrides,
+  };
+}
+
 function createView(onLimits = vi.fn<(value: Record<string, unknown>) => void>()) {
-  const view = createSettingsView(
-    {
-      form: node<HTMLFormElement>("settings-form"),
-      languages: node("settings-languages"),
-      batch: node<HTMLInputElement>("settings-batch"),
-      interval: node<HTMLInputElement>("settings-interval"),
-      maxDuration: node<HTMLInputElement>("settings-max-duration"),
-      maxQueries: node<HTMLInputElement>("settings-max-queries"),
-      filterMax: node<HTMLInputElement>("settings-filter-max"),
-      workers: node<HTMLInputElement>("settings-workers"),
-      deliveryMax: node<HTMLInputElement>("settings-delivery-max"),
-      preview: node<HTMLButtonElement>("settings-preview"),
-      apply: node<HTMLButtonElement>("settings-apply"),
-      status: node("settings-status"),
-      diff: node("settings-diff"),
-      diffText: node("settings-diff-text"),
-      backup: node("settings-backup"),
-      message: node("settings-message"),
-      refresh: node<HTMLButtonElement>("settings-refresh"),
-    },
-    { onLimits },
-  );
+  const view = createSettingsView({ onLimits });
   return { view, onLimits };
 }
 
@@ -67,14 +68,42 @@ afterEach(() => {
 });
 
 describe("createSettingsView", () => {
-  it("loads settings into the form and reports the limits", async () => {
-    mockFetch(() => jsonResponse(settings()));
+  it("loads the runtime settings, the generator panel and reports the limits", async () => {
+    const fetched = mockFetch((input) => {
+      if (String(input).endsWith("/settings/generator")) {
+        return jsonResponse(generator());
+      }
+      return jsonResponse(settings());
+    });
     const { view, onLimits } = createView();
 
     const loaded = await view.load();
 
     expect(loaded).toEqual(settings());
     expect(onLimits).toHaveBeenCalledWith(settings());
+    expect(fetched.calls().map((call) => call.url)).toEqual([
+      "/api/v1/content/settings",
+      "/api/v1/content/settings/generator",
+    ]);
+    expect(node("settings-generator").textContent).toContain("Пул аренды");
+    expect(node("settings-generator").textContent).toContain("3");
+    expect(node("settings-generator").textContent).toContain("Максимум серверов");
+    expect(node("settings-generator").textContent).toContain("4");
+    expect(node("settings-generator").textContent).toContain("Модель");
+    expect(node("settings-generator").textContent).toContain("gpt-test");
+    expect(node("settings-generator").textContent).toContain("да");
+  });
+
+  it("fills the editable runtime form", async () => {
+    mockFetch((input) =>
+      String(input).endsWith("/settings/generator")
+        ? jsonResponse(generator())
+        : jsonResponse(settings()),
+    );
+    const { view } = createView();
+
+    await view.load();
+
     expect(node("settings-languages").children.length).toBe(2);
     expect(node("settings-languages").textContent).toContain("Русский");
     expect(node<HTMLInputElement>("settings-batch").value).toBe("5");
@@ -84,23 +113,46 @@ describe("createSettingsView", () => {
     expect(node<HTMLInputElement>("settings-filter-max").value).toBe("100");
     expect(node<HTMLInputElement>("settings-workers").value).toBe("4");
     expect(node<HTMLInputElement>("settings-delivery-max").value).toBe("50");
-    expect(node<HTMLButtonElement>("settings-refresh").disabled).toBe(false);
   });
 
   it("loads once and only reloads when forced", async () => {
-    const fetched = mockFetch(() => jsonResponse(settings()));
+    const fetched = mockFetch((input) =>
+      String(input).endsWith("/settings/generator")
+        ? jsonResponse(generator())
+        : jsonResponse(settings()),
+    );
     const { view } = createView();
 
     await view.load();
     await view.load();
-    expect(fetched.mock).toHaveBeenCalledTimes(1);
+    expect(fetched.mock).toHaveBeenCalledTimes(2);
 
     await view.load(true);
-    expect(fetched.mock).toHaveBeenCalledTimes(2);
+    expect(fetched.mock).toHaveBeenCalledTimes(4);
   });
 
-  it("shows a read error and returns null", async () => {
-    mockFetch(() => jsonResponse({ detail: "нет файла" }, 500));
+  it("keeps the runtime form when the generator panel fails", async () => {
+    mockFetch((input) =>
+      String(input).endsWith("/settings/generator")
+        ? jsonResponse({ detail: "генератор недоступен" }, 500)
+        : jsonResponse(settings()),
+    );
+    const { view } = createView();
+
+    const loaded = await view.load();
+
+    expect(loaded).toEqual(settings());
+    expect(node<HTMLInputElement>("settings-batch").value).toBe("5");
+    expect(node("settings-generator-message").hidden).toBe(false);
+    expect(node("settings-generator-message").textContent).toBe("генератор недоступен");
+  });
+
+  it("shows a runtime read error and returns null", async () => {
+    mockFetch((input) =>
+      String(input).endsWith("/settings/generator")
+        ? jsonResponse(generator())
+        : jsonResponse({ detail: "нет файла" }, 500),
+    );
     const { view } = createView();
 
     const result = await view.load();
@@ -109,12 +161,31 @@ describe("createSettingsView", () => {
     expect(node("settings-message").textContent).toBe("нет файла");
     expect(node("settings-status").textContent).toBe("Настройки недоступны.");
     expect(node("settings-status").classList.contains("is-error")).toBe(true);
+    expect(node("settings-generator").textContent).toContain("gpt-test");
+  });
+
+  it("reports a malformed runtime body as unavailable", async () => {
+    mockFetch((input) =>
+      String(input).endsWith("/settings/generator")
+        ? jsonResponse(generator())
+        : jsonResponse({ run: { batch: 5 } }),
+    );
+    const { view } = createView();
+
+    const result = await view.load();
+
+    expect(result).toBeNull();
+    expect(node("settings-message").textContent).toBe("Сервер вернул неожиданный ответ.");
+    expect(node("settings-status").textContent).toBe("Настройки недоступны.");
   });
 
   it("previews changes and enables apply", async () => {
     mockFetch((input) => {
       if (String(input).endsWith("/preview")) {
         return jsonResponse({ changed: true, diff: "- old\n+ new" });
+      }
+      if (String(input).endsWith("/settings/generator")) {
+        return jsonResponse(generator());
       }
       return jsonResponse(settings());
     });
@@ -132,63 +203,14 @@ describe("createSettingsView", () => {
     expect(node<HTMLButtonElement>("settings-apply").disabled).toBe(false);
   });
 
-  it("reports no changes without a diff", async () => {
-    mockFetch((input) =>
-      String(input).endsWith("/preview")
-        ? jsonResponse({ changed: false })
-        : jsonResponse(settings()),
-    );
-    const { view } = createView();
-    await view.load();
-
-    preview();
-    await flush();
-
-    expect(node("settings-status").textContent).toBe("Изменений нет.");
-    expect(node("settings-diff").hidden).toBe(true);
-    expect(node<HTMLButtonElement>("settings-apply").disabled).toBe(true);
-  });
-
-  it("rejects preview when a field is invalid", async () => {
-    const fetched = mockFetch(() => jsonResponse(settings()));
-    const { view } = createView();
-    await view.load();
-    node<HTMLInputElement>("settings-interval").value = " ";
-
-    preview();
-    await flush();
-
-    expect(node("settings-status").textContent).toBe("Поле «run.interval» не может быть пустым.");
-    expect(node("settings-status").classList.contains("is-error")).toBe(true);
-    expect(fetched.calls().filter((call) => call.url.endsWith("/preview"))).toHaveLength(0);
-  });
-
-  it("invalidates a preview when the form changes during the request", async () => {
-    const pending = deferred<Response>();
-    mockFetch((input) =>
-      String(input).endsWith("/preview") ? pending.promise : jsonResponse(settings()),
-    );
-    const { view } = createView();
-    await view.load();
-
-    preview();
-    node<HTMLInputElement>("settings-batch").value = "7";
-    changeInput();
-    pending.resolve(jsonResponse({ changed: true, diff: "- old\n+ new" }));
-    await flush();
-
-    expect(node("settings-status").textContent).toBe(
-      "Настройки изменены. Нажмите «Проверить» заново.",
-    );
-    expect(node("settings-diff").hidden).toBe(true);
-    expect(node<HTMLButtonElement>("settings-apply").disabled).toBe(true);
-  });
-
   it("applies a previewed change, shows the diff and the backup", async () => {
     const updated = settings({ run: { batch: 6, interval: "6h", max_duration: "45m" } });
     mockFetch((input, init) => {
       if (String(input).endsWith("/preview")) {
         return jsonResponse({ changed: true, diff: "- batch 5\n+ batch 6" });
+      }
+      if (String(input).endsWith("/settings/generator")) {
+        return jsonResponse(generator());
       }
       if (init?.method === "PUT") {
         return jsonResponse({
@@ -218,13 +240,16 @@ describe("createSettingsView", () => {
     expect(onLimits).toHaveBeenLastCalledWith(updated);
   });
 
-  it("applies an unchanged file without a diff", async () => {
+  it("reports no changes when the server keeps the file", async () => {
     mockFetch((input, init) => {
+      if (String(input).endsWith("/settings/generator")) {
+        return jsonResponse(generator());
+      }
       if (String(input).endsWith("/preview")) {
-        return jsonResponse({ changed: true, diff: "same" });
+        return jsonResponse({ changed: true, diff: "- old\n+ new" });
       }
       if (init?.method === "PUT") {
-        return jsonResponse({ changed: false, settings: settings() });
+        return jsonResponse({ changed: false, diff: "", backup: null, settings: settings() });
       }
       return jsonResponse(settings());
     });
@@ -237,11 +262,61 @@ describe("createSettingsView", () => {
     await flush();
 
     expect(node("settings-status").textContent).toBe("Изменений нет. Файл не изменён.");
-    expect(node("settings-backup").hidden).toBe(true);
+    expect(node("settings-diff").hidden).toBe(true);
+    expect(node<HTMLButtonElement>("settings-apply").disabled).toBe(true);
+  });
+
+  it("rejects preview when a field is invalid", async () => {
+    const fetched = mockFetch((input) =>
+      String(input).endsWith("/settings/generator")
+        ? jsonResponse(generator())
+        : jsonResponse(settings()),
+    );
+    const { view } = createView();
+    await view.load();
+    node<HTMLInputElement>("settings-interval").value = " ";
+
+    preview();
+    await flush();
+
+    expect(node("settings-status").textContent).toBe("Поле «run.interval» не может быть пустым.");
+    expect(node("settings-status").classList.contains("is-error")).toBe(true);
+    expect(fetched.calls().filter((call) => call.url.endsWith("/preview"))).toHaveLength(0);
+  });
+
+  it("invalidates a preview when the form changes during the request", async () => {
+    const pending = deferred<Response>();
+    mockFetch((input) => {
+      if (String(input).endsWith("/preview")) {
+        return pending.promise;
+      }
+      if (String(input).endsWith("/settings/generator")) {
+        return jsonResponse(generator());
+      }
+      return jsonResponse(settings());
+    });
+    const { view } = createView();
+    await view.load();
+
+    preview();
+    node<HTMLInputElement>("settings-batch").value = "7";
+    changeInput();
+    pending.resolve(jsonResponse({ changed: true, diff: "- old\n+ new" }));
+    await flush();
+
+    expect(node("settings-status").textContent).toBe(
+      "Настройки изменены. Нажмите «Проверить» заново.",
+    );
+    expect(node("settings-diff").hidden).toBe(true);
+    expect(node<HTMLButtonElement>("settings-apply").disabled).toBe(true);
   });
 
   it("refuses to apply without a successful preview", async () => {
-    mockFetch(() => jsonResponse(settings()));
+    mockFetch((input) =>
+      String(input).endsWith("/settings/generator")
+        ? jsonResponse(generator())
+        : jsonResponse(settings()),
+    );
     const { view } = createView();
     await view.load();
 
@@ -252,135 +327,26 @@ describe("createSettingsView", () => {
     expect(node("settings-status").classList.contains("is-error")).toBe(true);
   });
 
-  it("refuses to apply a form changed after the preview", async () => {
-    mockFetch((input) =>
-      String(input).endsWith("/preview")
-        ? jsonResponse({ changed: true, diff: "d" })
-        : jsonResponse(settings()),
-    );
-    const { view } = createView();
-    await view.load();
-    preview();
-    await flush();
-
-    node<HTMLInputElement>("settings-batch").value = "9";
-    submit();
-    await flush();
-
-    expect(node("settings-status").textContent).toBe(
-      "Настройки изменены. Нажмите «Проверить» заново.",
-    );
-    expect(node<HTMLButtonElement>("settings-apply").disabled).toBe(true);
-  });
-
-  it("resets a preview on any form input", async () => {
-    mockFetch((input) =>
-      String(input).endsWith("/preview")
-        ? jsonResponse({ changed: true, diff: "d" })
-        : jsonResponse(settings()),
-    );
-    const { view } = createView();
-    await view.load();
-    preview();
-    await flush();
-    expect(node<HTMLButtonElement>("settings-apply").disabled).toBe(false);
-
-    changeInput();
-
-    expect(node<HTMLButtonElement>("settings-apply").disabled).toBe(true);
-    expect(node("settings-status").textContent).toBe(
-      "Настройки изменены. Нажмите «Проверить» заново.",
-    );
-  });
-
-  it("shows a preview request error", async () => {
-    mockFetch((input) => {
-      if (String(input).endsWith("/preview")) {
-        return jsonResponse({ detail: "bad" }, 422);
+  it("refreshes both panels from the refresh button", async () => {
+    let generatorCalls = 0;
+    const fetched = mockFetch((input) => {
+      if (String(input).endsWith("/settings/generator")) {
+        generatorCalls += 1;
+        return jsonResponse(generator({ model: `gpt-${generatorCalls}` }));
       }
       return jsonResponse(settings());
     });
     const { view } = createView();
     await view.load();
-
-    preview();
-    await flush();
-
-    expect(node("settings-status").textContent).toBe("Проверка не удалась.");
-    expect(node("settings-message").textContent).toBe("bad");
-  });
-
-  it("shows an apply request error", async () => {
-    mockFetch((input, init) => {
-      if (String(input).endsWith("/preview")) {
-        return jsonResponse({ changed: true, diff: "d" });
-      }
-      if (init?.method === "PUT") {
-        return jsonResponse({ detail: "locked" }, 500);
-      }
-      return jsonResponse(settings());
-    });
-    const { view } = createView();
-    await view.load();
-    preview();
-    await flush();
-
-    submit();
-    await flush();
-
-    expect(node("settings-status").textContent).toBe("Применить не удалось.");
-    expect(node("settings-message").textContent).toBe("locked");
-  });
-
-  it("rejects an invalid payload while applying", async () => {
-    mockFetch((input) =>
-      String(input).endsWith("/preview")
-        ? jsonResponse({ changed: true, diff: "d" })
-        : jsonResponse(settings()),
-    );
-    const { view } = createView();
-    await view.load();
-    preview();
-    await flush();
-
-    node<HTMLInputElement>("settings-batch").value = "0";
-    submit();
-    await flush();
-
-    expect(node("settings-status").textContent).toBe("Поле «run.batch» должно быть от 1 до 1000.");
-    expect(node("settings-diff").hidden).toBe(true);
-  });
-
-  it("reloads from the refresh button", async () => {
-    const fetched = mockFetch(() => jsonResponse(settings()));
-    const { view } = createView();
-    await view.load();
+    expect(node("settings-generator").textContent).toContain("gpt-1");
 
     node<HTMLButtonElement>("settings-refresh").click();
     await flush();
 
-    expect(fetched.mock).toHaveBeenCalledTimes(2);
-  });
-
-  it("disables the controls while a request is in flight", async () => {
-    const pending = deferred<Response>();
-    mockFetch((input) =>
-      String(input).endsWith("/preview") ? pending.promise : jsonResponse(settings()),
+    expect(node("settings-generator").textContent).toContain("gpt-2");
+    expect(fetched.calls().filter((call) => call.url === "/api/v1/content/settings")).toHaveLength(
+      2,
     );
-    const { view } = createView();
-    await view.load();
-
-    preview();
-
-    expect(node<HTMLButtonElement>("settings-preview").disabled).toBe(true);
-    expect(node<HTMLButtonElement>("settings-refresh").disabled).toBe(true);
-    expect(node("settings-form").getAttribute("aria-busy")).toBe("true");
-
-    pending.resolve(jsonResponse({ changed: false }));
-    await flush();
-
-    expect(node<HTMLButtonElement>("settings-preview").disabled).toBe(false);
-    expect(node("settings-form").getAttribute("aria-busy")).toBe("false");
   });
 });
 

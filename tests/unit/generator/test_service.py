@@ -1292,12 +1292,12 @@ def test_silent_profile_does_not_require_audio(tmp_path: Path, monkeypatch) -> N
     assert "audio" not in events
 
 
-def test_recipe_media_only_still_runs_the_clef_preflight_and_frames(
+def test_recipe_mp4_only_still_runs_the_clef_preflight_and_frames(
     tmp_path: Path, monkeypatch
 ) -> None:
     fixture_profile(
         tmp_path / "profiles",
-        extra={"production": [{"producer": "vast", "type": "video", "qa": ["media"]}]},
+        extra={"production": [{"producer": "vast", "type": "video", "qa": ["mp4"]}]},
     )
     events: list[str] = []
     session = FakeSession(events)
@@ -1324,10 +1324,10 @@ def test_recipe_media_only_still_runs_the_clef_preflight_and_frames(
     assert checker.events.index("preflight") < checker.events.index("open")
     assert checker.events.index("verify") < checker.events.index("mix")
     report = json.loads((result.run_dirs[0] / "run.json").read_text(encoding="utf-8"))
-    assert report["production"] == [{"producer": "vast", "type": "video", "qa": ["media"]}]
+    assert report["production"] == [{"producer": "vast", "type": "video", "qa": ["mp4"]}]
     assert report["items"][0]["producer"] == "vast"
     assert report["items"][0]["type"] == "video"
-    assert report["items"][0]["qa"] == ["media"]
+    assert report["items"][0]["qa"] == ["mp4"]
 
 
 def test_dry_run_records_the_recipe_in_run_json(tmp_path: Path) -> None:
@@ -1335,7 +1335,7 @@ def test_dry_run_records_the_recipe_in_run_json(tmp_path: Path) -> None:
         tmp_path / "profiles",
         extra={
             "production": [
-                {"producer": "vast", "type": "video", "qa": ["clef", "media"]},
+                {"producer": "vast", "type": "video", "qa": ["clef", "mp4"]},
             ]
         },
     )
@@ -1352,8 +1352,8 @@ def test_dry_run_records_the_recipe_in_run_json(tmp_path: Path) -> None:
 
     report = json.loads((result.run_dirs[0] / "run.json").read_text(encoding="utf-8"))
     assert report["status"] == "dry_run"
-    assert report["production"] == [{"producer": "vast", "type": "video", "qa": ["clef", "media"]}]
-    assert [item["qa"] for item in report["items"]] == [["clef", "media"]] * 2
+    assert report["production"] == [{"producer": "vast", "type": "video", "qa": ["clef", "mp4"]}]
+    assert [item["qa"] for item in report["items"]] == [["clef", "mp4"]] * 2
 
 
 def test_unknown_producer_fails_before_the_rent(tmp_path: Path) -> None:

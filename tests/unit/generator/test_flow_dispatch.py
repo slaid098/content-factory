@@ -351,7 +351,7 @@ def test_dry_run_plans_every_independent_chain_of_one_profile(tmp_path: Path) ->
         tmp_path / "profiles",
         extra={
             "production": [
-                {"producer": "vast", "type": "video", "qa": ["media", "clef"]},
+                {"producer": "vast", "type": "video", "qa": ["mp4", "clef"]},
                 {"producer": "card", "type": "photo"},
             ]
         },
@@ -363,7 +363,7 @@ def test_dry_run_plans_every_independent_chain_of_one_profile(tmp_path: Path) ->
     assert len(reports) == 1
     report = reports[0]
     assert report["production"] == [
-        {"producer": "vast", "type": "video", "qa": ["media", "clef"]},
+        {"producer": "vast", "type": "video", "qa": ["mp4", "clef"]},
         {"producer": "card", "type": "photo", "qa": ["image"]},
     ]
     assert [item["type"] for item in report["items"]] == ["video", "video", "photo", "photo"]

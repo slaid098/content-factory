@@ -5,7 +5,8 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from tests.unit.common.delivery_helpers import add_downloaded_video, touch_mp4
+from tests.unit.common.delivery_helpers import add_downloaded_video, touch_mp4, touch_photo
+from tests.unit.common.profile_helpers import add_profile, add_profile_video
 
 from content_factory.api.app import create_app
 from content_factory.constants import CONTENT_DIR, QUERIES_DIR
@@ -125,6 +126,31 @@ def test_queries_returns_file_order_counts_and_database_queries(data_dir: Path) 
         ],
         "unclassified": 2,
         "total": 5,
+    }
+
+
+def test_queries_count_only_general_videos(data_dir: Path) -> None:
+    _write_queries(data_dir, "курятник\n")
+    _add_stock(data_dir, "a" * 64, "курятник")
+    touch_mp4(data_dir / CONTENT_DIR / "ru" / ("b" * 64 + ".mp4"))
+    add_profile(data_dir)
+    add_profile_video(data_dir, filename="dating_profile_1_run_001.mp4")
+    add_downloaded_video(
+        data_dir / "db" / "db.sqlite3",
+        "dating_profile_1_run_001",
+        "Профильное",
+        query="курятник",
+    )
+    touch_photo(data_dir / CONTENT_DIR / "ru" / "general.jpg", text="Текст поста")
+
+    response = _get(_client(), "/api/v1/content/queries?language=ru")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "language": "ru",
+        "queries": [{"query": "курятник", "count": 1, "in_file": True}],
+        "unclassified": 1,
+        "total": 2,
     }
 
 

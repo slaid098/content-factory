@@ -123,3 +123,4 @@ class DeliveryJobInfo(BaseModel):
     files: int = 0
     url: str | None = None
     error: str | None = None
+    profile: str | None = None

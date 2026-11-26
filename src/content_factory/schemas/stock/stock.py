@@ -20,8 +20,18 @@ class LanguageStock:
 
 
 @dataclass(frozen=True, slots=True)
+class GeneralStock:
+    """General video stock of one language at snapshot time."""
+
+    language: str
+    stock: int
+    target: int
+
+
+@dataclass(frozen=True, slots=True)
 class StockSnapshot:
-    """Stock position of every language at one moment."""
+    """Stock position of every language and its General videos at one moment."""
 
     generated_at: datetime
     languages: tuple[LanguageStock, ...]
+    general: tuple[GeneralStock, ...] = ()

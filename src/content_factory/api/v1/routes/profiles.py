@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 
@@ -27,15 +28,26 @@ from content_factory.exceptions.errors import (
 from content_factory.exceptions.generator import ProfileError
 from content_factory.schemas.config.runtime import GeneratorConfig
 from content_factory.schemas.profiles.api import (
+    ProfileDetailResponse,
+    ProfilePrompts,
     ProfileResponse,
     ProfilesResponse,
     ProfileUpdateRequest,
+    PromptCardResponse,
+    PromptFile,
+    PromptTextRequest,
 )
 from content_factory.services.profiles import (
-    get_profile_view,
     list_profile_views,
     preview_for_profile,
     update_profile_settings,
+)
+from content_factory.services.profiles.service import (
+    get_profile_detail,
+    read_profile_prompts,
+    write_card_prompt,
+    write_prompt_template,
+    write_text_prompt,
 )
 
 profiles_router = APIRouter()
@@ -70,7 +82,7 @@ def list_profiles(
 
 @profiles_router.get(
     "/content/profiles/{category}/{name}",
-    response_model=ProfileResponse,
+    response_model=ProfileDetailResponse,
     responses={
         **_AUTH_RESPONSES,
         status.HTTP_404_NOT_FOUND: {"description": "Profile is missing"},
@@ -81,12 +93,12 @@ def get_profile(
     category: Annotated[str, PathParam(min_length=1, max_length=100)],
     name: Annotated[str, PathParam(min_length=1, max_length=100)],
     settings: Annotated[Settings, Depends(require_delivery_token)],
-) -> ProfileResponse:
-    """Return one profile."""
+) -> ProfileDetailResponse:
+    """Return one profile with its recipe and safe settings."""
     profile_id = _profile_id(category, name)
     output_dir, global_config = _context(settings)
     try:
-        return get_profile_view(
+        return get_profile_detail(
             settings.data_dir,
             profile_id,
             output_dir=output_dir,
@@ -143,6 +155,101 @@ def update_profile(
 
 
 @profiles_router.get(
+    "/content/profiles/{category}/{name}/prompts",
+    response_model=ProfilePrompts,
+    responses={
+        **_AUTH_RESPONSES,
+        status.HTTP_404_NOT_FOUND: {"description": "Profile is missing or broken"},
+        status.HTTP_422_UNPROCESSABLE_ENTITY: {"description": "Unsafe profile id"},
+    },
+)
+def get_profile_prompts(
+    category: Annotated[str, PathParam(min_length=1, max_length=100)],
+    name: Annotated[str, PathParam(min_length=1, max_length=100)],
+    settings: Annotated[Settings, Depends(require_delivery_token)],
+) -> ProfilePrompts:
+    """Return the template, cards and photo prompt of one profile."""
+    profile_id = _profile_id(category, name)
+    try:
+        return read_profile_prompts(settings.data_dir, profile_id)
+    except ProfileError as ex:
+        raise profile_error(ex, profile_id) from ex
+
+
+@profiles_router.put(
+    "/content/profiles/{category}/{name}/prompts/template",
+    response_model=PromptFile,
+    responses={
+        **_AUTH_RESPONSES,
+        status.HTTP_404_NOT_FOUND: {"description": "Profile is missing or broken"},
+        status.HTTP_422_UNPROCESSABLE_ENTITY: {"description": "Invalid prompt text"},
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {"description": "Prompt cannot be written"},
+    },
+)
+def put_prompt_template(
+    category: Annotated[str, PathParam(min_length=1, max_length=100)],
+    name: Annotated[str, PathParam(min_length=1, max_length=100)],
+    payload: PromptTextRequest,
+    settings: Annotated[Settings, Depends(require_delivery_token)],
+) -> PromptFile:
+    """Replace the scene template used by one profile."""
+    profile_id = _profile_id(category, name)
+    return _write_prompt(
+        profile_id,
+        lambda: write_prompt_template(settings.data_dir, profile_id, payload.text),
+    )
+
+
+@profiles_router.put(
+    "/content/profiles/{category}/{name}/prompts/cards/{look_id}",
+    response_model=PromptCardResponse,
+    responses={
+        **_AUTH_RESPONSES,
+        status.HTTP_404_NOT_FOUND: {"description": "Profile or card is missing"},
+        status.HTTP_422_UNPROCESSABLE_ENTITY: {"description": "Invalid prompt text"},
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {"description": "Prompt cannot be written"},
+    },
+)
+def put_prompt_card(
+    category: Annotated[str, PathParam(min_length=1, max_length=100)],
+    name: Annotated[str, PathParam(min_length=1, max_length=100)],
+    look_id: Annotated[str, PathParam(min_length=1, max_length=100)],
+    payload: PromptTextRequest,
+    settings: Annotated[Settings, Depends(require_delivery_token)],
+) -> PromptCardResponse:
+    """Store or clear one appearance card prompt override."""
+    profile_id = _profile_id(category, name)
+    return _write_prompt(
+        profile_id,
+        lambda: write_card_prompt(settings.data_dir, profile_id, look_id, payload.text),
+    )
+
+
+@profiles_router.put(
+    "/content/profiles/{category}/{name}/prompts/text",
+    response_model=PromptFile,
+    responses={
+        **_AUTH_RESPONSES,
+        status.HTTP_404_NOT_FOUND: {"description": "Profile has no photo layer"},
+        status.HTTP_422_UNPROCESSABLE_ENTITY: {"description": "Invalid prompt text"},
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {"description": "Prompt cannot be written"},
+    },
+)
+def put_prompt_text(
+    category: Annotated[str, PathParam(min_length=1, max_length=100)],
+    name: Annotated[str, PathParam(min_length=1, max_length=100)],
+    payload: PromptTextRequest,
+    settings: Annotated[Settings, Depends(require_delivery_token)],
+) -> PromptFile:
+    """Replace the photo text prompt of one profile."""
+    profile_id = _profile_id(category, name)
+    return _write_prompt(
+        profile_id,
+        lambda: write_text_prompt(settings.data_dir, profile_id, payload.text),
+    )
+
+
+@profiles_router.get(
     "/content/profiles/{category}/{name}/preview",
     response_class=Response,
     responses={
@@ -189,6 +296,29 @@ def get_profile_preview(
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+def _write_prompt[T](profile_id: str, action: Callable[[], T]) -> T:
+    """Map prompt validation, missing profile and write failures to HTTP errors."""
+    try:
+        return action()
+    except ProfileError as ex:
+        raise profile_error(ex, profile_id) from ex
+    except ProfileValidationError as ex:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(ex),
+        ) from ex
+    except ProfileStorageError as ex:
+        logger.bind(
+            profile_id=profile_id,
+            error=ex,
+            error_type=type(ex).__name__,
+        ).error("Не удалось записать промпт профиля {}", profile_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="prompt write failed",
+        ) from ex
 
 
 def _profile_id(category: str, name: str) -> str:

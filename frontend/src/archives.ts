@@ -1,4 +1,4 @@
-/** Archive list: cards, live countdown and direct download links. */
+/** Archive table: source, live countdowns and direct download links. */
 
 import { el, setMessage, toggle } from "./dom";
 import { formatDateTime, formatRemaining } from "./lib/datetime";
@@ -22,7 +22,7 @@ export interface ArchivesView {
 }
 
 /**
- * Build the archive list once and keep its countdowns running.
+ * Build the archive table once and keep its countdowns running.
  */
 export function createArchivesView(elements: ArchivesElements): ArchivesView {
   let archives: Record<string, unknown>[] = [];
@@ -54,11 +54,7 @@ export function createArchivesView(elements: ArchivesElements): ArchivesView {
   }
 
   function render(): void {
-    const rows = archives.map((item) => {
-      const row = el("li");
-      row.append(buildCard(item, item.request_id === freshId));
-      return row;
-    });
+    const rows = archives.map((item) => buildRow(item, item.request_id === freshId));
     elements.list.replaceChildren(...rows);
     toggle(elements.list, rows.length !== 0);
     toggle(elements.empty, rows.length === 0);
@@ -74,48 +70,46 @@ export function createArchivesView(elements: ArchivesElements): ArchivesView {
     elements.summary.title = "локальные архивы; удалённые в Filebin диск не занимают";
   }
 
-  function buildCard(item: Record<string, unknown>, fresh: boolean): HTMLElement {
-    const requestId = String(item.request_id);
-    const card = el("article", fresh ? "archive-card is-fresh" : "archive-card");
-    const head = el("div", "archive-head");
-    head.append(el("span", "archive-name", `delivery-${requestId}.zip`));
+  function buildRow(item: Record<string, unknown>, fresh: boolean): HTMLTableRowElement {
+    const row = el("tr", fresh ? "archive-row is-fresh" : "archive-row");
 
-    const tags = el("span", "archive-tags");
-    tags.append(el("span", "badge", languageName(String(item.language))));
-    tags.append(el("span", "badge", item.storage === "remote" ? "Litterbox" : "сервер"));
-    if (fresh) {
-      tags.append(el("span", "badge accent", "только что"));
-    }
-    head.append(tags);
-
-    const meta = el("p", "archive-meta");
-    meta.append(
-      el("span", "", formatBytes(Number(item.size))),
-      el("span", "", "·"),
-      el("span", "", `создан ${formatDateTime(String(item.created_at))}`),
+    const source = el("td", "archive-source");
+    const profile = typeof item.profile === "string" && item.profile ? item.profile : null;
+    source.append(
+      el("span", "archive-source-name", profile ?? "Общетематичные"),
+      el("span", "badge", languageName(String(item.language))),
+      el("span", "badge", item.storage === "remote" ? "Litterbox" : "сервер"),
     );
-    if (typeof item.files === "number") {
-      meta.append(el("span", "", "·"), el("span", "", `${formatCount(item.files)} видео`));
+    if (fresh) {
+      source.append(el("span", "badge accent", "только что"));
     }
 
-    const foot = el("div", "archive-foot");
-    const timer = el("span", "timer");
+    const files = el(
+      "td",
+      "archive-cell",
+      typeof item.files === "number" ? formatCount(item.files) : "—",
+    );
+    const size = el("td", "archive-cell", formatBytes(Number(item.size)));
+    const created = el("td", "archive-cell", formatDateTime(String(item.created_at)));
+
+    const expires = el("td", "archive-cell");
     const countdown = el("span", "countdown");
     countdown.dataset.expires = String(item.expires_at);
     countdown.textContent = formatRemaining(String(item.expires_at));
-    timer.append(el("span", "muted", "удаление через "), countdown);
+    expires.append(countdown);
 
+    const download = el("td", "archive-download");
     const link = el("a", "button secondary", "Скачать");
     link.href = archiveUrl(item);
     if (item.storage === "remote") {
       link.rel = "noopener";
     } else {
-      link.download = `delivery-${requestId}.zip`;
+      link.download = `delivery-${String(item.request_id)}.zip`;
     }
+    download.append(link);
 
-    foot.append(timer, link);
-    card.append(head, meta, foot);
-    return card;
+    row.append(source, files, size, created, expires, download);
+    return row;
   }
 
   function tick(): void {
@@ -126,9 +120,9 @@ export function createArchivesView(elements: ArchivesElements): ArchivesView {
       node.textContent = remaining;
       if (remaining === "истёк") {
         expired = true;
-        const card = node.closest(".archive-card");
-        card?.classList.add("is-expired");
-        const link = card?.querySelector<HTMLAnchorElement>("a.button");
+        const row = node.closest(".archive-row");
+        row?.classList.add("is-expired");
+        const link = row?.querySelector<HTMLAnchorElement>("a.button");
         if (link) {
           link.removeAttribute("href");
           link.setAttribute("aria-disabled", "true");

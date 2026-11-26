@@ -2,19 +2,21 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createTabs } from "../../src/tabs";
 
+const ORDER = ["delivery", "queries", "profiles", "settings"];
+
 function fixture(): {
   tabs: HTMLElement[];
   panels: HTMLElement[];
   onChange: ReturnType<typeof vi.fn<(panelId: string) => void>>;
 } {
-  const tabs = ["delivery", "queries", "settings", "profiles"].map((name) => {
+  const tabs = ORDER.map((name) => {
     const tab = document.createElement("button");
     tab.id = `tab-${name}`;
     tab.setAttribute("aria-controls", `panel-${name}`);
     tab.setAttribute("aria-selected", "false");
     return tab;
   });
-  const panels = ["delivery", "queries", "settings", "profiles"].map((name) => {
+  const panels = ORDER.map((name) => {
     const panel = document.createElement("section");
     panel.id = `panel-${name}`;
     panel.hidden = name !== "delivery";
@@ -54,6 +56,7 @@ describe("createTabs", () => {
 
     tabs[0]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     expect(tabs[1]?.getAttribute("aria-selected")).toBe("true");
+    expect(panels[1]?.hidden).toBe(false);
   });
 
   it("supports Home and End and ignores other keys", () => {
@@ -76,10 +79,10 @@ describe("createTabs", () => {
     const view = createTabs({ tabs, panels, onChange });
 
     view.show("panel-settings");
-    expect(panels[2]?.hidden).toBe(false);
+    expect(panels[3]?.hidden).toBe(false);
     expect(onChange).toHaveBeenCalledWith("panel-settings");
 
     view.show("panel-missing");
-    expect(panels[2]?.hidden).toBe(false);
+    expect(panels[3]?.hidden).toBe(false);
   });
 });

@@ -277,13 +277,13 @@ def test_failed_item_is_removed_and_others_continue(tmp_path: Path) -> None:
     source = _FakeProducer(ArtifactKind.VIDEO)
     caption = _FakeProducer(ArtifactKind.TEXT)
     bad = _FakeCheck(
-        "media",
+        "mp4",
         results={"dating/profile_1:2": CheckResult(False, "брак")},
     )
     producers = ProducerRegistry({"video": lambda: source, "text": lambda: caption})
-    checks = CheckRegistry({"media": lambda: bad})
+    checks = CheckRegistry({"mp4": lambda: bad})
     layers = (
-        Layer("source", "video", (), ArtifactKind.VIDEO, ("media",)),
+        Layer("source", "video", (), ArtifactKind.VIDEO, ("mp4",)),
         Layer("caption", "text", ("source",), ArtifactKind.TEXT),
     )
 
@@ -308,7 +308,7 @@ def test_failed_item_does_not_return_through_another_input(tmp_path: Path) -> No
     caption = _FakeProducer(ArtifactKind.TEXT)
     render = _FakeProducer(ArtifactKind.VIDEO)
     bad = _FakeCheck(
-        "media",
+        "mp4",
         results={"dating/profile_1:2": CheckResult(False, "брак")},
     )
     producers = ProducerRegistry(
@@ -318,10 +318,10 @@ def test_failed_item_does_not_return_through_another_input(tmp_path: Path) -> No
             "render": lambda: render,
         }
     )
-    checks = CheckRegistry({"media": lambda: bad})
+    checks = CheckRegistry({"mp4": lambda: bad})
     layers = (
         Layer("source", "video", (), ArtifactKind.VIDEO),
-        Layer("caption", "text", ("source",), ArtifactKind.TEXT, ("media",)),
+        Layer("caption", "text", ("source",), ArtifactKind.TEXT, ("mp4",)),
         Layer("render", "render", ("source", "caption"), ArtifactKind.VIDEO),
     )
 
@@ -423,12 +423,12 @@ def test_dry_run_plans_layers_without_checks_or_writes(tmp_path: Path) -> None:
     events: list[str] = []
     source = _FakeProducer(ArtifactKind.VIDEO, events)
     caption = _FakeProducer(ArtifactKind.TEXT, events)
-    media = _FakeCheck("media", events=events)
+    mp4 = _FakeCheck("mp4", events=events)
     producers = ProducerRegistry({"video": lambda: source, "text": lambda: caption})
-    checks = CheckRegistry({"media": lambda: media})
+    checks = CheckRegistry({"mp4": lambda: mp4})
     layers = (
-        Layer("source", "video", (), ArtifactKind.VIDEO, ("media",)),
-        Layer("caption", "text", ("source",), ArtifactKind.TEXT, ("media",)),
+        Layer("source", "video", (), ArtifactKind.VIDEO, ("mp4",)),
+        Layer("caption", "text", ("source",), ArtifactKind.TEXT, ("mp4",)),
     )
 
     result = run_pipeline(
@@ -442,7 +442,7 @@ def test_dry_run_plans_layers_without_checks_or_writes(tmp_path: Path) -> None:
     assert caption.plan_calls == [layers[1]]
     assert source.produce_calls == []
     assert caption.produce_calls == []
-    assert media.calls == []
+    assert mp4.calls == []
     assert events == []
     assert [len(outcome.artifacts) for outcome in result.layers] == [2, 2]
     assert result.failures == ()
@@ -711,14 +711,14 @@ def test_check_registry_registers_replaces_and_resets() -> None:
     registry = CheckRegistry()
     first = _FakeCheck("first")
     second = _FakeCheck("second")
-    registry.register("media", lambda: first)
+    registry.register("mp4", lambda: first)
 
-    assert registry.available() == ("media",)
-    assert registry.resolve("media") is first
+    assert registry.available() == ("mp4",)
+    assert registry.resolve("mp4") is first
 
-    registry.register("media", lambda: second)
+    registry.register("mp4", lambda: second)
 
-    assert registry.resolve("media") is second
+    assert registry.resolve("mp4") is second
 
     registry.reset()
 

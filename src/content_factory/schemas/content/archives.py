@@ -22,3 +22,4 @@ class ArchiveInfo(BaseModel):
     storage: Literal["local", "remote"] = "local"
     url: str | None = None
     files: int | None = None
+    profile: str | None = None

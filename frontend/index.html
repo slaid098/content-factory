@@ -8,16 +8,15 @@
 </head>
 <body>
   <div class="page">
-    <header class="hero">
-      <div class="hero-text">
-        <p class="eyebrow">content-factory</p>
+    <header class="page-head">
+      <div class="page-head-text">
+        <p class="brand">content-factory</p>
         <h1>Выдача видео</h1>
-        <p class="lead">
-          Готовые ролики по языкам. Соберите архив и скачайте его: внешняя
-          ссылка живёт 24 часа, локальный архив можно забрать с сервера.
-        </p>
       </div>
-      <p class="muted hero-time" id="stock-updated" aria-live="polite"></p>
+      <div class="page-head-meta">
+        <p class="muted" id="stock-updated" aria-live="polite"></p>
+        <button type="button" class="button ghost" id="refresh">Обновить</button>
+      </div>
     </header>
 
     <nav class="tabs" role="tablist" aria-label="Разделы страницы">
@@ -25,36 +24,45 @@
               aria-selected="true" aria-controls="panel-delivery" tabindex="0">Выдача</button>
       <button type="button" class="tab" id="tab-queries" role="tab"
               aria-selected="false" aria-controls="panel-queries" tabindex="-1">Запросы</button>
-      <button type="button" class="tab" id="tab-settings" role="tab"
-              aria-selected="false" aria-controls="panel-settings" tabindex="-1">Настройки</button>
       <button type="button" class="tab" id="tab-profiles" role="tab"
               aria-selected="false" aria-controls="panel-profiles" tabindex="-1">Профили</button>
+      <button type="button" class="tab" id="tab-settings" role="tab"
+              aria-selected="false" aria-controls="panel-settings" tabindex="-1">Настройки</button>
     </nav>
 
     <main class="layout">
       <section class="tab-panel" id="panel-delivery" role="tabpanel"
                aria-labelledby="tab-delivery" tabindex="0">
-        <section class="panel" id="stock-panel" aria-labelledby="stock-title">
-          <div class="panel-head">
-            <h2 id="stock-title">Остаток на диске</h2>
-            <button type="button" class="button ghost" id="refresh">Обновить</button>
-          </div>
+        <section class="stats" id="stock-panel" aria-label="Остаток на диске">
           <p class="loading" id="stock-loading" role="status" aria-live="polite" hidden>
             Загружаем остаток…
           </p>
-          <ul class="list stock-list" id="stock-list"></ul>
           <p class="message is-error" id="stock-message" role="status" aria-live="polite" hidden></p>
-          <p class="empty" id="stock-empty" hidden>Видео пока нет.</p>
 
-          <section class="topics" id="topics" aria-labelledby="topics-title">
-            <div class="panel-head">
-              <h3 id="topics-title">Темы в стоке</h3>
-              <span class="muted" id="topics-language"></span>
+          <article class="stat-card" aria-labelledby="general-title">
+            <div class="stat-head">
+              <h2 id="general-title">Общетематичные</h2>
+              <span class="badge" id="general-language"></span>
             </div>
-            <ul class="list topic-list" id="topic-list"></ul>
-            <p class="hint" id="topics-message" role="status" aria-live="polite" hidden></p>
-            <p class="hint" id="unclassified" hidden></p>
-          </section>
+            <p class="stat-value" id="general-value">0 / 0</p>
+            <div class="bar" id="general-bar" role="progressbar"
+                 aria-label="Общетематичные: 0 из 0"
+                 aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+              <span class="bar-fill" id="general-bar-fill"></span>
+            </div>
+            <p class="hint" id="general-hint"></p>
+          </article>
+
+          <article class="stat-card" aria-labelledby="profiles-stat-title">
+            <div class="stat-head">
+              <h2 id="profiles-stat-title">Профильные</h2>
+              <span class="badge" id="profiles-total">0</span>
+            </div>
+            <p class="hint" id="profiles-stat-hint"></p>
+            <ul class="mini-list" id="profiles-stock"></ul>
+            <p class="message is-error" id="profiles-stock-message"
+               role="status" aria-live="polite" hidden></p>
+          </article>
         </section>
 
         <div class="delivery-grid">
@@ -66,19 +74,35 @@
 
             <form id="delivery-form" novalidate>
               <div class="field">
+                <span class="field-label" id="source-label">Источник</span>
+                <div class="segmented" id="delivery-source" role="group"
+                     aria-labelledby="source-label">
+                  <button type="button" class="segmented-option is-active" id="source-general"
+                          aria-pressed="true">Общетематичные</button>
+                  <button type="button" class="segmented-option" id="source-profile"
+                          aria-pressed="false">Профиль</button>
+                </div>
+              </div>
+
+              <div class="field" id="language-field">
                 <label class="field-label" for="language">Язык</label>
                 <select id="language" name="language"></select>
+              </div>
+
+              <div class="field" id="profile-field" hidden>
+                <label class="field-label" for="delivery-profile">Профиль</label>
+                <select id="delivery-profile" name="profile"></select>
               </div>
 
               <div class="field">
                 <label class="field-label" for="count">Сколько видео</label>
                 <input id="count" name="count" type="number" inputmode="numeric"
                        min="1" max="100" step="1" value="1">
-                <p class="hint" id="count-hint">Не больше 100 за раз.</p>
+                <p class="hint" id="count-hint"></p>
               </div>
 
               <div class="actions">
-                <button type="submit" class="button primary" id="deliver">Собрать архив</button>
+                <button type="submit" class="button primary" id="deliver">Собрать</button>
                 <span class="status" id="delivery-status" role="status" aria-live="polite"></span>
               </div>
             </form>
@@ -105,9 +129,22 @@
             <p class="loading" id="archives-loading" role="status" aria-live="polite" hidden>
               Загружаем архивы…
             </p>
-            <p class="message is-error" id="archives-message" role="status" aria-live="polite" hidden></p>
+            <p class="message is-error" id="archives-message"
+               role="status" aria-live="polite" hidden></p>
             <div class="table-wrap">
-              <ul class="list archive-list" id="archives"></ul>
+              <table class="archive-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Источник</th>
+                    <th scope="col">Файлы</th>
+                    <th scope="col">Размер</th>
+                    <th scope="col">Создан</th>
+                    <th scope="col">Удаление</th>
+                    <th scope="col">Скачать</th>
+                  </tr>
+                </thead>
+                <tbody id="archives"></tbody>
+              </table>
             </div>
             <p class="empty" id="archives-empty" hidden>Архивов пока нет.</p>
           </section>
@@ -118,28 +155,15 @@
                aria-labelledby="tab-queries" tabindex="0" hidden>
         <section class="panel" aria-labelledby="queries-title">
           <div class="panel-head">
-            <h2 id="queries-title">Поисковые запросы</h2>
-            <button type="button" class="button ghost" id="queries-refresh">Обновить</button>
-          </div>
-
-          <div class="queries-toolbar">
-            <div class="field">
-              <label class="field-label" for="queries-language">Язык</label>
-              <select id="queries-language"></select>
-            </div>
-            <div class="field">
-              <label class="field-label" for="queries-search">Поиск по списку</label>
-              <input id="queries-search" type="search" autocomplete="off"
-                     placeholder="Например, заправка">
+            <h2 id="queries-title">Запросы</h2>
+            <div class="panel-tools">
+              <div class="field">
+                <label class="field-label" for="queries-language">Язык</label>
+                <select id="queries-language"></select>
+              </div>
+              <button type="button" class="button ghost" id="queries-refresh">Обновить</button>
             </div>
           </div>
-
-          <p class="hint" id="queries-summary"></p>
-          <p class="message is-error" id="queries-message" role="status" aria-live="polite" hidden></p>
-          <div class="table-wrap">
-            <ul class="list query-list" id="queries-list"></ul>
-          </div>
-          <p class="empty" id="queries-empty" hidden>Запросов пока нет.</p>
 
           <form class="query-form" id="query-form" novalidate>
             <div class="field">
@@ -152,104 +176,248 @@
               <span class="status" id="query-status" role="status" aria-live="polite"></span>
             </div>
           </form>
+
+          <div class="queries-toolbar">
+            <div class="field">
+              <label class="field-label" for="queries-search">Поиск по списку</label>
+              <input id="queries-search" type="search" autocomplete="off"
+                     placeholder="Например, заправка">
+            </div>
+          </div>
+
+          <p class="hint" id="queries-summary"></p>
+          <p class="message is-error" id="queries-message" role="status" aria-live="polite" hidden></p>
+          <div class="table-wrap">
+            <table class="query-table">
+              <thead>
+                <tr>
+                  <th scope="col">Запрос</th>
+                  <th scope="col">Видео</th>
+                </tr>
+              </thead>
+              <tbody id="queries-list"></tbody>
+            </table>
+          </div>
+          <p class="empty" id="queries-empty" hidden>Запросов пока нет.</p>
         </section>
+      </section>
+
+      <section class="tab-panel" id="panel-profiles" role="tabpanel"
+               aria-labelledby="tab-profiles" tabindex="0" hidden>
+        <div id="profiles-list-view">
+          <section class="panel" aria-labelledby="profiles-title">
+            <div class="panel-head">
+              <h2 id="profiles-title">Профили</h2>
+              <button type="button" class="button ghost" id="profiles-refresh">Обновить</button>
+            </div>
+            <p class="hint" id="profiles-hint">
+              Строка профиля открывает настройки добора и промты.
+            </p>
+            <p class="status" id="profiles-loading" role="status" aria-live="polite" hidden></p>
+            <p class="message is-error" id="profiles-message"
+               role="status" aria-live="polite" hidden></p>
+            <ul class="profile-list" id="profiles-list"></ul>
+            <p class="empty" id="profiles-empty" hidden>Профилей пока нет.</p>
+          </section>
+        </div>
+
+        <div class="profile-view" id="profile-view" hidden>
+          <section class="panel" aria-labelledby="profile-view-title">
+            <div class="profile-view-head">
+              <button type="button" class="button ghost" id="profile-back">← Назад</button>
+              <div class="profile-view-heading">
+                <h2 id="profile-view-title">Профиль</h2>
+                <p class="hint" id="profile-view-meta"></p>
+              </div>
+              <button type="button" class="button ghost" id="profile-view-refill"></button>
+            </div>
+
+            <p class="message is-error" id="profile-view-message"
+               role="status" aria-live="polite" hidden></p>
+
+            <div class="profile-view-body">
+              <div class="profile-preview-column">
+                <button type="button" class="button ghost profile-preview-box" id="profile-preview"
+                        aria-label="Открыть превью профиля">
+                  <img class="profile-preview" id="profile-preview-image" alt="" hidden>
+                  <span class="profile-preview-fallback" id="profile-preview-fallback">Нет превью</span>
+                </button>
+              </div>
+
+              <div class="profile-view-main">
+                <div class="segmented" id="profile-tabs" role="group" aria-label="Разделы профиля">
+                  <button type="button" class="segmented-option is-active" id="profile-tab-video"
+                          aria-pressed="true">Видео</button>
+                  <button type="button" class="segmented-option" id="profile-tab-photo"
+                          aria-pressed="false" hidden>Фото</button>
+                  <button type="button" class="segmented-option" id="profile-tab-settings"
+                          aria-pressed="false">Настройки</button>
+                </div>
+
+                <div class="profile-tab-panel" id="profile-panel-video">
+                  <div id="profile-video"></div>
+                </div>
+
+                <div class="profile-tab-panel" id="profile-panel-photo" hidden>
+                  <div id="profile-photo"></div>
+                </div>
+
+                <div class="profile-tab-panel" id="profile-panel-settings" hidden>
+                  <form class="profile-settings-form" id="profile-settings-form" novalidate>
+                    <h3>Добор</h3>
+                    <div class="settings-grid">
+                      <div class="field">
+                        <label class="field-label" for="profile-target">Цель видео</label>
+                        <input id="profile-target" type="number" inputmode="numeric"
+                               min="1" max="1000" step="1" placeholder="как в генераторе">
+                      </div>
+                      <div class="field">
+                        <label class="field-label" for="profile-refill-at">Порог добора видео</label>
+                        <input id="profile-refill-at" type="number" inputmode="numeric"
+                               min="0" max="999" step="1" placeholder="как в генераторе">
+                      </div>
+                      <div class="field">
+                        <label class="field-label" for="profile-photo-target">Цель фото</label>
+                        <input id="profile-photo-target" type="number" inputmode="numeric"
+                               min="0" max="1000" step="1">
+                      </div>
+                      <div class="field">
+                        <label class="field-label" for="profile-photo-refill-at">Порог добора фото</label>
+                        <input id="profile-photo-refill-at" type="number" inputmode="numeric"
+                               min="0" max="999" step="1">
+                      </div>
+                    </div>
+                    <div class="field">
+                      <span class="field-label" id="profile-refill-label">Добор</span>
+                      <div class="settings-language-toggle">
+                        <input type="checkbox" id="profile-refill-enabled"
+                               aria-labelledby="profile-refill-label">
+                        <span>Добор включён</span>
+                      </div>
+                    </div>
+                    <p class="status" id="profile-settings-status"
+                       role="status" aria-live="polite"></p>
+                  </form>
+
+                  <div class="settings-group">
+                    <h3>Видео</h3>
+                    <dl class="settings-list" id="profile-settings-video"></dl>
+                  </div>
+                  <div class="settings-group">
+                    <h3>Аренда</h3>
+                    <dl class="settings-list" id="profile-settings-rent"></dl>
+                  </div>
+                  <div class="settings-group">
+                    <h3>Текст</h3>
+                    <dl class="settings-list" id="profile-settings-text"></dl>
+                  </div>
+                  <div class="settings-group">
+                    <h3>Выдача</h3>
+                    <dl class="settings-list" id="profile-settings-delivery"></dl>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <dialog class="profile-lightbox" id="profile-lightbox"
+                aria-labelledby="profile-lightbox-title">
+          <div class="profile-lightbox-head">
+            <h2 id="profile-lightbox-title">Превью профиля</h2>
+            <button type="button" class="button ghost" id="profile-lightbox-close">Закрыть</button>
+          </div>
+          <img class="profile-lightbox-image" id="profile-lightbox-image" alt="">
+        </dialog>
       </section>
 
       <section class="tab-panel" id="panel-settings" role="tabpanel"
                aria-labelledby="tab-settings" tabindex="0" hidden>
         <section class="panel" aria-labelledby="settings-title">
           <div class="panel-head">
-            <h2 id="settings-title">Настройки производства</h2>
+            <h2 id="settings-title">Настройки</h2>
             <button type="button" class="button ghost" id="settings-refresh">Обновить</button>
           </div>
-          <p class="hint">
-            «Проверить» показывает diff без записи. «Применить» сохраняет файл:
-            сервер сначала делает бэкап, затем заменяет конфиг атомарно.
+          <p class="hint" id="settings-hint">
+            «Генератор» доступен только для чтения. Runtime-настройки проверяются
+            диффом и сохраняются с бэкапом.
           </p>
-          <p class="message is-error" id="settings-message" role="status" aria-live="polite" hidden></p>
+          <p class="message is-error" id="settings-message"
+             role="status" aria-live="polite" hidden></p>
 
-          <form id="settings-form" novalidate>
-            <div class="field">
-              <span class="field-label">Языки</span>
-              <div class="settings-languages" id="settings-languages"></div>
+          <section class="settings-block" aria-labelledby="settings-generator-title">
+            <div class="panel-head">
+              <h3 id="settings-generator-title">Генератор</h3>
+              <span class="muted">только чтение</span>
+            </div>
+            <p class="message is-error" id="settings-generator-message"
+               role="status" aria-live="polite" hidden></p>
+            <dl class="settings-list" id="settings-generator"></dl>
+          </section>
+
+          <section class="settings-block" aria-labelledby="settings-runtime-title">
+            <div class="panel-head">
+              <h3 id="settings-runtime-title">Runtime</h3>
             </div>
 
-            <div class="settings-grid">
+            <form id="settings-form" novalidate>
               <div class="field">
-                <label class="field-label" for="settings-batch">run.batch</label>
-                <input id="settings-batch" type="number" inputmode="numeric"
-                       min="1" max="1000" step="1">
+                <span class="field-label">Языки</span>
+                <div class="settings-languages" id="settings-languages"></div>
               </div>
-              <div class="field">
-                <label class="field-label" for="settings-interval">run.interval</label>
-                <input id="settings-interval" type="text" autocomplete="off"
-                       placeholder="6h">
+
+              <div class="settings-grid">
+                <div class="field">
+                  <label class="field-label" for="settings-batch">run.batch</label>
+                  <input id="settings-batch" type="number" inputmode="numeric"
+                         min="1" max="1000" step="1">
+                </div>
+                <div class="field">
+                  <label class="field-label" for="settings-interval">run.interval</label>
+                  <input id="settings-interval" type="text" autocomplete="off" placeholder="6h">
+                </div>
+                <div class="field">
+                  <label class="field-label" for="settings-max-duration">run.max_duration</label>
+                  <input id="settings-max-duration" type="text" autocomplete="off" placeholder="45m">
+                </div>
+                <div class="field">
+                  <label class="field-label" for="settings-max-queries">search.max_queries</label>
+                  <input id="settings-max-queries" type="number" inputmode="numeric"
+                         min="1" max="500" step="1">
+                </div>
+                <div class="field">
+                  <label class="field-label" for="settings-filter-max">filter.max</label>
+                  <input id="settings-filter-max" type="number" inputmode="numeric"
+                         min="1" max="10000" step="1">
+                </div>
+                <div class="field">
+                  <label class="field-label" for="settings-workers">download.workers</label>
+                  <input id="settings-workers" type="number" inputmode="numeric"
+                         min="1" max="8" step="1">
+                </div>
+                <div class="field">
+                  <label class="field-label" for="settings-delivery-max">delivery.max_count</label>
+                  <input id="settings-delivery-max" type="number" inputmode="numeric"
+                         min="1" max="300" step="1">
+                </div>
               </div>
-              <div class="field">
-                <label class="field-label" for="settings-max-duration">run.max_duration</label>
-                <input id="settings-max-duration" type="text" autocomplete="off"
-                       placeholder="45m">
+
+              <div class="actions">
+                <button type="button" class="button secondary" id="settings-preview">Проверить</button>
+                <button type="submit" class="button primary" id="settings-apply" disabled>Применить</button>
+                <span class="status" id="settings-status" role="status" aria-live="polite"></span>
               </div>
-              <div class="field">
-                <label class="field-label" for="settings-max-queries">search.max_queries</label>
-                <input id="settings-max-queries" type="number" inputmode="numeric"
-                       min="1" max="500" step="1">
-              </div>
-              <div class="field">
-                <label class="field-label" for="settings-filter-max">filter.max</label>
-                <input id="settings-filter-max" type="number" inputmode="numeric"
-                       min="1" max="10000" step="1">
-              </div>
-              <div class="field">
-                <label class="field-label" for="settings-workers">download.workers</label>
-                <input id="settings-workers" type="number" inputmode="numeric"
-                       min="1" max="8" step="1">
-              </div>
-              <div class="field">
-                <label class="field-label" for="settings-delivery-max">delivery.max_count</label>
-                <input id="settings-delivery-max" type="number" inputmode="numeric"
-                       min="1" max="300" step="1">
-              </div>
+            </form>
+
+            <div class="settings-diff" id="settings-diff" hidden>
+              <h3>Изменения</h3>
+              <pre id="settings-diff-text"></pre>
+              <p class="hint" id="settings-backup" hidden></p>
             </div>
-
-            <div class="actions">
-              <button type="button" class="button secondary" id="settings-preview">Проверить</button>
-              <button type="submit" class="button primary" id="settings-apply" disabled>Применить</button>
-              <span class="status" id="settings-status" role="status" aria-live="polite"></span>
-            </div>
-          </form>
-
-          <div class="settings-diff" id="settings-diff" hidden>
-            <h3>Изменения</h3>
-            <pre id="settings-diff-text"></pre>
-            <p class="hint" id="settings-backup" hidden></p>
-          </div>
-        </section>
-      </section>
-
-      <section class="tab-panel" id="panel-profiles" role="tabpanel"
-               aria-labelledby="tab-profiles" tabindex="0" hidden>
-        <section class="panel" aria-labelledby="profiles-title">
-          <div class="panel-head">
-            <h2 id="profiles-title">Профили</h2>
-            <button type="button" class="button ghost" id="profiles-refresh">Обновить</button>
-          </div>
-          <p class="hint">
-            Shorts — добор роликов, посты — добор постов; 0 в цели постов выключает
-            добор; пустое поле цели или порога роликов означает глобальное значение;
-            запуск партии остаётся за фоновым тиком.
-          </p>
-          <p class="status profile-loading" id="profiles-loading" role="status" aria-live="polite" hidden></p>
-          <p class="message is-error" id="profiles-message" role="status" aria-live="polite" hidden></p>
-          <ul class="profile-list" id="profiles-list"></ul>
-          <p class="empty" id="profiles-empty" hidden>Профилей пока нет.</p>
+          </section>
         </section>
       </section>
     </main>
-
-    <footer class="foot">
-      <p>Остаток обновляется раз в минуту. Архивы старше 24 часов удаляются.</p>
-    </footer>
   </div>
   <noscript><p class="no-script">Для работы страницы нужен JavaScript.</p></noscript>
 </body>

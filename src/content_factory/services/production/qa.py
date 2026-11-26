@@ -26,7 +26,7 @@ class _QaCheck:
 _BUILTINS: Mapping[str, str] = {
     "clef": QA_SOURCE,
     "image": QA_FINAL,
-    "media": QA_FINAL,
+    "mp4": QA_FINAL,
 }
 
 
@@ -121,11 +121,11 @@ class CheckRegistry(_FactoryRegistryMixin[LayerCheck]):
     _UNKNOWN_ERROR = "неизвестная проверка"
 
 
-def _media_check() -> LayerCheck:
+def _mp4_check() -> LayerCheck:
     """Build the layer adapter of the existing mp4 check."""
-    from content_factory.services.production.checks import ArtifactCheck, media_reason
+    from content_factory.services.production.checks import ArtifactCheck, mp4_reason
 
-    return ArtifactCheck(media_reason)
+    return ArtifactCheck(mp4_reason)
 
 
 def _clef_check() -> LayerCheck:
@@ -146,7 +146,7 @@ _DEFAULT_CHECKS = CheckRegistry(
     {
         "clef": _clef_check,
         "image": _image_check,
-        "media": _media_check,
+        "mp4": _mp4_check,
     }
 )
 

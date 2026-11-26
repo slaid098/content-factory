@@ -25,8 +25,10 @@ def list_language_queries(data_dir: Path, language: str) -> QueriesResponse:
     """List every search query of one language with its remaining stock.
 
     File queries keep their source order. Queries known only to the database
-    are appended after them with ``in_file=False``. ``total`` is the whole
-    language stock: every query count plus unclassified files.
+    are appended after them with ``in_file=False``. Only General videos are
+    counted: profile files never get into ``count``, ``unclassified`` or
+    ``total``. ``total`` is the whole General stock of the language: every
+    query count plus unclassified files.
 
     Args:
         data_dir: Root of the runtime data directory.

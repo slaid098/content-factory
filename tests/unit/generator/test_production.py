@@ -138,19 +138,19 @@ def test_process_registry_restores_builtins_after_injection() -> None:
 
 
 def test_qa_builtins_have_their_pipeline_stages() -> None:
-    assert production_qa.available() == ("clef", "image", "media")
+    assert production_qa.available() == ("clef", "image", "mp4")
     assert production_qa.resolve("clef").stage == production_qa.QA_SOURCE
     assert production_qa.resolve("image").stage == production_qa.QA_FINAL
-    assert production_qa.resolve("media").stage == production_qa.QA_FINAL
-    assert production_qa.has(("media", "clef"), production_qa.QA_FINAL)
-    assert not production_qa.has(("media",), production_qa.QA_SOURCE)
+    assert production_qa.resolve("mp4").stage == production_qa.QA_FINAL
+    assert production_qa.has(("mp4", "clef"), production_qa.QA_FINAL)
+    assert not production_qa.has(("mp4",), production_qa.QA_SOURCE)
 
 
 def test_layer_checks_resolve_the_builtin_adapters() -> None:
     checks = production_qa.default_checks()
 
-    assert checks.available() == ("clef", "image", "media")
-    assert isinstance(checks.resolve("media"), checks_module.ArtifactCheck)
+    assert checks.available() == ("clef", "image", "mp4")
+    assert isinstance(checks.resolve("mp4"), checks_module.ArtifactCheck)
     assert isinstance(checks.resolve("clef"), checks_module.ArtifactCheck)
     assert isinstance(checks.resolve("image"), checks_module.ArtifactCheck)
 
@@ -228,13 +228,13 @@ def test_qa_rejects_an_unknown_check_or_a_missing_handler() -> None:
         local.run(("known",), production_qa.QA_SOURCE, {})
 
 
-def test_media_and_clef_checks_report_a_producer_failure(tmp_path: Path) -> None:
+def test_mp4_and_clef_checks_report_a_producer_failure(tmp_path: Path) -> None:
     artifact = _artifact(tmp_path, status="failed", error="сервер не ответил")
-    layer = Layer("vast", "vast", (), ArtifactKind.VIDEO, ("media", "clef"))
+    layer = Layer("vast", "vast", (), ArtifactKind.VIDEO, ("mp4", "clef"))
     context = _context(tmp_path)
 
     for check in (
-        checks_module.ArtifactCheck(checks_module.media_reason),
+        checks_module.ArtifactCheck(checks_module.mp4_reason),
         checks_module.ArtifactCheck(checks_module.source_reason),
     ):
         assert check.check(layer, artifact, context) == CheckResult(False, "сервер не ответил")
@@ -569,7 +569,7 @@ def test_reports_keep_the_old_run_json_fields(tmp_path: Path) -> None:
         artifacts=(artifact,),
         failures=(),
     )
-    layer = Layer("layer", "vast", (), ArtifactKind.VIDEO, ("media", "clef"))
+    layer = Layer("layer", "vast", (), ArtifactKind.VIDEO, ("mp4", "clef"))
     context = _context(tmp_path)
 
     report = reports_module.build_report(
@@ -583,7 +583,7 @@ def test_reports_keep_the_old_run_json_fields(tmp_path: Path) -> None:
     assert report.status is RunStatus.DONE
     assert report.production[0].producer == "vast"
     assert report.production[0].type.value == "video"
-    assert report.production[0].qa == ["media", "clef"]
+    assert report.production[0].qa == ["mp4", "clef"]
     assert report.server is not None
     assert report.server.contract_id == "42"
     assert report.items[0].look_id == "c01"
@@ -615,7 +615,7 @@ def test_reports_keep_the_rented_server_when_every_item_failed(tmp_path: Path) -
         artifacts=(),
         failures=(failure,),
     )
-    layer = Layer("layer", "vast", (), ArtifactKind.VIDEO, ("media", "clef"))
+    layer = Layer("layer", "vast", (), ArtifactKind.VIDEO, ("mp4", "clef"))
 
     report = reports_module.build_report(
         SimpleNamespace(name="dating/profile_2"),

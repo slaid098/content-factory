@@ -9,7 +9,11 @@ from fastapi import APIRouter
 from content_factory.config.runtime import load_runtime_config
 from content_factory.config.settings import get_settings
 from content_factory.constants import CONFIG_DIR, CONFIG_FILENAME
-from content_factory.schemas.stock.api import LanguageStockResponse, StockResponse
+from content_factory.schemas.stock.api import (
+    GeneralStockResponse,
+    LanguageStockResponse,
+    StockResponse,
+)
 from content_factory.services.stock.service import collect_stock
 
 stock_router = APIRouter()
@@ -45,5 +49,13 @@ def get_stock() -> StockResponse:
                 video_bytes=row.video_bytes,
             )
             for row in snapshot.languages
+        ),
+        general=tuple(
+            GeneralStockResponse(
+                language=row.language,
+                stock=row.stock,
+                target=row.target,
+            )
+            for row in snapshot.general
         ),
     )
