@@ -29,6 +29,20 @@ from content_factory.services.profiles.reports import latest_run
 _DISABLED = ProfileRefill(False, None, None)
 
 
+def select_profiles(
+    profiles: tuple[ProfileInfo, ...],
+    language: str | None,
+    niche: str | None,
+) -> tuple[ProfileInfo, ...]:
+    """Return the profiles that match both filters, in id order."""
+    return tuple(
+        profile
+        for profile in profiles
+        if (language is None or profile.language == language)
+        and (niche is None or profile.niche == niche)
+    )
+
+
 def _views(
     profiles: tuple[ProfileInfo, ...],
     stock: dict[str, int],
@@ -37,16 +51,8 @@ def _views(
     *,
     output_dir: Path,
     global_config: GeneratorConfig,
-    language: str | None,
-    niche: str | None,
 ) -> tuple[ProfileResponse, ...]:
-    """Build views of the profiles that match both filters, in id order."""
-    selected = tuple(
-        profile
-        for profile in profiles
-        if (language is None or profile.language == language)
-        and (niche is None or profile.niche == niche)
-    )
+    """Build API responses for the selected profiles, in id order."""
     return tuple(
         _view(
             profile,
@@ -56,7 +62,7 @@ def _views(
             output_dir,
             global_config,
         )
-        for profile in selected
+        for profile in profiles
     )
 
 

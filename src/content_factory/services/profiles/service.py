@@ -48,6 +48,7 @@ from content_factory.services.profiles.views import (
     _settings,
     _view,
     _views,
+    select_profiles,
 )
 from content_factory.services.stock import sync_stock
 
@@ -77,16 +78,15 @@ def list_profile_views(
         Matching profiles in id order; an empty tuple when none match.
     """
     profiles = list_profiles(data_dir)
-    stock, photo_stock, refills = _counters(data_dir, profiles)
+    selected = select_profiles(profiles, language, niche)
+    stock, photo_stock, refills = _counters(data_dir, selected)
     return _views(
-        profiles,
+        selected,
         stock,
         photo_stock,
         refills,
         output_dir=output_dir,
         global_config=global_config,
-        language=language,
-        niche=niche,
     )
 
 
@@ -115,17 +115,16 @@ def list_profiles_response(
         The matching profile views and the unfiltered catalog.
     """
     profiles = list_profiles(data_dir)
-    stock, photo_stock, refills = _counters(data_dir, profiles)
+    selected = select_profiles(profiles, language, niche)
+    stock, photo_stock, refills = _counters(data_dir, selected)
     return ProfilesResponse(
         profiles=_views(
-            profiles,
+            selected,
             stock,
             photo_stock,
             refills,
             output_dir=output_dir,
             global_config=global_config,
-            language=language,
-            niche=niche,
         ),
         languages=_language_options(profiles),
         niches=tuple(sorted({profile.niche for profile in profiles})),

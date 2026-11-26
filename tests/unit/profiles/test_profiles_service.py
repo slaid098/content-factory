@@ -119,6 +119,65 @@ def test_list_profile_views_returns_empty_for_an_unknown_language(tmp_path: Path
     assert views == ()
 
 
+def test_list_profile_views_counts_stock_only_for_matching_profiles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_profile(tmp_path, "dating", "profile_1", language="de")
+    add_profile(tmp_path, "dating", "profile_2", language="en")
+    counted: list[str] = []
+
+    def _count(
+        _connection: Connection,
+        profile_id: str,
+        **_kwargs: object,
+    ) -> int:
+        counted.append(profile_id)
+        return 0
+
+    monkeypatch.setattr(profiles_service, "count_by_profile", _count)
+
+    views = profiles_service.list_profile_views(
+        tmp_path,
+        output_dir=tmp_path / "generated",
+        global_config=_GLOBAL,
+        language="de",
+    )
+
+    assert [view.id for view in views] == ["dating/profile_1"]
+    assert counted and set(counted) == {"dating/profile_1"}
+
+
+def test_list_profiles_response_counts_stock_only_for_matching_profiles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    add_profile(tmp_path, "dating", "profile_1", language="de")
+    add_profile(tmp_path, "dating", "profile_2", language="en")
+    counted: list[str] = []
+
+    def _count(
+        _connection: Connection,
+        profile_id: str,
+        **_kwargs: object,
+    ) -> int:
+        counted.append(profile_id)
+        return 0
+
+    monkeypatch.setattr(profiles_service, "count_by_profile", _count)
+
+    response = profiles_service.list_profiles_response(
+        tmp_path,
+        output_dir=tmp_path / "generated",
+        global_config=_GLOBAL,
+        language="de",
+    )
+
+    assert [profile.id for profile in response.profiles] == ["dating/profile_1"]
+    assert counted and set(counted) == {"dating/profile_1"}
+    assert response.total == 2
+
+
 def test_list_profiles_response_counts_before_filter(tmp_path: Path) -> None:
     add_profile(tmp_path, "dating", "profile_1", language="de", niche="dating")
     add_profile(tmp_path, "dating", "profile_2", language="en", niche="overlay")
