@@ -27,13 +27,16 @@ from content_factory.services.stock.layout import (
 )
 
 
-def count_stock(content_dir: Path, languages: Iterable[str]) -> dict[str, int]:
-    """Посчитать готовые видеофайлы языка по всем нишам стока.
+def count_general_stock(content_dir: Path, languages: Iterable[str]) -> dict[str, int]:
+    """Посчитать готовые видеофайлы языка без профиля.
 
-    Фото не входят в остаток: добор и цель стока считаются только по видео.
+    Цель General считается только по видео без профиля: профильный сток
+    учитывается отдельными целями профилей. Фото не входят в остаток.
     """
     return {
-        language: len(language_files(content_dir, language, content_type=ContentType.VIDEO))
+        language: _general_count(
+            language_files(content_dir, language, content_type=ContentType.VIDEO)
+        )
         for language in languages
     }
 
@@ -101,8 +104,12 @@ def _general_stock(
     files: Sequence[StockFile],
 ) -> GeneralStock:
     """Build the General-only video row of one language."""
-    stock = sum(1 for item in files if item.profile_id is None)
-    return GeneralStock(language=code, stock=stock, target=config.stock_target)
+    return GeneralStock(language=code, stock=_general_count(files), target=config.stock_target)
+
+
+def _general_count(files: Sequence[StockFile]) -> int:
+    """Count the General videos: files that belong to no profile."""
+    return sum(1 for item in files if item.profile_id is None)
 
 
 def _file_size(path: Path) -> int:
@@ -137,7 +144,7 @@ def _read_runtime_state(data_dir: Path) -> RuntimeState:
 
 __all__ = [
     "collect_stock",
-    "count_stock",
+    "count_general_stock",
     "language_files",
     "photo_sidecar",
     "photo_text",
