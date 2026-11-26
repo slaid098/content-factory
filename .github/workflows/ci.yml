@@ -262,7 +262,26 @@ jobs:
       DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
       DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
     steps:
+      # Очередь concurrency строится по времени старта job, а не по порядку
+      # коммитов: без проверки более старый merge может задеплоиться после
+      # свежего и откатить прод. Сверяем SHA с текущим head main через API —
+      # checkout не нужен, достаточно contents: read. Устаревший коммит
+      # завершает job успешно, не трогая прод.
+      - name: Check main head
+        id: main_head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head=$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)
+          if [[ "${head}" != "${GITHUB_SHA}" ]]; then
+            echo "::notice::Устаревший коммит ${GITHUB_SHA}: деплой пропущен, head main ${head}."
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "current=true" >> "$GITHUB_OUTPUT"
+
       - name: Check deploy secrets
+        if: steps.main_head.outputs.current == 'true'
         run: |
           missing=()
           for name in DEPLOY_HOST DEPLOY_PORT DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS; do
@@ -276,6 +295,7 @@ jobs:
           fi
 
       - name: Install SSH key
+        if: steps.main_head.outputs.current == 'true'
         run: |
           install -d -m 700 "$RUNNER_TEMP/ssh"
           printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/ssh/deploy_key"
@@ -284,6 +304,7 @@ jobs:
           chmod 644 "$RUNNER_TEMP/ssh/known_hosts"
 
       - name: Deploy
+        if: steps.main_head.outputs.current == 'true'
         run: |
           ssh -i "$RUNNER_TEMP/ssh/deploy_key" \
             -p "$DEPLOY_PORT" \
