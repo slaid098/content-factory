@@ -1,11 +1,9 @@
-"""Profile API views, refill settings and preview orchestration."""
+"""Profile refill settings, counters and preview orchestration."""
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, cast
 
 from loguru import logger
 
@@ -13,28 +11,22 @@ from content_factory.constants import DB_DIR, DB_FILENAME, PROFILES_DIR
 from content_factory.db.connection import connect
 from content_factory.db.errors import DatabaseError
 from content_factory.db.profiles import get_refill, upsert_refill
+from content_factory.db.stock import count_by_profile
 from content_factory.exceptions.errors import (
     ProfileStorageError,
     ProfileValidationError,
 )
 from content_factory.schemas.config.runtime import GeneratorConfig
+from content_factory.schemas.content.delivery import ContentType
 from content_factory.schemas.profiles.api import (
-    ProductionCheck,
-    ProductionStep,
-    ProfileDeliverySettings,
     ProfileDetailResponse,
-    ProfileOverlayStyle,
-    ProfileRentSettings,
     ProfileResponse,
-    ProfileSettings,
-    ProfileTextSettings,
+    ProfilesResponse,
     ProfileUpdateRequest,
-    ProfileVideoSettings,
 )
 from content_factory.schemas.profiles.preview import ProfilePreview
 from content_factory.schemas.profiles.refill import ProfileRefill
 from content_factory.schemas.profiles.registry import ProfileInfo
-from content_factory.services import production
 from content_factory.services.generator import load_profile
 from content_factory.services.profiles.preview import profile_preview
 from content_factory.services.profiles.prompts import (
@@ -49,11 +41,96 @@ from content_factory.services.profiles.registry import (
     is_safe_profile_id,
     list_profiles,
 )
-from content_factory.services.profiles.views import _DISABLED, _counters, _view
+from content_factory.services.profiles.views import (
+    _DISABLED,
+    _language_options,
+    _production,
+    _settings,
+    _view,
+    _views,
+)
+from content_factory.services.stock import sync_stock
 
 _TARGET_MIN = 1
 _TARGET_MAX = 1000
 _PHOTO_REFILL_MAX = 999
+
+
+def list_profile_views(
+    data_dir: Path,
+    *,
+    output_dir: Path,
+    global_config: GeneratorConfig,
+    language: str | None = None,
+    niche: str | None = None,
+) -> tuple[ProfileResponse, ...]:
+    """Return registry profiles with stock and refill settings.
+
+    Args:
+        data_dir: Root of the runtime data directory, usually ``app_data``.
+        output_dir: ``generator.output_dir`` of the generator settings.
+        global_config: Global target and refill threshold.
+        language: Exact language code to keep, or ``None`` for every profile.
+        niche: Exact niche to keep, or ``None`` for every profile.
+
+    Returns:
+        Matching profiles in id order; an empty tuple when none match.
+    """
+    profiles = list_profiles(data_dir)
+    stock, photo_stock, refills = _counters(data_dir, profiles)
+    return _views(
+        profiles,
+        stock,
+        photo_stock,
+        refills,
+        output_dir=output_dir,
+        global_config=global_config,
+        language=language,
+        niche=niche,
+    )
+
+
+def list_profiles_response(
+    data_dir: Path,
+    *,
+    output_dir: Path,
+    global_config: GeneratorConfig,
+    language: str | None = None,
+    niche: str | None = None,
+) -> ProfilesResponse:
+    """Return the filtered profile list with its filter catalog.
+
+    ``languages`` and ``niches`` describe every registry profile, while
+    ``total`` counts them before filtering, so the client keeps the filter
+    options even when the filtered list is empty.
+
+    Args:
+        data_dir: Root of the runtime data directory, usually ``app_data``.
+        output_dir: ``generator.output_dir`` of the generator settings.
+        global_config: Global target and refill threshold.
+        language: Exact language code to keep, or ``None`` for every profile.
+        niche: Exact niche to keep, or ``None`` for every profile.
+
+    Returns:
+        The matching profile views and the unfiltered catalog.
+    """
+    profiles = list_profiles(data_dir)
+    stock, photo_stock, refills = _counters(data_dir, profiles)
+    return ProfilesResponse(
+        profiles=_views(
+            profiles,
+            stock,
+            photo_stock,
+            refills,
+            output_dir=output_dir,
+            global_config=global_config,
+            language=language,
+            niche=niche,
+        ),
+        languages=_language_options(profiles),
+        niches=tuple(sorted({profile.niche for profile in profiles})),
+        total=len(profiles),
+    )
 
 
 def get_profile_view(
@@ -192,62 +269,50 @@ def preview_for_profile(data_dir: Path, profile_id: str) -> ProfilePreview | Non
     return profile_preview(data_dir, get_profile(data_dir, profile_id))
 
 
-def _production(profile: Any) -> tuple[ProductionStep, ...]:
-    """Build the recipe view in declaration order with resolved QA stages."""
-    return tuple(
-        ProductionStep(
-            producer=layer.producer,
-            type=cast(Literal["video", "photo"], layer.output.value),
-            checks=tuple(
-                ProductionCheck(
-                    name=name,
-                    stage=cast(
-                        Literal["source", "final"],
-                        production.qa.resolve(name).stage,
-                    ),
-                )
-                for name in layer.checks
-            ),
-        )
-        for layer in profile.production
-    )
+def _counters(
+    data_dir: Path,
+    profiles: tuple[ProfileInfo, ...],
+) -> tuple[dict[str, int], dict[str, int], dict[str, ProfileRefill]]:
+    """Synchronize the stock index and read video, photo and refill values.
 
-
-def _settings(profile: Any, info: ProfileInfo) -> ProfileSettings:
-    """Build the safe read-only settings groups of one profile."""
-    title = info.delivery.title
-    return ProfileSettings(
-        video=ProfileVideoSettings(
-            width=profile.width,
-            height=profile.height,
-            frames=profile.frames,
-            frames_jitter=profile.frames_jitter,
-            fps=profile.fps,
-            renderer=profile.renderer,
-            image=profile.image,
-            audio_tracks=len(profile.audio_tracks),
-        ),
-        rent=ProfileRentSettings(
-            gpu=profile.gpu,
-            max_cost=profile.max_cost,
-            disk_space=profile.rent.disk_space,
-            gpu_ram=profile.rent.gpu_ram,
-            inet_down=profile.rent.inet_down,
-            inet_up_cost=profile.rent.inet_up_cost,
-            inet_down_cost=profile.rent.inet_down_cost,
-        ),
-        text=ProfileTextSettings(
-            font=profile.font.name,
-            negative_prompt=profile.negative_prompt,
-            cfg=profile.cfg,
-            style=ProfileOverlayStyle(**asdict(profile.style)),
-        ),
-        delivery=ProfileDeliverySettings(
-            title_mode=title.mode.value,
-            title=title.value,
-            hashtags=info.delivery.hashtags,
-        ),
-    )
+    A database failure is logged and yields zeros with disabled settings:
+    the list of profiles stays available even when accounting is broken.
+    """
+    try:
+        sync_stock(data_dir)
+    except (OSError, DatabaseError) as ex:
+        logger.bind(
+            path=str(data_dir / DB_DIR / DB_FILENAME),
+            error=ex,
+            error_type=type(ex).__name__,
+        ).warning("Не удалось синхронизировать индекс стока")
+        return {}, {}, {}
+    try:
+        connection = connect(data_dir / DB_DIR / DB_FILENAME)
+    except (OSError, DatabaseError) as ex:
+        logger.bind(
+            path=str(data_dir / DB_DIR / DB_FILENAME),
+            error=ex,
+            error_type=type(ex).__name__,
+        ).warning("Не удалось прочитать настройки профилей")
+        return {}, {}, {}
+    try:
+        stock = {profile.id: count_by_profile(connection, profile.id) for profile in profiles}
+        photo_stock = {
+            profile.id: count_by_profile(connection, profile.id, content_type=ContentType.PHOTO)
+            for profile in profiles
+        }
+        refills = {profile.id: get_refill(connection, profile.id) for profile in profiles}
+    except DatabaseError as ex:
+        logger.bind(
+            path=str(data_dir / DB_DIR / DB_FILENAME),
+            error=ex,
+            error_type=type(ex).__name__,
+        ).warning("Не удалось прочитать настройки профилей")
+        return {}, {}, {}
+    finally:
+        connection.close()
+    return stock, photo_stock, refills
 
 
 def _updated_refill(
@@ -366,7 +431,9 @@ __all__ = [
     "get_profile_detail",
     "get_profile_view",
     "is_safe_profile_id",
+    "list_profile_views",
     "list_profiles",
+    "list_profiles_response",
     "preview_for_profile",
     "read_profile_prompts",
     "update_profile_settings",
