@@ -59,7 +59,10 @@ interface ProfileSummary {
   category: string;
   name: string;
   language: string;
+  languageLabel: string;
   niche: string;
+  title: string;
+  summary: string;
   width: number;
   height: number;
   audio: boolean;
@@ -86,6 +89,11 @@ interface ProfileSettings {
 interface ProfileDetail extends ProfileSummary {
   production: ProductionStep[];
   settings: ProfileSettings;
+}
+
+interface ProfileCatalog {
+  languages: Array<{ code: string; label: string }>;
+  niches: string[];
 }
 
 interface PromptFile {
@@ -125,9 +133,14 @@ function profilesUi() {
     message: byId("profiles-message"),
     loading: byId("profiles-loading"),
     refresh: byId<HTMLButtonElement>("profiles-refresh"),
+    languageFilter: byId<HTMLSelectElement>("profiles-language-filter"),
+    nicheFilter: byId<HTMLSelectElement>("profiles-niche-filter"),
+    count: byId("profiles-count"),
     view: byId("profile-view"),
     back: byId<HTMLButtonElement>("profile-back"),
     title: byId("profile-view-title"),
+    viewName: byId("profile-view-name"),
+    viewSummary: byId("profile-view-summary"),
     meta: byId("profile-view-meta"),
     viewMessage: byId("profile-view-message"),
     viewRefill: byId<HTMLButtonElement>("profile-view-refill"),
@@ -176,6 +189,8 @@ export function createProfilesView(): ProfilesView {
   let viewToken = 0;
   let loading = false;
   let savingSettings = false;
+  let filterLanguage = "";
+  let filterNiche = "";
 
   async function load(): Promise<void> {
     if (loading) {
@@ -183,25 +198,82 @@ export function createProfilesView(): ProfilesView {
     }
     loading = true;
     ui.refresh.disabled = true;
+    setFiltersBusy(true);
     ui.list.setAttribute("aria-busy", "true");
     setText(ui.loading, "Загружаем профили…");
     toggle(ui.loading, true);
     setMessage(ui.message, "");
     try {
-      const data = asObject(await requestJson(PROFILES_URL));
+      let data = asObject(await requestJson(profilesUrl()));
+      let catalog = profileCatalog(data);
+      while (dropMissingFilters(catalog)) {
+        data = asObject(await requestJson(profilesUrl()));
+        catalog = profileCatalog(data);
+      }
+      fillCatalog(catalog);
       const items = Array.isArray(data.profiles)
         ? data.profiles.filter(isObject).map(normalizeSummary)
         : [];
       profiles.splice(0, profiles.length, ...items);
       renderList();
+      setText(
+        ui.count,
+        `${formatCount(profiles.length)} из ${formatCount(numberValue(data.total))}`,
+      );
     } catch (error) {
       setMessage(ui.message, errorMessage(error));
     } finally {
       loading = false;
       ui.refresh.disabled = false;
+      setFiltersBusy(false);
       ui.list.removeAttribute("aria-busy");
       toggle(ui.loading, false);
     }
+  }
+
+  function profilesUrl(): string {
+    const params = new URLSearchParams();
+    if (filterLanguage !== "") {
+      params.set("language", filterLanguage);
+    }
+    if (filterNiche !== "") {
+      params.set("niche", filterNiche);
+    }
+    const query = params.toString();
+    return query === "" ? PROFILES_URL : `${PROFILES_URL}?${query}`;
+  }
+
+  function dropMissingFilters(catalog: ProfileCatalog): boolean {
+    let changed = false;
+    if (filterLanguage !== "" && !catalog.languages.some((item) => item.code === filterLanguage)) {
+      filterLanguage = "";
+      changed = true;
+    }
+    if (filterNiche !== "" && !catalog.niches.includes(filterNiche)) {
+      filterNiche = "";
+      changed = true;
+    }
+    return changed;
+  }
+
+  function fillCatalog(catalog: ProfileCatalog): void {
+    fillSelect(
+      ui.languageFilter,
+      catalog.languages.map<[string, string]>((item) => [item.code, item.label]),
+      "Все языки",
+      filterLanguage,
+    );
+    fillSelect(
+      ui.nicheFilter,
+      catalog.niches.map<[string, string]>((niche) => [niche, niche]),
+      "Все тематики",
+      filterNiche,
+    );
+  }
+
+  function setFiltersBusy(busy: boolean): void {
+    ui.languageFilter.disabled = busy;
+    ui.nicheFilter.disabled = busy;
   }
 
   function renderList(): void {
@@ -221,7 +293,9 @@ export function createProfilesView(): ProfilesView {
     const main = el("div", "profile-row-main");
     const head = el("div", "profile-row-head");
     const id = el("span", "profile-id", profile.id);
-    const meta = el("span", "profile-row-meta");
+    const badges = el("div", "profile-row-badges");
+    const title = el("p", "profile-title");
+    let summary: HTMLElement | null = null;
     const flags = el("div", "profile-flags");
     const foot = el("div", "profile-row-foot");
     const counts = el("span", "profile-counts");
@@ -236,14 +310,28 @@ export function createProfilesView(): ProfilesView {
     status.setAttribute("aria-live", "polite");
     toggle(status, false);
 
-    head.append(id, meta);
+    head.append(id, badges);
     actions.append(refill, gear);
     foot.append(counts, actions);
-    main.append(head, flags, foot, status);
+    main.append(head, title, flags, foot, status);
     node.append(main);
 
     function update(): void {
-      meta.textContent = `${languageName(profile.language)} · ${profile.niche || "без ниши"}`;
+      badges.replaceChildren(
+        el("span", "badge", profile.languageLabel || languageName(profile.language)),
+        el("span", "badge", profile.niche || "без ниши"),
+      );
+      setText(title, profile.title || "Без названия");
+      if (profile.summary !== "") {
+        if (summary === null) {
+          summary = el("p", "profile-summary");
+          main.insertBefore(summary, flags);
+        }
+        setText(summary, profile.summary);
+      } else if (summary !== null) {
+        summary.remove();
+        summary = null;
+      }
       flags.replaceChildren(...flagsFor(profile));
       const primary = primaryCounter(profile);
       counts.textContent = `${formatCount(primary.stock)} / ${formatCount(primary.target)}`;
@@ -310,6 +398,10 @@ export function createProfilesView(): ProfilesView {
     ui.listView.hidden = true;
     ui.view.hidden = false;
     setText(ui.title, id);
+    setText(ui.viewName, "");
+    toggle(ui.viewName, false);
+    setText(ui.viewSummary, "");
+    toggle(ui.viewSummary, false);
     setText(ui.meta, "");
     setText(ui.viewMessage, "");
     toggle(ui.viewMessage, false);
@@ -341,11 +433,15 @@ export function createProfilesView(): ProfilesView {
 
   function renderView(profile: ProfileDetail): void {
     setText(ui.title, profile.id);
+    setText(ui.viewName, profile.title);
+    toggle(ui.viewName, profile.title !== "");
+    setText(ui.viewSummary, profile.summary);
+    toggle(ui.viewSummary, profile.summary !== "");
     const types = profile.outputs.map(typeName).join("/") || "—";
     setText(
       ui.meta,
-      `${languageName(profile.language)} · ${profile.niche || "без ниши"} · ` +
-        `${profile.width}×${profile.height} · ${types}`,
+      `${profile.languageLabel || languageName(profile.language)} · ` +
+        `${profile.niche || "без ниши"} · ${profile.width}×${profile.height} · ${types}`,
     );
     renderPreview(profile);
     renderViewRefill(profile);
@@ -773,6 +869,14 @@ export function createProfilesView(): ProfilesView {
   ui.refresh.addEventListener("click", () => {
     void load();
   });
+  ui.languageFilter.addEventListener("change", () => {
+    filterLanguage = ui.languageFilter.value;
+    void load();
+  });
+  ui.nicheFilter.addEventListener("change", () => {
+    filterNiche = ui.nicheFilter.value;
+    void load();
+  });
   ui.back.addEventListener("click", back);
   ui.preview.addEventListener("click", openLightbox);
   ui.lightboxClose.addEventListener("click", closeLightbox);
@@ -1002,6 +1106,37 @@ function readRequiredInt(raw: string, min: number, max: number): number | null {
   return Number.isInteger(value) && value >= min && value <= max ? value : null;
 }
 
+function profileCatalog(data: Record<string, unknown>): ProfileCatalog {
+  const languages = Array.isArray(data.languages)
+    ? data.languages
+        .filter(isObject)
+        .map((item) => ({ code: text(item.code), label: text(item.label) }))
+        .filter((item) => item.code !== "")
+    : [];
+  const niches = Array.isArray(data.niches)
+    ? data.niches.filter((item): item is string => typeof item === "string" && item !== "")
+    : [];
+  return { languages, niches };
+}
+
+function fillSelect(
+  select: HTMLSelectElement,
+  options: Array<[string, string]>,
+  emptyLabel: string,
+  selected: string,
+): void {
+  const empty = el("option", "", emptyLabel);
+  empty.value = "";
+  const nodes: HTMLOptionElement[] = [empty];
+  for (const [value, label] of options) {
+    const option = el("option", "", label);
+    option.value = value;
+    nodes.push(option);
+  }
+  select.replaceChildren(...nodes);
+  select.value = selected;
+}
+
 function normalizeSummary(value: unknown): ProfileSummary {
   const body = asObject(value);
   const id = text(body.id);
@@ -1013,7 +1148,10 @@ function normalizeSummary(value: unknown): ProfileSummary {
     category,
     name,
     language: text(body.language) || "ru",
+    languageLabel: text(body.language_label),
     niche: text(body.niche),
+    title: text(body.title),
+    summary: text(body.summary),
     width: numberValue(body.width),
     height: numberValue(body.height),
     audio: Boolean(body.audio),

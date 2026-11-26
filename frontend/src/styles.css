@@ -750,6 +750,15 @@
 
   /* Profiles */
 
+  .profiles-tools {
+    margin-bottom: var(--space-3);
+  }
+
+  .profiles-count {
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+  }
+
   .profile-list {
     display: grid;
     gap: var(--space-3);
@@ -846,10 +855,27 @@
     overflow-wrap: anywhere;
   }
 
-  .profile-row-meta {
+  .profile-row-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+    align-items: center;
+  }
+
+  .profile-title {
+    font-size: var(--text-base);
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+
+  .profile-summary {
+    display: -webkit-box;
+    overflow: hidden;
     color: var(--color-muted);
     font-size: var(--text-sm);
     overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
   }
 
   .profile-flags {

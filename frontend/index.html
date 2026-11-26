@@ -213,6 +213,17 @@
             <p class="hint" id="profiles-hint">
               Строка профиля открывает настройки добора и промты.
             </p>
+            <div class="panel-tools profiles-tools">
+              <div class="field">
+                <label class="field-label" for="profiles-language-filter">Язык</label>
+                <select id="profiles-language-filter"></select>
+              </div>
+              <div class="field">
+                <label class="field-label" for="profiles-niche-filter">Тематика</label>
+                <select id="profiles-niche-filter"></select>
+              </div>
+              <p class="hint profiles-count" id="profiles-count"></p>
+            </div>
             <p class="status" id="profiles-loading" role="status" aria-live="polite" hidden></p>
             <p class="message is-error" id="profiles-message"
                role="status" aria-live="polite" hidden></p>
@@ -227,6 +238,8 @@
               <button type="button" class="button ghost" id="profile-back">← Назад</button>
               <div class="profile-view-heading">
                 <h2 id="profile-view-title">Профиль</h2>
+                <p class="profile-title" id="profile-view-name" hidden></p>
+                <p class="profile-summary" id="profile-view-summary" hidden></p>
                 <p class="hint" id="profile-view-meta"></p>
               </div>
               <button type="button" class="button ghost" id="profile-view-refill"></button>

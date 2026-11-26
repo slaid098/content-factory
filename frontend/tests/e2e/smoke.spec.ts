@@ -23,7 +23,10 @@ const PROFILE = {
   category: "dating",
   name: "profile_1",
   language: "ru",
+  language_label: "Русский",
   niche: "dating",
+  title: "Знакомства",
+  summary: "Профиль для знакомств",
   width: 544,
   height: 960,
   audio: true,
@@ -47,7 +50,14 @@ async function mockStock(page: Page, stock = STOCK): Promise<void> {
 
 async function mockProfiles(page: Page, profiles: unknown[] = [PROFILE]): Promise<void> {
   await page.route(/\/api\/v1\/content\/profiles$/, (route) =>
-    route.fulfill({ json: { profiles } }),
+    route.fulfill({
+      json: {
+        profiles,
+        languages: [{ code: "ru", label: "Русский" }],
+        niches: profiles.length === 0 ? [] : ["dating"],
+        total: profiles.length,
+      },
+    }),
   );
 }
 
@@ -421,14 +431,22 @@ test.describe("profiles", () => {
     await page.getByRole("tab", { name: "Профили" }).click();
     const row = page.locator(".profile-row");
     await expect(row).toContainText("dating/profile_1");
-    await expect(row).toContainText("Русский · dating");
+    await expect(row.locator(".profile-row-badges")).toContainText("Русский");
+    await expect(row.locator(".profile-row-badges")).toContainText("dating");
+    await expect(row.locator(".profile-title")).toHaveText("Знакомства");
+    await expect(row.locator(".profile-summary")).toHaveText("Профиль для знакомств");
     await expect(row).toContainText("8 / 20");
     await expect(row.locator(".profile-preview")).toHaveCount(0);
+    await expect(page.locator("#profiles-language-filter")).toBeVisible();
+    await expect(page.locator("#profiles-niche-filter")).toBeVisible();
+    await expect(page.locator("#profiles-count")).toHaveText("1 из 1");
 
     await page.getByRole("button", { name: "Открыть профиль dating/profile_1" }).click();
 
     await expect(page.locator("#profiles-list-view")).toBeHidden();
     await expect(page.locator("#profile-view-title")).toHaveText("dating/profile_1");
+    await expect(page.locator("#profile-view-name")).toHaveText("Знакомства");
+    await expect(page.locator("#profile-view-summary")).toHaveText("Профиль для знакомств");
     await expect(page.locator("#profile-view-meta")).toHaveText(
       "Русский · dating · 544×960 · видео/фото",
     );

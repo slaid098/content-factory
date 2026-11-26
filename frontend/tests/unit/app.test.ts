@@ -42,7 +42,10 @@ function profileRow(overrides: Record<string, unknown> = {}): Record<string, unk
     category: "dating",
     name: "profile_1",
     language: "ru",
+    language_label: "Русский",
     niche: "dating",
+    title: "Знакомства",
+    summary: "Профиль для знакомств",
     width: 544,
     height: 960,
     audio: true,
@@ -88,6 +91,12 @@ const defaultProfiles = {
     profileRow(),
     profileRow({ id: "dating/profile_2", name: "profile_2", stock: 2, target: 5 }),
   ],
+  languages: [
+    { code: "ru", label: "Русский" },
+    { code: "en", label: "Английский" },
+  ],
+  niches: ["dating"],
+  total: 2,
 };
 
 function handler(data: ApiData = {}): FetchHandler {
