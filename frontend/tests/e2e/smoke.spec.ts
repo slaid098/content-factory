@@ -344,7 +344,7 @@ test("builds a general archive from the delivery form", async ({ page }) => {
         language: "ru",
         status: "ready",
         url: "https://filebin.example/req-1.zip",
-        expires_at: "2026-11-26T11:00:00Z",
+        expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
       },
     }),
   );
