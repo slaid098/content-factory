@@ -16,6 +16,8 @@ const ERROR_LIMIT = 200;
 const TARGET_MIN = 1;
 const TARGET_MAX = 1000;
 const REFILL_MIN = 0;
+const PHOTO_TARGET_MIN = 0;
+const PHOTO_REFILL_MAX = 999;
 const FOCUSABLE =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -40,6 +42,8 @@ interface Profile {
   photoStock: number;
   target: number;
   refillAt: number;
+  photoTarget: number;
+  photoRefillAt: number;
   refillEnabled: boolean;
   targetOverride: number | null;
   refillAtOverride: number | null;
@@ -210,6 +214,7 @@ export function createProfilesView(elements: ProfilesElements): ProfilesView {
   function buildCard(initial: Profile): CardController {
     const id = initial.id;
     let profile = initial;
+    let busy = false;
     const card = el("li", "profile-card");
     const media = el("button", "profile-media");
     const image = el("img", "profile-preview");
@@ -222,8 +227,12 @@ export function createProfilesView(elements: ProfilesElements): ProfilesView {
     const shortsBar = el("div", "profile-progress");
     const shortsFill = el("span", "profile-progress-fill");
     const postsValue = el("span", "profile-counter-value");
+    const postsBar = el("div", "profile-progress profile-progress-posts");
+    const postsFill = el("span", "profile-progress-fill");
     const targetInput = numberInput("Цель", TARGET_MIN, TARGET_MAX);
     const refillInput = numberInput("Порог добора", REFILL_MIN, TARGET_MAX);
+    const photoTargetInput = numberInput("Цель постов", PHOTO_TARGET_MIN, TARGET_MAX);
+    const photoRefillInput = numberInput("Порог добора постов", REFILL_MIN, PHOTO_REFILL_MAX);
     const enabled = el("input");
     const status = el("p", "status profile-status");
     const lastRun = el("div", "profile-last-run");
@@ -263,25 +272,43 @@ export function createProfilesView(elements: ProfilesElements): ProfilesView {
     const posts = el("div", "profile-counter");
     const postsHead = el("p", "profile-counter-head");
     postsHead.append(el("span", "profile-counter-name", "Посты"), " ", postsValue);
-    posts.append(postsHead, el("p", "profile-counter-note", "только учёт, вне добора"));
+    postsBar.setAttribute("role", "progressbar");
+    postsBar.setAttribute("aria-label", "Посты");
+    postsBar.setAttribute("aria-valuemin", "0");
+    postsBar.append(postsFill);
+    const postsNote = el("p", "profile-counter-note", "добор постов выключен");
+    posts.append(postsHead, postsBar, postsNote);
     counters.append(shorts, posts);
 
     enabled.type = "checkbox";
     enabled.className = "profile-refill";
     enabled.setAttribute("role", "switch");
     const switchLabel = el("label", "profile-switch");
-    switchLabel.append(enabled, el("span", "profile-switch-label", "Добор роликов"));
+    const switchText = el("span", "profile-switch-text");
+    switchText.append(
+      el("span", "profile-switch-label", "Добор"),
+      el("span", "profile-switch-note", "ролики и посты"),
+    );
+    switchLabel.append(enabled, switchText);
 
     const targetField = el("label", "profile-field");
     targetField.append(el("span", "field-label", "Цель"), targetInput);
     const refillField = el("label", "profile-field");
     refillField.append(el("span", "field-label", "Порог добора"), refillInput);
-    const fields = el("div", "profile-fields");
-    fields.append(targetField, refillField);
+    const photoTargetField = el("label", "profile-field");
+    photoTargetField.append(el("span", "field-label", "Цель"), photoTargetInput);
+    const photoRefillField = el("label", "profile-field");
+    photoRefillField.append(el("span", "field-label", "Порог добора"), photoRefillInput);
+
+    const groups = el("div", "profile-groups");
+    groups.append(
+      buildGroup("Ролики", [targetField, refillField]),
+      buildGroup("Посты", [photoTargetField, photoRefillField], "0 — выключить добор постов"),
+    );
 
     status.setAttribute("role", "status");
     status.setAttribute("aria-live", "polite");
-    body.append(head, counters, switchLabel, fields, status, lastRun);
+    body.append(head, counters, switchLabel, groups, status, lastRun);
     card.append(media, body);
 
     function showPreview(visible: boolean): void {
@@ -320,7 +347,7 @@ export function createProfilesView(elements: ProfilesElements): ProfilesView {
     }
 
     function renderCounters(): void {
-      const { stock, target } = profile;
+      const { stock, target, photoStock, photoTarget } = profile;
       shortsValue.textContent = `${formatCount(stock)} / ${formatCount(target)}`;
       const capped = target > 0 ? Math.min(stock, target) : 0;
       shortsBar.setAttribute("aria-valuemax", String(target));
@@ -328,7 +355,23 @@ export function createProfilesView(elements: ProfilesElements): ProfilesView {
       shortsBar.setAttribute("aria-valuetext", `${formatCount(stock)} из ${formatCount(target)}`);
       const share = target > 0 ? Math.min(100, Math.max(0, (stock / target) * 100)) : 0;
       shortsFill.style.width = `${share}%`;
-      postsValue.textContent = formatCount(profile.photoStock);
+
+      const photoCapped = photoTarget > 0 ? Math.min(photoStock, photoTarget) : 0;
+      const photoShare =
+        photoTarget > 0 ? Math.min(100, Math.max(0, (photoStock / photoTarget) * 100)) : 0;
+      toggle(postsBar, photoTarget > 0);
+      toggle(postsNote, photoTarget === 0);
+      postsValue.textContent =
+        photoTarget > 0
+          ? `${formatCount(photoStock)} / ${formatCount(photoTarget)}`
+          : formatCount(photoStock);
+      postsBar.setAttribute("aria-valuemax", String(photoTarget));
+      postsBar.setAttribute("aria-valuenow", String(photoCapped));
+      postsBar.setAttribute(
+        "aria-valuetext",
+        `${formatCount(photoStock)} из ${formatCount(photoTarget)}`,
+      );
+      postsFill.style.width = `${photoShare}%`;
     }
 
     function fillInputs(): void {
@@ -336,8 +379,16 @@ export function createProfilesView(elements: ProfilesElements): ProfilesView {
       targetInput.placeholder = effectiveValue(profile.target, profile.targetOverride);
       refillInput.value = overrideValue(profile.refillAtOverride);
       refillInput.placeholder = effectiveValue(profile.refillAt, profile.refillAtOverride);
+      photoTargetInput.value = String(profile.photoTarget);
+      photoRefillInput.value = String(profile.photoRefillAt);
       enabled.checked = profile.refillEnabled;
       enabled.setAttribute("aria-checked", String(profile.refillEnabled));
+      syncPhotoRefill();
+    }
+
+    /** A zero photo goal turns photo refill off, so its threshold is unavailable. */
+    function syncPhotoRefill(): void {
+      photoRefillInput.disabled = busy || profile.photoTarget === 0;
     }
 
     function renderLastRun(): void {
@@ -370,9 +421,12 @@ export function createProfilesView(elements: ProfilesElements): ProfilesView {
     }
 
     function setBusy(value: boolean): void {
+      busy = value;
       enabled.disabled = value;
       targetInput.disabled = value;
       refillInput.disabled = value;
+      photoTargetInput.disabled = value;
+      syncPhotoRefill();
       card.setAttribute("aria-busy", String(value));
     }
 
@@ -381,13 +435,24 @@ export function createProfilesView(elements: ProfilesElements): ProfilesView {
       status.classList.toggle("is-error", isError);
     }
 
-    function saveNumber(field: string, input: HTMLInputElement, min: number, max: number): void {
+    function saveNumber(
+      field: string,
+      input: HTMLInputElement,
+      min: number,
+      max: number,
+      nullable = true,
+    ): void {
       if (pending.has(id)) {
         return;
       }
       const raw = input.value.trim();
       if (raw === "") {
-        void saveProfile(id, { [field]: null });
+        if (nullable) {
+          void saveProfile(id, { [field]: null });
+          return;
+        }
+        fillInputs();
+        setStatus(`Введите целое число от ${min} до ${max}.`, true);
         return;
       }
       const value = Number(raw);
@@ -399,6 +464,30 @@ export function createProfilesView(elements: ProfilesElements): ProfilesView {
       void saveProfile(id, { [field]: value });
     }
 
+    function savePhotoTarget(): void {
+      if (pending.has(id)) {
+        return;
+      }
+      const raw = photoTargetInput.value.trim();
+      const value = Number(raw);
+      if (
+        raw === "" ||
+        !Number.isInteger(value) ||
+        value < PHOTO_TARGET_MIN ||
+        value > TARGET_MAX
+      ) {
+        fillInputs();
+        setStatus(`Введите целое число от ${PHOTO_TARGET_MIN} до ${TARGET_MAX}.`, true);
+        return;
+      }
+      if (value === 0) {
+        photoRefillInput.value = "0";
+        void saveProfile(id, { photo_target: 0, photo_refill_at: 0 });
+        return;
+      }
+      void saveProfile(id, { photo_target: value });
+    }
+
     enabled.addEventListener("change", () => {
       enabled.setAttribute("aria-checked", String(enabled.checked));
       void saveProfile(id, { refill_enabled: enabled.checked });
@@ -408,6 +497,12 @@ export function createProfilesView(elements: ProfilesElements): ProfilesView {
     });
     refillInput.addEventListener("change", () => {
       saveNumber("refill_at", refillInput, REFILL_MIN, TARGET_MAX);
+    });
+    photoTargetInput.addEventListener("change", savePhotoTarget);
+    photoRefillInput.addEventListener("change", () => {
+      if (!photoRefillInput.disabled) {
+        saveNumber("photo_refill_at", photoRefillInput, REFILL_MIN, PHOTO_REFILL_MAX, false);
+      }
     });
 
     fill();
@@ -569,6 +664,14 @@ function normalizeProfile(value: unknown, fallback: Profile | null): Profile {
         : numberValue(body.photo_stock, 0),
     target: numberValue(body.target, fallback?.target ?? 0),
     refillAt: numberValue(body.refill_at, fallback?.refillAt ?? 0),
+    photoTarget:
+      body.photo_target === undefined
+        ? (fallback?.photoTarget ?? 0)
+        : numberValue(body.photo_target, 0),
+    photoRefillAt:
+      body.photo_refill_at === undefined
+        ? (fallback?.photoRefillAt ?? 0)
+        : numberValue(body.photo_refill_at, 0),
     refillEnabled:
       body.refill_enabled === undefined
         ? (fallback?.refillEnabled ?? false)
@@ -607,6 +710,18 @@ function numberInput(label: string, min: number, max: number): HTMLInputElement 
   input.step = "1";
   input.setAttribute("aria-label", label);
   return input;
+}
+
+/** Group one type of refill settings under a visible legend. */
+function buildGroup(title: string, children: HTMLElement[], hint?: string): HTMLFieldSetElement {
+  const group = el("fieldset", "profile-group");
+  const fields = el("div", "profile-fields");
+  fields.append(...children);
+  group.append(el("legend", "profile-group-title", title), fields);
+  if (hint) {
+    group.append(el("p", "profile-field-hint", hint));
+  }
+  return group;
 }
 
 function overrideValue(value: number | null): string {

@@ -17,6 +17,8 @@ function profile(overrides: Record<string, unknown> = {}): Record<string, unknow
     photo_stock: 14,
     target: 10,
     refill_at: 3,
+    photo_target: 30,
+    photo_refill_at: 5,
     refill_enabled: false,
     target_override: 12,
     refill_at_override: null,
@@ -78,6 +80,14 @@ function refillInput(): HTMLInputElement {
   return card().querySelectorAll<HTMLInputElement>("input[type=number]")[1] as HTMLInputElement;
 }
 
+function photoTargetInput(): HTMLInputElement {
+  return card().querySelectorAll<HTMLInputElement>("input[type=number]")[2] as HTMLInputElement;
+}
+
+function photoRefillInput(): HTMLInputElement {
+  return card().querySelectorAll<HTMLInputElement>("input[type=number]")[3] as HTMLInputElement;
+}
+
 function switchInput(): HTMLInputElement {
   return card().querySelector<HTMLInputElement>("input[type=checkbox]") as HTMLInputElement;
 }
@@ -105,13 +115,21 @@ describe("createProfilesView", () => {
     expect(card().textContent).toContain("1080×1920");
     expect(card().textContent).toContain("аудио");
     expect(card().textContent).toContain("Shorts 4 / 10");
-    expect(card().textContent).toContain("Посты 14");
-    expect(card().textContent).toContain("только учёт, вне добора");
-    expect(card().textContent).toContain("Добор роликов");
+    expect(card().textContent).toContain("Посты 14 / 30");
+    expect(card().textContent).toContain("Добор");
+    expect(card().textContent).toContain("ролики и посты");
+    expect(card().querySelector(".profile-switch-label")?.textContent).toBe("Добор");
+    expect(card().querySelector(".profile-switch-note")?.textContent).toBe("ролики и посты");
+    expect(
+      Array.from(card().querySelectorAll(".profile-group-title"), (title) => title.textContent),
+    ).toEqual(["Ролики", "Посты"]);
     expect(targetInput().value).toBe("12");
     expect(targetInput().placeholder).toBe("10");
     expect(refillInput().value).toBe("");
     expect(refillInput().placeholder).toBe("3 (глобально)");
+    expect(photoTargetInput().value).toBe("30");
+    expect(photoRefillInput().value).toBe("5");
+    expect(photoRefillInput().disabled).toBe(false);
     expect(switchInput().checked).toBe(false);
     expect(switchInput().getAttribute("role")).toBe("switch");
     expect(switchInput().getAttribute("aria-checked")).toBe("false");
@@ -167,7 +185,11 @@ describe("createProfilesView", () => {
 
   it("shows the Shorts progress and the photo counter without a goal", async () => {
     mockFetch(() =>
-      jsonResponse({ profiles: [profile({ stock: 4, target: 10, photo_stock: 14 })] }),
+      jsonResponse({
+        profiles: [
+          profile({ stock: 4, target: 10, photo_stock: 14, photo_target: 0, photo_refill_at: 0 }),
+        ],
+      }),
     );
     const view = createView();
 
@@ -182,6 +204,9 @@ describe("createProfilesView", () => {
     expect(fill?.style.width).toBe("40%");
     expect(card().textContent).toContain("Shorts 4 / 10");
     expect(card().textContent).toContain("Посты 14");
+    expect(card().textContent).toContain("добор постов выключен");
+    expect(card().querySelector<HTMLElement>(".profile-progress-posts")?.hidden).toBe(true);
+    expect(photoRefillInput().disabled).toBe(true);
   });
 
   it("clamps a stock above the target to one hundred percent", async () => {
@@ -195,8 +220,49 @@ describe("createProfilesView", () => {
     expect(card().textContent).toContain("Shorts 12 / 10");
   });
 
+  it("shows the photo goal with its value and progress", async () => {
+    mockFetch(() =>
+      jsonResponse({
+        profiles: [profile({ photo_stock: 14, photo_target: 30, photo_refill_at: 5 })],
+      }),
+    );
+    const view = createView();
+
+    await view.load();
+
+    expect(card().textContent).toContain("Посты 14 / 30");
+    expect(card().querySelector<HTMLElement>(".profile-counter-note")?.hidden).toBe(true);
+    const bar = card().querySelector<HTMLElement>(".profile-progress-posts");
+    expect(bar?.hidden).toBe(false);
+    expect(bar?.getAttribute("aria-valuenow")).toBe("14");
+    expect(bar?.getAttribute("aria-valuemax")).toBe("30");
+    expect(bar?.getAttribute("aria-valuetext")).toBe("14 из 30");
+    const fill = bar?.querySelector<HTMLElement>(".profile-progress-fill");
+    expect(Number.parseFloat(fill?.style.width ?? "0")).toBeCloseTo((14 / 30) * 100, 5);
+    expect(photoRefillInput().disabled).toBe(false);
+  });
+
+  it("clamps the photo progress when the stock exceeds the goal", async () => {
+    mockFetch(() => jsonResponse({ profiles: [profile({ photo_stock: 40, photo_target: 30 })] }));
+    const view = createView();
+
+    await view.load();
+
+    const bar = card().querySelector<HTMLElement>(".profile-progress-posts");
+    const fill = bar?.querySelector<HTMLElement>(".profile-progress-fill");
+    expect(bar?.getAttribute("aria-valuenow")).toBe("30");
+    expect(fill?.style.width).toBe("100%");
+    expect(card().textContent).toContain("Посты 40 / 30");
+  });
+
   it("shows zero counters when the target and the photo stock are zero", async () => {
-    mockFetch(() => jsonResponse({ profiles: [profile({ stock: 0, target: 0, photo_stock: 0 })] }));
+    mockFetch(() =>
+      jsonResponse({
+        profiles: [
+          profile({ stock: 0, target: 0, photo_stock: 0, photo_target: 0, photo_refill_at: 0 }),
+        ],
+      }),
+    );
     const view = createView();
 
     await view.load();
@@ -208,17 +274,25 @@ describe("createProfilesView", () => {
     expect(bar?.getAttribute("aria-valuemax")).toBe("0");
     const fill = card().querySelector<HTMLElement>(".profile-progress-fill");
     expect(fill?.style.width).toBe("0%");
+    expect(card().querySelector<HTMLElement>(".profile-progress-posts")?.hidden).toBe(true);
+    expect(photoRefillInput().disabled).toBe(true);
   });
 
-  it("defaults a missing photo stock to zero", async () => {
+  it("defaults a missing photo stock, goal and threshold to zero", async () => {
     const row = profile();
     delete row.photo_stock;
+    delete row.photo_target;
+    delete row.photo_refill_at;
     mockFetch(() => jsonResponse({ profiles: [row] }));
     const view = createView();
 
     await view.load();
 
     expect(card().textContent).toContain("Посты 0");
+    expect(card().textContent).toContain("добор постов выключен");
+    expect(photoTargetInput().value).toBe("0");
+    expect(photoRefillInput().value).toBe("0");
+    expect(photoRefillInput().disabled).toBe(true);
   });
 
   it("keeps the previous photo stock when a PATCH response omits it", async () => {
@@ -235,7 +309,7 @@ describe("createProfilesView", () => {
     switchInput().click();
     await flush();
 
-    expect(card().textContent).toContain("Посты 14");
+    expect(card().textContent).toContain("Посты 14 / 30");
   });
 
   it("uses neutral fallbacks for missing optional data", async () => {
@@ -525,6 +599,157 @@ describe("createProfilesView", () => {
     expect(bodyOf(patch?.init)).toEqual({ refill_at: 0 });
   });
 
+  it("saves the photo goal and updates the post counter", async () => {
+    const fetched = mockFetch((_input, init) =>
+      init?.method === "PATCH"
+        ? jsonResponse(profile({ photo_target: 40, photo_refill_at: 5 }))
+        : jsonResponse({ profiles: [profile({ photo_target: 30, photo_refill_at: 5 })] }),
+    );
+    const view = createView();
+    await view.load();
+
+    photoTargetInput().value = "40";
+    photoTargetInput().dispatchEvent(new Event("change", { bubbles: true }));
+
+    expect(card().getAttribute("aria-busy")).toBe("true");
+    expect(photoTargetInput().disabled).toBe(true);
+    expect(photoRefillInput().disabled).toBe(true);
+    await flush();
+
+    const patch = fetched.calls().find((call) => call.init?.method === "PATCH");
+    expect(bodyOf(patch?.init)).toEqual({ photo_target: 40 });
+    expect(card().textContent).toContain("Посты 14 / 40");
+    expect(photoTargetInput().value).toBe("40");
+    expect(photoRefillInput().disabled).toBe(false);
+    expect(card().getAttribute("aria-busy")).toBe("false");
+  });
+
+  it("saves the photo threshold when photo refill is on", async () => {
+    const fetched = mockFetch((_input, init) =>
+      init?.method === "PATCH"
+        ? jsonResponse(profile({ photo_target: 30, photo_refill_at: 6 }))
+        : jsonResponse({ profiles: [profile({ photo_target: 30, photo_refill_at: 5 })] }),
+    );
+    const view = createView();
+    await view.load();
+
+    photoRefillInput().value = "6";
+    photoRefillInput().dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+
+    const patch = fetched.calls().find((call) => call.init?.method === "PATCH");
+    expect(bodyOf(patch?.init)).toEqual({ photo_refill_at: 6 });
+    expect(photoRefillInput().value).toBe("6");
+  });
+
+  it("turns photo refill off with a zero pair and disables the threshold", async () => {
+    const fetched = mockFetch((_input, init) =>
+      init?.method === "PATCH"
+        ? jsonResponse(profile({ photo_target: 0, photo_refill_at: 0 }))
+        : jsonResponse({ profiles: [profile({ photo_target: 30, photo_refill_at: 5 })] }),
+    );
+    const view = createView();
+    await view.load();
+    expect(photoRefillInput().disabled).toBe(false);
+
+    photoTargetInput().value = "0";
+    photoTargetInput().dispatchEvent(new Event("change", { bubbles: true }));
+
+    expect(photoRefillInput().value).toBe("0");
+    expect(photoRefillInput().disabled).toBe(true);
+    await flush();
+
+    const patch = fetched.calls().find((call) => call.init?.method === "PATCH");
+    expect(bodyOf(patch?.init)).toEqual({ photo_target: 0, photo_refill_at: 0 });
+    expect(card().textContent).toContain("Посты 14");
+    expect(card().textContent).not.toContain("Посты 14 /");
+    expect(card().textContent).toContain("добор постов выключен");
+    expect(card().querySelector<HTMLElement>(".profile-progress-posts")?.hidden).toBe(true);
+    expect(photoTargetInput().value).toBe("0");
+    expect(photoRefillInput().value).toBe("0");
+    expect(photoRefillInput().disabled).toBe(true);
+  });
+
+  it("enables the photo threshold when the goal returns above zero", async () => {
+    const fetched = mockFetch((_input, init) =>
+      init?.method === "PATCH"
+        ? jsonResponse(profile({ photo_target: 12, photo_refill_at: 0 }))
+        : jsonResponse({ profiles: [profile({ photo_target: 0, photo_refill_at: 0 })] }),
+    );
+    const view = createView();
+    await view.load();
+    expect(photoRefillInput().disabled).toBe(true);
+
+    photoTargetInput().value = "12";
+    photoTargetInput().dispatchEvent(new Event("change", { bubbles: true }));
+
+    expect(photoRefillInput().disabled).toBe(true);
+    await flush();
+
+    const patch = fetched.calls().find((call) => call.init?.method === "PATCH");
+    expect(bodyOf(patch?.init)).toEqual({ photo_target: 12 });
+    expect(card().textContent).toContain("Посты 14 / 12");
+    expect(photoRefillInput().disabled).toBe(false);
+  });
+
+  it("rejects an empty or out-of-range photo goal without a request", async () => {
+    const fetched = mockFetch(() => jsonResponse({ profiles: [profile()] }));
+    const view = createView();
+    await view.load();
+
+    photoTargetInput().value = "1.5";
+    photoTargetInput().dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+
+    expect(card().textContent).toContain("Введите целое число от 0 до 1000.");
+    expect(photoTargetInput().value).toBe("30");
+
+    photoTargetInput().value = "";
+    photoTargetInput().dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+
+    expect(photoTargetInput().value).toBe("30");
+    expect(fetched.calls().filter((call) => call.init?.method === "PATCH")).toHaveLength(0);
+  });
+
+  it("shows a 422 on photo save and restores the threshold", async () => {
+    mockFetch((_input, init) =>
+      init?.method === "PATCH"
+        ? jsonResponse({ detail: "photo_refill_at должен быть меньше photo_target: 10 >= 10" }, 422)
+        : jsonResponse({ profiles: [profile({ photo_target: 10, photo_refill_at: 5 })] }),
+    );
+    const view = createView();
+    await view.load();
+
+    photoRefillInput().value = "10";
+    photoRefillInput().dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+
+    expect(card().textContent).toContain("Не сохранено:");
+    expect(card().textContent).toContain("photo_refill_at должен быть меньше photo_target");
+    expect(photoRefillInput().value).toBe("5");
+    expect(photoRefillInput().disabled).toBe(false);
+    expect(card().getAttribute("aria-busy")).toBe("false");
+  });
+
+  it("reports a 500 on photo save and restores the goal", async () => {
+    mockFetch((_input, init) =>
+      init?.method === "PATCH"
+        ? jsonResponse({ detail: "profile settings write failed" }, 500)
+        : jsonResponse({ profiles: [profile()] }),
+    );
+    const view = createView();
+    await view.load();
+
+    photoTargetInput().value = "70";
+    photoTargetInput().dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+
+    expect(card().textContent).toContain("Не сохранено: profile settings write failed");
+    expect(photoTargetInput().value).toBe("30");
+    expect(card().getAttribute("aria-busy")).toBe("false");
+  });
+
   it("rejects a non-integer or out-of-range number without a request", async () => {
     const fetched = mockFetch(() => jsonResponse({ profiles: [profile()] }));
     const view = createView();
@@ -589,6 +814,9 @@ describe("createProfilesView", () => {
     switchInput().click();
     expect(node<HTMLButtonElement>("profiles-refresh").disabled).toBe(true);
     expect(switchInput().disabled).toBe(true);
+    expect(photoTargetInput().disabled).toBe(true);
+    expect(photoRefillInput().disabled).toBe(true);
+    expect(card().getAttribute("aria-busy")).toBe("true");
 
     await view.load();
     expect(listCalls).toBe(1);
@@ -598,6 +826,9 @@ describe("createProfilesView", () => {
 
     expect(node<HTMLButtonElement>("profiles-refresh").disabled).toBe(false);
     expect(switchInput().disabled).toBe(false);
+    expect(photoTargetInput().disabled).toBe(false);
+    expect(photoRefillInput().disabled).toBe(false);
+    expect(card().getAttribute("aria-busy")).toBe("false");
   });
 
   it("ignores a list response that started before a PATCH", async () => {
