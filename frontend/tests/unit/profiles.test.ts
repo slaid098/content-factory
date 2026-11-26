@@ -17,7 +17,10 @@ function summary(overrides: Record<string, unknown> = {}): Record<string, unknow
     category: "dating",
     name: "profile_1",
     language: "ru",
+    language_label: "Русский",
     niche: "dating",
+    title: "Знакомства",
+    summary: "Профиль для знакомств",
     width: 544,
     height: 960,
     audio: true,
@@ -109,17 +112,33 @@ function prompts(overrides: Record<string, unknown> = {}): Record<string, unknow
   };
 }
 
-function handler(overrides: { detail?: unknown; prompts?: unknown } = {}): FetchHandler {
+interface HandlerOverrides {
+  detail?: unknown;
+  prompts?: unknown;
+  profiles?: unknown[];
+  total?: number;
+}
+
+function handler(overrides: HandlerOverrides = {}): FetchHandler {
   return (input, init) => {
     const url = String(input);
+    const path = url.split("?")[0] ?? url;
     const method = init?.method ?? "GET";
-    if (url === "/api/v1/content/profiles" && method === "GET") {
-      return jsonResponse({ profiles: [summary()] });
+    if (path === "/api/v1/content/profiles" && method === "GET") {
+      return jsonResponse({
+        profiles: overrides.profiles ?? [summary()],
+        languages: [
+          { code: "de", label: "Немецкий" },
+          { code: "ru", label: "Русский" },
+        ],
+        niches: ["dating", "general"],
+        total: overrides.total ?? (overrides.profiles ?? [summary()]).length,
+      });
     }
-    if (url === "/api/v1/content/profiles/dating/profile_1" && method === "GET") {
+    if (path === "/api/v1/content/profiles/dating/profile_1" && method === "GET") {
       return jsonResponse(overrides.detail ?? detail());
     }
-    if (url === "/api/v1/content/profiles/dating/profile_1/prompts" && method === "GET") {
+    if (path === "/api/v1/content/profiles/dating/profile_1/prompts" && method === "GET") {
       return jsonResponse(overrides.prompts ?? prompts());
     }
     if (url.endsWith("/prompts/template") && method === "PUT") {
@@ -232,7 +251,10 @@ describe("createProfilesView", () => {
     const row = node("profiles-list").querySelector(".profile-row");
     expect(row).not.toBeNull();
     expect(row?.textContent).toContain("dating/profile_1");
-    expect(row?.textContent).toContain("Русский · dating");
+    const badges = row?.querySelectorAll(".profile-row-badges .badge") ?? [];
+    expect(Array.from(badges, (badge) => badge.textContent)).toEqual(["Русский", "dating"]);
+    expect(row?.querySelector(".profile-title")?.textContent).toBe("Знакомства");
+    expect(row?.querySelector(".profile-summary")?.textContent).toBe("Профиль для знакомств");
     expect(row?.textContent).toContain("музыка");
     expect(row?.textContent).toContain("544×960");
     expect(row?.textContent).toContain("видео");
@@ -241,6 +263,131 @@ describe("createProfilesView", () => {
     expect(row?.querySelector(".profile-preview")).toBeNull();
     expect(refillButton().getAttribute("aria-label")).toBe("Включить добор dating/profile_1");
     expect(gear().getAttribute("aria-label")).toBe("Открыть профиль dating/profile_1");
+  });
+
+  it("fills the filter selects from the response and shows the visible and total counts", async () => {
+    mockFetch(handler({ total: 5 }));
+
+    await loadView();
+
+    const language = node<HTMLSelectElement>("profiles-language-filter");
+    expect(Array.from(language.options, (option) => option.value)).toEqual(["", "de", "ru"]);
+    expect(Array.from(language.options, (option) => option.textContent)).toEqual([
+      "Все языки",
+      "Немецкий",
+      "Русский",
+    ]);
+    const niche = node<HTMLSelectElement>("profiles-niche-filter");
+    expect(Array.from(niche.options, (option) => option.value)).toEqual(["", "dating", "general"]);
+    expect(Array.from(niche.options, (option) => option.textContent)).toEqual([
+      "Все тематики",
+      "dating",
+      "general",
+    ]);
+    expect(node("profiles-count").textContent).toBe("1 из 5");
+  });
+
+  it("requests the list with the selected language and niche together", async () => {
+    const fetched = mockFetch(handler());
+    await loadView();
+    const language = node<HTMLSelectElement>("profiles-language-filter");
+    const niche = node<HTMLSelectElement>("profiles-niche-filter");
+
+    language.value = "de";
+    language.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+
+    expect(fetched.calls().at(-1)?.url).toBe("/api/v1/content/profiles?language=de");
+    expect(language.value).toBe("de");
+
+    niche.value = "dating";
+    niche.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+
+    expect(fetched.calls().at(-1)?.url).toBe("/api/v1/content/profiles?language=de&niche=dating");
+    expect(language.value).toBe("de");
+    expect(niche.value).toBe("dating");
+  });
+
+  it("disables the filters while a filtered request runs and shows an empty result", async () => {
+    const pending = deferred<Response>();
+    let calls = 0;
+    mockFetch((input, init) => {
+      if (String(input).startsWith("/api/v1/content/profiles")) {
+        calls += 1;
+        if (calls > 1) {
+          return pending.promise;
+        }
+      }
+      return handler()(input, init);
+    });
+    await loadView();
+    const language = node<HTMLSelectElement>("profiles-language-filter");
+    const niche = node<HTMLSelectElement>("profiles-niche-filter");
+
+    language.value = "de";
+    language.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+
+    expect(language.disabled).toBe(true);
+    expect(niche.disabled).toBe(true);
+
+    pending.resolve(
+      jsonResponse({
+        profiles: [],
+        languages: [
+          { code: "de", label: "Немецкий" },
+          { code: "ru", label: "Русский" },
+        ],
+        niches: ["dating", "general"],
+        total: 2,
+      }),
+    );
+    await flush();
+
+    expect(language.disabled).toBe(false);
+    expect(niche.disabled).toBe(false);
+    expect(node("profiles-count").textContent).toBe("0 из 2");
+    expect(node("profiles-list").hidden).toBe(true);
+    expect(node("profiles-empty").hidden).toBe(false);
+  });
+
+  it("drops a filter that disappeared from the response and reloads without it", async () => {
+    const fetched = mockFetch((input, init) => {
+      if (String(input) === "/api/v1/content/profiles?language=de") {
+        return jsonResponse({
+          profiles: [],
+          languages: [{ code: "ru", label: "Русский" }],
+          niches: ["dating"],
+          total: 1,
+        });
+      }
+      return handler()(input, init);
+    });
+    await loadView();
+    const language = node<HTMLSelectElement>("profiles-language-filter");
+
+    language.value = "de";
+    language.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+
+    expect(fetched.calls().map((call) => call.url)).toEqual([
+      "/api/v1/content/profiles",
+      "/api/v1/content/profiles?language=de",
+      "/api/v1/content/profiles",
+    ]);
+    expect(language.value).toBe("");
+    expect(node("profiles-count").textContent).toBe("1 из 1");
+  });
+
+  it("shows «Без названия» and no summary block for empty profile text", async () => {
+    mockFetch(handler({ profiles: [summary({ title: null, summary: null })] }));
+
+    await loadView();
+
+    const row = node("profiles-list").querySelector(".profile-row");
+    expect(row?.querySelector(".profile-title")?.textContent).toBe("Без названия");
+    expect(row?.querySelector(".profile-summary")).toBeNull();
   });
 
   it("patches refill from the list, disables the button while saving and reports the result", async () => {
@@ -293,6 +440,10 @@ describe("createProfilesView", () => {
     expect(node("profiles-list-view").hidden).toBe(true);
     expect(node("profile-view").hidden).toBe(false);
     expect(node("profile-view-title").textContent).toBe("dating/profile_1");
+    expect(node("profile-view-name").textContent).toBe("Знакомства");
+    expect(node<HTMLElement>("profile-view-name").hidden).toBe(false);
+    expect(node("profile-view-summary").textContent).toBe("Профиль для знакомств");
+    expect(node<HTMLElement>("profile-view-summary").hidden).toBe(false);
     expect(node("profile-view-meta").textContent).toBe("Русский · dating · 544×960 · видео/фото");
     expect(node("profile-tab-video").textContent).toBe("Видео · 8");
     expect(node("profile-tab-photo").textContent).toBe("Фото · 14");
