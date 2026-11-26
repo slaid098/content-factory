@@ -81,6 +81,33 @@ def test_healthcheck_with_foreign_host_or_proxy_headers_is_denied(
     assert response.json() == {"detail": "device not trusted"}
 
 
+def test_local_healthcheck_with_cookie_returns_the_real_stock(
+    client: TestClient,
+    db_path: Path,
+) -> None:
+    token = _device_cookie(client, db_path)
+
+    response = client.get(
+        "/api/v1/stock",
+        headers={"Host": "127.0.0.1:8000"},
+        cookies={"device_token": token},
+    )
+
+    assert response.status_code == 200
+    assert "languages" in response.json()
+
+
+def test_local_healthcheck_with_invalid_cookie_is_denied(client: TestClient) -> None:
+    response = client.get(
+        "/api/v1/stock",
+        headers={"Host": "127.0.0.1:8000"},
+        cookies={"device_token": "garbage"},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "device not trusted"}
+
+
 def test_bare_and_unknown_join_links_return_the_same_410(
     client: TestClient,
 ) -> None:

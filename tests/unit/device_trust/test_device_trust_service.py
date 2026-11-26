@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from tests.device_trust_columns import TRUSTED_DEVICE_COLUMNS
 
 from content_factory.config.settings import get_settings
 from content_factory.constants import DB_DIR, DB_FILENAME
@@ -128,6 +129,15 @@ def test_revoke_is_idempotent_and_reports_unknown_ids(db_path: Path) -> None:
     assert not revoke_device(db_path, "missing", now=_NOW)
 
 
+def test_revoking_a_pending_device_blocks_redemption(db_path: Path) -> None:
+    issued = issue_link(db_path, "phone", 24, 180, now=_NOW)
+
+    assert revoke_device(db_path, issued.device_id, now=_NOW)
+
+    assert redeem_link(db_path, issued.token, now=_NOW) is None
+    assert list_devices(db_path, now=_NOW)[0].status == "revoked"
+
+
 def test_redeem_refuses_an_expired_link(db_path: Path) -> None:
     issued = issue_link(db_path, "phone", 1, 180, now=_NOW)
 
@@ -216,18 +226,7 @@ def test_last_seen_refreshes_at_most_once_an_hour(
 
 def test_migration_creates_the_trusted_devices_table(connection: Connection) -> None:
     assert connection.has_table("trusted_devices") is True
-    assert connection.columns("trusted_devices") == {
-        "id",
-        "label",
-        "link_hash",
-        "link_expires_at",
-        "token_hash",
-        "created_at",
-        "activated_at",
-        "last_seen_at",
-        "revoked_at",
-        "expires_at",
-    }
+    assert connection.columns("trusted_devices") == TRUSTED_DEVICE_COLUMNS
     versions = connection.execute(
         "SELECT version FROM schema_migrations ORDER BY version"
     ).fetchall()

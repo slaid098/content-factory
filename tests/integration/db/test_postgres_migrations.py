@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 import pytest
+from tests.device_trust_columns import TRUSTED_DEVICE_COLUMNS
 from tests.integration.db.postgres_guard import (
     clear_libpq_environment,
     require_test_database,
@@ -67,6 +68,7 @@ def test_adapter_reports_columns_and_tables(pg: Path) -> None:
         assert "language" in connection.columns("videos")
         assert connection.has_table("downloads") is True
         assert connection.has_table("missing_table") is False
+        assert connection.columns("trusted_devices") == TRUSTED_DEVICE_COLUMNS
     finally:
         connection.close()
 

@@ -12,8 +12,10 @@ device is denied instead of silently falling back to the Bearer check.
 
 Two paths stay open. ``/join`` is the only way to earn a cookie. The stock
 endpoint of the local deploy healthcheck answers ``{"status": "ok"}`` only for
-a loopback ``Host`` without proxy headers and never returns stock data, so
-``compose.yaml`` and ``scripts/deploy.sh`` keep working without a cookie.
+a loopback ``Host`` without proxy headers and without a device cookie; a
+trusted browser sends its cookie and gets the real stock, so the local page is
+not empty. This keeps ``compose.yaml`` and ``scripts/deploy.sh`` working
+without a cookie.
 """
 
 from __future__ import annotations
@@ -109,7 +111,7 @@ class DeviceGateMiddleware(BaseHTTPMiddleware):
         if _is_open(request):
             return await call_next(request)
         if _is_local_healthcheck(request):
-            return await self._healthcheck(settings)
+            return await self._healthcheck(request, settings, call_next)
         token = request.cookies.get(DEVICE_COOKIE_NAME, "")
         if not token:
             return _deny(request)
@@ -152,19 +154,43 @@ class DeviceGateMiddleware(BaseHTTPMiddleware):
         request.state.device_trusted = True
         return await call_next(request)
 
-    async def _healthcheck(self, settings: Settings) -> Response:
-        """Probe the database and answer ``{"status": "ok"}`` without stock."""
+    async def _healthcheck(
+        self,
+        request: Request,
+        settings: Settings,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
+        """Answer the deploy probe only for a request without a device cookie.
+
+        The stock endpoint doubles as the compose healthcheck, so a loopback
+        probe without a cookie gets a tiny status document instead of stock
+        data. A browser that already has a device cookie is a real client: its
+        cookie is checked and a valid one falls through to the route, so the
+        local page sees the real stock instead of the stub.
+        """
+        token = request.cookies.get(DEVICE_COOKIE_NAME, "")
+        if not token:
+            try:
+                await asyncio.to_thread(database_ready, _db_path(settings))
+            except (DatabaseError, OSError) as ex:
+                logger.bind(error=ex, error_type=type(ex).__name__).error(
+                    "device gate: local healthcheck failed"
+                )
+                return JSONResponse(
+                    {"detail": "device check unavailable"},
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            return JSONResponse({"status": "ok"})
         try:
-            await asyncio.to_thread(database_ready, _db_path(settings))
+            device = await asyncio.to_thread(authenticate, _db_path(settings), token)
         except (DatabaseError, OSError) as ex:
             logger.bind(error=ex, error_type=type(ex).__name__).error(
-                "device gate: local healthcheck failed"
+                "device gate: local healthcheck cookie check failed"
             )
-            return JSONResponse(
-                {"detail": "device check unavailable"},
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
-        return JSONResponse({"status": "ok"})
+            return _unavailable(request)
+        if device is None:
+            return _deny(request)
+        return await call_next(request)
 
 
 __all__ = ["DEVICE_COOKIE_NAME", "DeviceGateMiddleware"]
