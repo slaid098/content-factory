@@ -1080,8 +1080,7 @@ curl -fsS -H "Authorization: Bearer $token" \
   https://content.slaid098.dev/api/v1/content/archives
 ```
 
-Из браузера с cookie те же запросы идут без заголовка, сервис добавляет
-`Authorization` сам:
+Те же запросы с Bearer-токеном — так ходит YouTube Kit:
 
 ```bash
 request_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
@@ -1100,6 +1099,8 @@ curl -fsS -X POST https://content.slaid098.dev/api/v1/content/deliveries/link \
 curl -fsS -H "Authorization: Bearer $token" \
   "https://content.slaid098.dev/api/v1/content/deliveries/ru/$async_id"
 ```
+
+Из браузера те же запросы идут с `-b cookies.txt` и без `Authorization`.
 
 В браузере с cookie страница показывает остаток по языкам и темы только для
 чтения. На вкладке «Выдача» выберите язык и количество, нажмите «Собрать

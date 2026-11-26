@@ -247,3 +247,17 @@ check_id = "orm_in_core"
 path = "src/content_factory/services/uniqueizer/main.py"
 reason = "CLI импортёра: db.errors для обработки отказа базы, ORM-моделей нет"
 
+
+# Фильтр access-log uvicorn обязан быть stdlib logging.Filter: он правит
+# args записи uvicorn.access до форматирования. Loguru перехватывает записи
+# stdlib через свой sink, но фильтр на stdlib-логгере остаётся единственным
+# способом убрать токен из уже сформированного access-лога uvicorn.
+[[tool.audit.ignore]]
+check_id = "logging_style"
+path = "src/content_factory/config/access_log.py"
+reason = "фильтр uvicorn.access — stdlib logging.Filter, loguru запись не перехватывает"
+
+[[tool.audit.ignore]]
+check_id = "inheritance_whitelist"
+path = "src/content_factory/config/access_log.py"
+reason = "logging.Filter — контракт stdlib для фильтра access-log uvicorn"
