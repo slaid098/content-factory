@@ -12,6 +12,9 @@ import pytest
 from tests.unit.generator.helpers import fixture_profile
 
 from content_factory.config.settings import GeneratorSettings
+from content_factory.db import generator_servers
+from content_factory.db.connection import connect
+from content_factory.db.server_journal import ServerJournal
 from content_factory.exceptions.generator import RentError
 from content_factory.schemas.generator.server import ServerConnection, ServerInfo
 from content_factory.services.generator import vast
@@ -38,6 +41,48 @@ def _settings(tmp_path: Path, **kwargs: Any) -> GeneratorSettings:
     }
     values.update(kwargs)
     return GeneratorSettings(**values)
+
+
+class _MemoryJournal:
+    """Fast in-memory journal for tests that do not assert persisted rows."""
+
+    def __init__(self) -> None:
+        self.started: list[tuple[str, dict[str, Any]]] = []
+        self.calls: list[tuple[str, str]] = []
+        self._next = 0
+
+    def start(self, **kwargs: Any) -> str:
+        self._next += 1
+        server_id = f"j{self._next}"
+        self.started.append((server_id, kwargs))
+        return server_id
+
+    def bind(self, server_id: str, contract_id: str) -> None:
+        self.calls.append(("bind", server_id))
+
+    def ready(self, server_id: str, connection: ServerConnection, cost: float | None) -> None:
+        self.calls.append(("ready", server_id))
+
+    def destroying(self, server_id: str, error: str | None = None) -> None:
+        self.calls.append(("destroying", server_id))
+
+    def destroyed(self, server_id: str) -> None:
+        self.calls.append(("destroyed", server_id))
+
+    def lost(self, server_id: str, error: str | None = None) -> None:
+        self.calls.append(("lost", server_id))
+
+
+def _session(
+    profile: Any,
+    settings: GeneratorSettings,
+    **kwargs: Any,
+) -> VastSession:
+    """Build a session with a fast journal unless a test asks for the real one."""
+    journal = kwargs.pop("journal", None)
+    if journal is None:
+        journal = _MemoryJournal()
+    return VastSession(profile, settings, journal=journal, **kwargs)
 
 
 def _connection() -> ServerConnection:
@@ -222,7 +267,7 @@ def test_open_rents_ready_server_and_reports_cost(tmp_path: Path, monkeypatch) -
     )
     monkeypatch.setattr(vast, "_healthy", lambda connection: True)
     profile = fixture_profile(tmp_path / "profiles")
-    session = VastSession(profile, _settings(tmp_path), provider=provider)
+    session = _session(profile, _settings(tmp_path), provider=provider)
 
     info = session.open()
 
@@ -233,10 +278,88 @@ def test_open_rents_ready_server_and_reports_cost(tmp_path: Path, monkeypatch) -
     assert provider.queries[0]["verified"] == {"eq": True}
 
 
+def test_open_journals_rent_before_create_and_closes_it_after_destroy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    provider = _Provider(
+        offers=[{"id": "1", "public_ipaddr": "1.2.3.4", "dph_total": 0.4}],
+        instances={"c1": _instance()},
+    )
+    monkeypatch.setattr(vast, "_healthy", lambda connection: True)
+    db_path = tmp_path / "db" / "db.sqlite3"
+    journal = ServerJournal(db_path)
+    at_create: list[list[generator_servers.GeneratorServerRow]] = []
+    create = provider.create_instance
+
+    def journal_before_create(config: dict[str, Any]) -> str:
+        connection = connect(db_path)
+        try:
+            at_create.append(generator_servers.list_unfinished(connection))
+        finally:
+            connection.close()
+        return create(config)
+
+    provider.create_instance = journal_before_create  # type: ignore[method-assign]
+    profile = fixture_profile(tmp_path / "profiles")
+    session = _session(
+        profile,
+        _settings(tmp_path),
+        provider=provider,
+        journal=journal,
+        run_id="run-170",
+    )
+
+    session.open()
+
+    assert len(at_create[0]) == 1
+    renting = at_create[0][0]
+    assert renting.status == generator_servers.RENTING
+    assert renting.contract_id is None
+    assert renting.run_id == "run-170"
+    assert renting.profile == profile.name
+
+    connection = connect(db_path)
+    try:
+        ready = generator_servers.get_row(connection, renting.id)
+    finally:
+        connection.close()
+    assert ready is not None
+    assert ready.status == generator_servers.READY
+    assert ready.contract_id == "c1"
+    assert (ready.ip, ready.port, ready.gpu) == ("1.2.3.4", 40000, "L40S")
+    assert ready.cost_per_hour == 0.4
+
+    session.destroy()
+
+    connection = connect(db_path)
+    try:
+        destroyed = generator_servers.get_row(connection, renting.id)
+    finally:
+        connection.close()
+    assert destroyed is not None
+    assert destroyed.status == generator_servers.DESTROYED
+    assert destroyed.destroyed_at is not None
+
+
+def test_rent_without_a_journal_does_not_create_an_instance(tmp_path: Path) -> None:
+    provider = _Provider(offers=[{"id": "1"}])
+    session = VastSession(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(tmp_path),
+        provider=provider,
+        journal=ServerJournal(tmp_path),
+    )
+
+    with pytest.raises(RentError, match="журнал серверов"):
+        session.open()
+
+    assert provider.created == []
+
+
 def test_open_without_offers_reports_no_server(tmp_path: Path, monkeypatch) -> None:
     provider = _Provider(offers=[])
     monkeypatch.setattr(vast, "_healthy", lambda connection: True)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"), _settings(tmp_path), provider=provider
     )
 
@@ -253,7 +376,7 @@ def test_rent_skips_duplicate_offers_and_ips(tmp_path: Path) -> None:
             {"id": "3"},
         ]
     )
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"), _settings(tmp_path), provider=provider
     )
     calls: list[str] = []
@@ -273,7 +396,7 @@ def test_rent_skips_duplicate_offers_and_ips(tmp_path: Path) -> None:
 
 
 def test_rent_offer_without_id_is_an_error(tmp_path: Path) -> None:
-    session = VastSession(fixture_profile(tmp_path / "profiles"), _settings(tmp_path))
+    session = _session(fixture_profile(tmp_path / "profiles"), _settings(tmp_path))
 
     with pytest.raises(RentError, match="без id"):
         session._rent_offer(_Provider(), {})
@@ -284,7 +407,7 @@ def test_wait_ready_timeout_destroys_the_failed_server(tmp_path: Path, monkeypat
     profile = fixture_profile(tmp_path / "profiles")
     _, clock, sleep = _clock_pair()
     monkeypatch.setattr(vast, "_healthy", lambda connection: True)
-    session = VastSession(
+    session = _session(
         profile,
         _settings(tmp_path),
         provider=provider,
@@ -302,7 +425,7 @@ def test_wait_ready_timeout_destroys_the_failed_server(tmp_path: Path, monkeypat
 def test_wait_health_retries_until_timeout(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(vast, "_healthy", lambda connection: False)
     _, clock, sleep = _clock_pair()
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path),
         sleep=sleep,
@@ -315,7 +438,7 @@ def test_wait_health_retries_until_timeout(tmp_path: Path, monkeypatch) -> None:
 
 def test_wait_health_accepts_a_live_server(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(vast, "_healthy", lambda connection: True)
-    session = VastSession(fixture_profile(tmp_path / "profiles"), _settings(tmp_path))
+    session = _session(fixture_profile(tmp_path / "profiles"), _settings(tmp_path))
 
     assert session._wait_health(_connection()).port == 8188
 
@@ -330,7 +453,7 @@ def test_wait_ready_propagates_a_fatal_provider_error(tmp_path: Path) -> None:
 
     provider.show_instance = fatal  # type: ignore[method-assign]
     state, clock, sleep = _clock_pair()
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path),
         sleep=sleep,
@@ -358,7 +481,7 @@ def test_wait_ready_keeps_polling_after_a_transient_show_error(tmp_path: Path, m
     provider.show_instance = flaky  # type: ignore[method-assign]
     state, clock, sleep = _clock_pair()
     monkeypatch.setattr(vast, "_healthy", lambda connection: True)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path),
         sleep=sleep,
@@ -387,7 +510,7 @@ def test_wait_ready_polls_for_an_unseen_instance_until_it_appears(
         return show(contract_id)
 
     provider.show_instance = late  # type: ignore[method-assign]
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path, server_ready_timeout=300),
         sleep=sleep,
@@ -417,7 +540,7 @@ def test_wait_ready_resets_the_gone_grace_when_the_instance_returns(
         return _instance()
 
     provider.show_instance = reappearing  # type: ignore[method-assign]
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path, server_ready_timeout=300),
         sleep=sleep,
@@ -444,7 +567,7 @@ def test_wait_ready_does_not_treat_a_generic_error_as_a_disappearance(
         return show(contract_id)
 
     provider.show_instance = broken  # type: ignore[method-assign]
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path, server_ready_timeout=300),
         sleep=sleep,
@@ -475,7 +598,7 @@ def test_wait_ready_does_not_start_the_gone_grace_for_a_foreign_not_found(
         return _instance()
 
     provider.show_instance = missing_command  # type: ignore[method-assign]
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path, server_ready_timeout=300),
         sleep=sleep,
@@ -493,7 +616,7 @@ def test_destroy_is_verified_once(tmp_path: Path, monkeypatch) -> None:
     profile = fixture_profile(tmp_path / "profiles")
     provider = _Provider(offers=[{"id": "1"}], instances={"c1": _instance()})
     monkeypatch.setattr(vast, "_healthy", lambda connection: True)
-    session = VastSession(profile, _settings(tmp_path), provider=provider)
+    session = _session(profile, _settings(tmp_path), provider=provider)
     session.open()
     verified: list[str] = []
     monkeypatch.setattr(vast, "destroy_verified", lambda provider, cid: verified.append(cid))
@@ -507,7 +630,7 @@ def test_destroy_is_verified_once(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_destroy_verifies_every_created_contract(tmp_path: Path, monkeypatch) -> None:
-    session = VastSession(fixture_profile(tmp_path / "profiles"), _settings(tmp_path))
+    session = _session(fixture_profile(tmp_path / "profiles"), _settings(tmp_path))
     session._provider = _Provider()
     session._contracts = {"a", "b"}
     session._contract_id = "b"
@@ -522,7 +645,7 @@ def test_destroy_verifies_every_created_contract(tmp_path: Path, monkeypatch) ->
 
 
 def test_destroy_without_provider_reports_a_tracked_contract(tmp_path: Path) -> None:
-    session = VastSession(fixture_profile(tmp_path / "profiles"), _settings(tmp_path))
+    session = _session(fixture_profile(tmp_path / "profiles"), _settings(tmp_path))
     session._contracts.add("c1")
 
     with pytest.raises(RentError, match="нет провайдера"):
@@ -532,7 +655,7 @@ def test_destroy_without_provider_reports_a_tracked_contract(tmp_path: Path) -> 
 def test_failed_rental_teardown_keeps_the_contract_for_the_final_destroy(
     tmp_path: Path, monkeypatch
 ) -> None:
-    session = VastSession(fixture_profile(tmp_path / "profiles"), _settings(tmp_path))
+    session = _session(fixture_profile(tmp_path / "profiles"), _settings(tmp_path))
     provider = _Provider()
     session._provider = provider
     session._contract_id = "c1"
@@ -569,7 +692,7 @@ def test_teardown_failure_stops_the_rental_loop(tmp_path: Path, monkeypatch) -> 
         "destroy_verified",
         lambda provider, contract_id: (_ for _ in ()).throw(RentError("still there")),
     )
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path),
         provider=provider,
@@ -597,7 +720,7 @@ def test_pool_keeps_the_ready_offer_and_destroys_losers(tmp_path: Path, monkeypa
     _publish_ready_when_all_created(provider, "2")
     _fast_poll(monkeypatch)
     monkeypatch.setattr(vast, "_healthy", lambda connection: True)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path, rent_pool_size=3),
         provider=provider,
@@ -624,7 +747,7 @@ def test_pool_without_a_ready_server_destroys_every_candidate(tmp_path: Path, mo
         ready="",
     )
     _, clock, sleep = _refill_clock(monkeypatch)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path, rent_pool_size=3),
         provider=provider,
@@ -651,7 +774,7 @@ def test_pool_of_one_rents_offers_one_by_one(tmp_path: Path, monkeypatch) -> Non
     )
     _, clock, sleep = _clock_pair()
     monkeypatch.setattr(vast, "_healthy", lambda connection: True)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path, rent_pool_size=1),
         provider=provider,
@@ -690,7 +813,7 @@ def test_loser_teardown_failure_stops_the_pool(tmp_path: Path, monkeypatch) -> N
     _fast_poll(monkeypatch)
     monkeypatch.setattr(vast, "_healthy", lambda connection: True)
     monkeypatch.setattr(vast, "destroy_verified", fake_destroy)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path, rent_pool_size=3),
         provider=provider,
@@ -715,7 +838,7 @@ def test_pool_survives_a_candidate_that_fails_to_start(tmp_path: Path, monkeypat
     )
     _fast_poll(monkeypatch)
     monkeypatch.setattr(vast, "_healthy", lambda connection: True)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path, rent_pool_size=3),
         provider=provider,
@@ -736,7 +859,7 @@ def test_pool_rents_the_offers_left_when_there_are_fewer_than_the_size(
         instances={"c1": _instance()},
     )
     monkeypatch.setattr(vast, "_healthy", lambda connection: True)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path, rent_pool_size=3),
         provider=provider,
@@ -752,7 +875,7 @@ def test_pool_rents_a_new_offer_found_while_it_waits(tmp_path: Path, monkeypatch
     provider = _RefillProvider(searches=[["1"], ["1", "2"]], ready="2")
     state, clock, sleep = _refill_clock(monkeypatch)
     monkeypatch.setattr(vast, "_healthy", lambda connection: True)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(
             tmp_path,
@@ -780,7 +903,7 @@ def test_pool_rents_a_new_offer_found_while_it_waits(tmp_path: Path, monkeypatch
 def test_pool_never_rents_more_than_the_size(tmp_path: Path, monkeypatch) -> None:
     provider = _RefillProvider(searches=[["1"], ["1", "2", "3", "4"], []])
     state, clock, sleep = _refill_clock(monkeypatch)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path, rent_pool_size=2, offer_refresh_seconds=10),
         provider=provider,
@@ -802,7 +925,7 @@ def test_pool_stops_searching_after_the_winner(tmp_path: Path, monkeypatch) -> N
     provider = _RefillProvider(searches=[["1"], ["1", "2"]], ready="1")
     state, clock, sleep = _refill_clock(monkeypatch)
     monkeypatch.setattr(vast, "_healthy", lambda connection: True)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(
             tmp_path,
@@ -830,7 +953,7 @@ def test_pool_does_not_rent_when_a_winner_appears_during_a_blocking_search(
     provider = _RefillProvider(searches=[["1"], ["1", "2"]])
     state, clock, sleep = _refill_clock(monkeypatch)
     monkeypatch.setattr(vast, "_healthy", lambda connection: True)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(
             tmp_path,
@@ -888,7 +1011,7 @@ def test_pool_gives_a_later_offer_its_own_full_ready_timeout(tmp_path: Path, mon
 
     provider = _RefillProvider(offer_source=offers)
     monkeypatch.setattr(vast, "_POLL_SECONDS", 5.0)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(
             tmp_path,
@@ -960,7 +1083,7 @@ def test_pool_replaces_an_offer_that_disappeared_from_the_account(
     state, clock, sleep = _refill_clock(monkeypatch)
     monkeypatch.setattr(vast, "_POLL_SECONDS", 5.0)
     monkeypatch.setattr(vast, "_healthy", lambda connection: True)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(
             tmp_path,
@@ -1014,7 +1137,7 @@ def test_pool_propagates_a_fatal_error_without_trying_a_ready_replacement(
     provider.show_instance = fatal  # type: ignore[method-assign]
     state, clock, sleep = _refill_clock(monkeypatch)
     monkeypatch.setattr(vast, "_healthy", lambda connection: True)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(
             tmp_path,
@@ -1048,7 +1171,7 @@ def test_sequential_path_gives_every_offer_its_own_full_ready_timeout(
     )
     state, clock, sleep = _refill_clock(monkeypatch)
     monkeypatch.setattr(vast, "_POLL_SECONDS", 5.0)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path, rent_pool_size=1, server_ready_timeout=60),
         provider=provider,
@@ -1088,7 +1211,7 @@ def test_sequential_failure_logs_the_contract_and_reason(
     provider = _RefillProvider(searches=[["1"]])
     state, clock, sleep = _clock_pair()
     monkeypatch.setattr(vast, "_POLL_SECONDS", 5.0)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path, rent_pool_size=1, server_ready_timeout=60),
         provider=provider,
@@ -1109,7 +1232,7 @@ def test_rent_reports_the_reasons_of_every_verified_pass(tmp_path: Path, monkeyp
     provider = _RefillProvider(searches=[["1"], []])
     state, clock, sleep = _clock_pair()
     monkeypatch.setattr(vast, "_POLL_SECONDS", 5.0)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path, rent_pool_size=1, server_ready_timeout=60),
         provider=provider,
@@ -1148,7 +1271,7 @@ def test_rent_does_not_try_the_next_verified_pass_after_a_fatal_error(
 
     provider.show_instance = fatal  # type: ignore[method-assign]
     state, clock, sleep = _refill_clock(monkeypatch)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path, rent_pool_size=1, server_ready_timeout=60),
         provider=provider,
@@ -1171,7 +1294,7 @@ def test_pool_stops_renting_when_a_ready_worker_is_not_yet_reported(
     provider = _RefillProvider(searches=[["1"], ["1", "2"]], ready="1")
     state, clock, sleep = _refill_clock(monkeypatch)
     monkeypatch.setattr(vast, "_healthy", lambda connection: True)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(
             tmp_path,
@@ -1233,7 +1356,7 @@ def test_pool_keeps_a_candidate_that_failed_to_tear_down(tmp_path: Path, monkeyp
         raise RentError("destroy is down")
 
     monkeypatch.setattr(vast, "destroy_verified", failing_destroy)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(
             tmp_path,
@@ -1263,7 +1386,7 @@ def test_pool_keeps_a_candidate_that_failed_to_tear_down(tmp_path: Path, monkeyp
 
 def test_pool_does_not_rent_after_stop(tmp_path: Path) -> None:
     provider = _RefillProvider(searches=[["1"]])
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path, rent_pool_size=2),
         provider=provider,
@@ -1283,7 +1406,7 @@ def test_pool_does_not_rent_after_stop(tmp_path: Path) -> None:
 
 def test_pool_ends_when_stopped_without_workers_or_a_winner(tmp_path: Path) -> None:
     provider = _RefillProvider(searches=[["1"]])
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path, rent_pool_size=2),
         provider=provider,
@@ -1312,7 +1435,7 @@ def test_pool_reads_a_winner_that_arrives_after_the_outcome_drain(
 ) -> None:
     provider = _RefillProvider(searches=searches)
     _, clock, sleep = _refill_clock(monkeypatch)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(
             tmp_path,
@@ -1353,7 +1476,7 @@ def test_pool_returns_a_queued_winner_without_waiting_for_the_refresh(
 ) -> None:
     provider = _RefillProvider(searches=[["1"]])
     state, clock, sleep = _refill_clock(monkeypatch)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(
             tmp_path,
@@ -1388,7 +1511,7 @@ def test_pool_refills_a_slot_freed_by_a_failed_attempt(tmp_path: Path, monkeypat
     provider = _RefillProvider(searches=[["1", "2"], ["1", "2", "3"]], ready="3", broken="1")
     state, clock, sleep = _refill_clock(monkeypatch)
     monkeypatch.setattr(vast, "_healthy", lambda connection: True)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path, rent_pool_size=2, offer_refresh_seconds=10),
         provider=provider,
@@ -1412,7 +1535,7 @@ def test_pool_ends_the_pass_when_failed_attempts_find_no_fresh_offers(
 ) -> None:
     provider = _RefillProvider(searches=[["1"], []], broken="1")
     state, clock, sleep = _refill_clock(monkeypatch)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path, rent_pool_size=2, offer_refresh_seconds=10),
         provider=provider,
@@ -1444,7 +1567,7 @@ def test_pool_destroys_rented_servers_when_the_refresh_search_raises(
     provider = _RefillProvider(ready="")
     provider.search_offers = search  # type: ignore[method-assign]
     state, clock, sleep = _refill_clock(monkeypatch)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(
             tmp_path,
@@ -1468,7 +1591,7 @@ def test_pool_destroys_rented_servers_when_the_refresh_search_raises(
 def test_pool_empty_market_fails_without_waiting(tmp_path: Path, monkeypatch) -> None:
     provider = _RefillProvider(searches=[[]])
     state, clock, sleep = _refill_clock(monkeypatch)
-    session = VastSession(
+    session = _session(
         fixture_profile(tmp_path / "profiles"),
         _settings(tmp_path, rent_pool_size=3, offer_refresh_seconds=600),
         provider=provider,

@@ -376,7 +376,7 @@ def test_prefect_profile_refill_deployment_contract() -> None:
     assert callable(module.profile_refill)
 
 
-def test_prefect_declares_five_deployments() -> None:
+def test_prefect_declares_six_deployments() -> None:
     names = [deployment["name"] for deployment in _load("prefect.yaml")["deployments"]]
 
     assert names == [
@@ -385,6 +385,7 @@ def test_prefect_declares_five_deployments() -> None:
         "profile_refill",
         "generate_batch",
         "profiles_describe",
+        "generator_recovery",
     ]
 
 
@@ -407,3 +408,24 @@ def test_prefect_profiles_describe_deployment_contract() -> None:
 
     module = importlib.import_module("content_factory.flows.profiles_describe.flow")
     assert callable(module.profiles_describe)
+
+
+def test_prefect_generator_recovery_deployment_contract() -> None:
+    deployment = _deployment("generator_recovery")
+
+    assert deployment["entrypoint"] == (
+        "src/content_factory/flows/generator_recovery/flow.py:generator_recovery"
+    )
+    assert deployment["work_pool"]["name"] == "content-factory"
+    assert deployment["concurrency_limit"] == 1
+    assert deployment["schedules"] == [
+        {
+            "slug": "every-2-minutes",
+            "cron": "*/2 * * * *",
+            "timezone": "UTC",
+            "active": True,
+        }
+    ]
+
+    module = importlib.import_module("content_factory.flows.generator_recovery.flow")
+    assert callable(module.generator_recovery)

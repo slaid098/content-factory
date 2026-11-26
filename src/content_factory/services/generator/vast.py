@@ -13,6 +13,8 @@ import httpx
 from loguru import logger
 
 from content_factory.config.settings import GeneratorSettings
+from content_factory.db.errors import DatabaseError
+from content_factory.db.server_journal import ServerJournal
 from content_factory.exceptions.generator import RentError
 from content_factory.schemas.generator.server import ServerConnection, ServerInfo
 from content_factory.services.generator.profiles import _Profile
@@ -23,7 +25,8 @@ from content_factory.services.generator.vast_cli import (
     _VastTransient,
 )
 
-_LABEL = "content-factory-generator"
+GENERATOR_LABEL = "content-factory-generator"
+_LABEL = GENERATOR_LABEL
 _COMFY_PORT = 8188
 _RELIABILITY_MIN = 0.80
 _CUDA_MIN = 12.6
@@ -62,18 +65,23 @@ class VastSession:
         settings: GeneratorSettings,
         *,
         provider: VastProvider | None = None,
+        journal: ServerJournal,
+        run_id: str | None = None,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        """Store the profile and timings; no network call happens here."""
+        """Store the profile, journal and timings; no network call happens here."""
         self._profile = profile
         self._settings = settings
         self._provider = provider
+        self._journal = journal
+        self._run_id = run_id
         self._sleep = sleep
         self._clock = clock
         self._lock = threading.Lock()
         self._contract_id: str | None = None
         self._contracts: set[str] = set()
+        self._servers: dict[str, str] = {}
         self._info: ServerInfo | None = None
 
     def open(self) -> ServerInfo:
@@ -104,11 +112,10 @@ class VastSession:
         errors: list[str] = []
         for contract_id in sorted(self._tracked()):
             try:
-                destroy_verified(provider, contract_id)
+                self._destroy_one(provider, contract_id)
             except RentError as ex:
                 errors.append(str(ex))
                 continue
-            self._untrack(contract_id)
             logger.bind(contract_id=contract_id).info(f"Сервер {contract_id} уничтожен и проверен")
         if errors:
             raise RentError("; ".join(errors))
@@ -368,12 +375,14 @@ class VastSession:
         started = self._clock()
         timeout = self._settings.server_ready_timeout
         health_timeout = self._settings.comfy_health_timeout
+        cost = _float_or_none(offer.get("dph_total"))
         try:
             contract_id = self._create(provider, offer)
             started = self._clock()
             connection = self._wait_ready(
                 provider, contract_id, deadline=started + timeout, stop=stop
             )
+            self._mark_ready(contract_id, connection, cost)
         except _RentCancelled:
             return
         except _VastFatal as ex:
@@ -396,7 +405,7 @@ class VastSession:
             outcomes.put(
                 ServerInfo(
                     connection=connection,
-                    cost_per_hour=_float_or_none(offer.get("dph_total")),
+                    cost_per_hour=cost,
                 )
             )
 
@@ -425,11 +434,10 @@ class VastSession:
         errors: list[str] = []
         for contract_id in sorted(remaining):
             try:
-                destroy_verified(provider, contract_id)
+                self._destroy_one(provider, contract_id)
             except RentError as ex:
                 errors.append(f"проигравший сервер {contract_id} не уничтожен: {ex}")
                 continue
-            self._untrack(contract_id)
             logger.bind(contract_id=contract_id).info(f"Проигравший сервер {contract_id} уничтожен")
         if errors:
             raise _TeardownError("; ".join(errors))
@@ -440,6 +448,7 @@ class VastSession:
         started = self._clock()
         port_timeout = self._settings.server_ready_timeout
         health_timeout = self._settings.comfy_health_timeout
+        cost = _float_or_none(offer.get("dph_total"))
         self._set_current(contract_id)
         try:
             connection = self._wait_ready(provider, contract_id, deadline=started + port_timeout)
@@ -449,17 +458,28 @@ class VastSession:
             )
             self._destroy_after_failure(provider, contract_id)
             raise
+        self._mark_ready(contract_id, connection, cost)
         _log_ready(connection)
         return ServerInfo(
             connection=connection,
-            cost_per_hour=_float_or_none(offer.get("dph_total")),
+            cost_per_hour=cost,
         )
 
     def _create(self, provider: VastProvider, offer: Mapping[str, Any]) -> str:
-        """Rent one offer and track its contract until a verified teardown."""
+        """Journal and rent one offer, tracking its contract until teardown.
+
+        The journal row is inserted before ``create_instance``; a failure to
+        insert it stops the rental with no paid instance. The contract id is
+        written immediately after the provider returns it.
+
+        Raises:
+            RentError: The offer has no id or ``create_instance`` failed.
+        """
         offer_id = str(offer.get("id") or "").strip()
         if not offer_id:
             raise RentError("Vast.ai вернул оффер без id")
+        cost = _float_or_none(offer.get("dph_total"))
+        server_id = self._journal_start(offer_id, cost)
         contract_id = provider.create_instance(
             {
                 "offer_id": offer_id,
@@ -470,18 +490,100 @@ class VastSession:
                 "onstart_cmd": "bash /start.sh",
             }
         )
-        self._track(contract_id)
+        self._track(contract_id, server_id)
+        self._journal_call(
+            "привязка контракта",
+            contract_id,
+            lambda: self._journal.bind(server_id, contract_id),
+        )
         return contract_id
 
-    def _track(self, contract_id: str) -> None:
-        """Remember a rented contract until its verified teardown."""
+    def _journal_start(self, offer_id: str, cost: float | None) -> str:
+        """Insert the ``renting`` row before the provider creates an instance."""
+        try:
+            return self._journal.start(
+                run_id=self._run_id,
+                profile=self._profile.name,
+                gpu=self._profile.gpu,
+                image=self._profile.image,
+                cost_per_hour=cost,
+            )
+        except DatabaseError as ex:
+            raise RentError(f"журнал серверов недоступен, аренда {offer_id} отменена: {ex}") from ex
+
+    def _journal_call(
+        self,
+        action: str,
+        contract_id: str,
+        call: Callable[[], None],
+    ) -> None:
+        """Run one journal update; a database failure must not leak a server."""
+        try:
+            call()
+        except DatabaseError as ex:
+            logger.bind(
+                contract_id=contract_id,
+                action=action,
+                error=str(ex),
+                error_type=type(ex).__name__,
+            ).error(f"Журнал серверов: {action} для {contract_id} не записан: {ex}")
+
+    def _mark_ready(
+        self,
+        contract_id: str,
+        connection: ServerConnection,
+        cost: float | None,
+    ) -> None:
+        """Store the ready address of a tracked contract in the journal."""
+        server_id = self._server_id(contract_id)
+        if server_id is None:
+            return
+        self._journal_call(
+            "адрес сервера",
+            contract_id,
+            lambda: self._journal.ready(server_id, connection, cost),
+        )
+
+    def _mark_destroying(self, contract_id: str) -> None:
+        """Mark a tracked contract as being destroyed in the journal."""
+        server_id = self._server_id(contract_id)
+        if server_id is None:
+            return
+        self._journal_call(
+            "начало уничтожения",
+            contract_id,
+            lambda: self._journal.destroying(server_id),
+        )
+
+    def _mark_destroyed(self, contract_id: str) -> None:
+        """Mark a tracked contract destroyed after the verified teardown."""
+        server_id = self._server_id(contract_id)
+        if server_id is None:
+            return
+        self._journal_call(
+            "уничтожение",
+            contract_id,
+            lambda: self._journal.destroyed(server_id),
+        )
+
+    def _destroy_one(self, provider: VastProvider, contract_id: str) -> None:
+        """Destroy one tracked contract and journal its verified teardown."""
+        self._mark_destroying(contract_id)
+        destroy_verified(provider, contract_id)
+        self._mark_destroyed(contract_id)
+        self._untrack(contract_id)
+
+    def _track(self, contract_id: str, server_id: str) -> None:
+        """Remember a rented contract and its journal row until teardown."""
         with self._lock:
             self._contracts.add(contract_id)
+            self._servers[contract_id] = server_id
 
     def _untrack(self, contract_id: str) -> None:
         """Forget a destroyed contract and clear it as the current one."""
         with self._lock:
             self._contracts.discard(contract_id)
+            self._servers.pop(contract_id, None)
             if self._contract_id == contract_id:
                 self._contract_id = None
 
@@ -495,6 +597,11 @@ class VastSession:
         with self._lock:
             return set(self._contracts)
 
+    def _server_id(self, contract_id: str) -> str | None:
+        """Return the journal row of a tracked contract."""
+        with self._lock:
+            return self._servers.get(contract_id)
+
     def _destroy_after_failure(self, provider: VastProvider, contract_id: str) -> None:
         """Destroy a failed rental; an unverified teardown stops the rental loop.
 
@@ -505,7 +612,7 @@ class VastSession:
             _TeardownError: The instance is still listed after every attempt.
         """
         try:
-            destroy_verified(provider, contract_id)
+            self._destroy_one(provider, contract_id)
         except RentError as ex:
             logger.bind(contract_id=contract_id, error=str(ex)).error(
                 f"Сервер {contract_id} не уничтожился после сбоя аренды — "
@@ -514,7 +621,6 @@ class VastSession:
             raise _TeardownError(
                 f"сервер {contract_id} не уничтожен после сбоя аренды: {ex}"
             ) from ex
-        self._untrack(contract_id)
 
     def _wait_ready(
         self,

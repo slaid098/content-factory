@@ -27,6 +27,7 @@ _TABLES = (
     "source_items",
     "source_cursors",
     "trusted_devices",
+    "generator_servers",
 )
 
 
@@ -49,14 +50,14 @@ def test_migrations_apply_from_scratch_and_again(
     connection_module._ready.clear()
     first = connect(pg)
     try:
-        assert applied_versions(first) == ("0001", "0002", "0003", "0004")
+        assert applied_versions(first) == ("0001", "0002", "0003", "0004", "0005")
     finally:
         first.close()
 
     connection_module._ready.clear()
     second = connect(pg)
     try:
-        assert applied_versions(second) == ("0001", "0002", "0003", "0004")
+        assert applied_versions(second) == ("0001", "0002", "0003", "0004", "0005")
     finally:
         second.close()
 

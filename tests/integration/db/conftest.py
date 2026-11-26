@@ -34,6 +34,7 @@ ALL_TABLES = (
     "source_items",
     "source_cursors",
     "trusted_devices",
+    "generator_servers",
 )
 
 
