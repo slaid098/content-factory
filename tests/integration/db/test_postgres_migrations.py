@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 import pytest
+from tests.device_trust_columns import TRUSTED_DEVICE_COLUMNS
 from tests.integration.db.postgres_guard import (
     clear_libpq_environment,
     require_test_database,
@@ -25,6 +26,7 @@ _TABLES = (
     "stock_items",
     "source_items",
     "source_cursors",
+    "trusted_devices",
 )
 
 
@@ -47,14 +49,14 @@ def test_migrations_apply_from_scratch_and_again(
     connection_module._ready.clear()
     first = connect(pg)
     try:
-        assert applied_versions(first) == ("0001", "0002", "0003")
+        assert applied_versions(first) == ("0001", "0002", "0003", "0004")
     finally:
         first.close()
 
     connection_module._ready.clear()
     second = connect(pg)
     try:
-        assert applied_versions(second) == ("0001", "0002", "0003")
+        assert applied_versions(second) == ("0001", "0002", "0003", "0004")
     finally:
         second.close()
 
@@ -66,6 +68,7 @@ def test_adapter_reports_columns_and_tables(pg: Path) -> None:
         assert "language" in connection.columns("videos")
         assert connection.has_table("downloads") is True
         assert connection.has_table("missing_table") is False
+        assert connection.columns("trusted_devices") == TRUSTED_DEVICE_COLUMNS
     finally:
         connection.close()
 

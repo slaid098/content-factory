@@ -805,8 +805,12 @@ sudo docker compose ps
 
 Партнёру не нужен SFTP, чтобы забрать готовые видео: API отдаёт страницу
 `GET /` и JSON выдачи, а NPM на `92.119.114.77` терминирует TLS для
-`content.slaid098.dev`, пускает только IP партнёра и подставляет токен
-выдачи. Страница и её скрипты токена не содержат.
+`content.slaid098.dev` и больше не хранит токен выдачи. Доступ закрывает само
+приложение: браузер без cookie `device_token` получает 403, а cookie
+появляется после открытия одноразовой ссылки `/join/<token>`. Воркер YouTube
+Kit ходит в `/api/v1/content/` со своим `Authorization: Bearer` и cookie не
+имеет. IP-список NPM не нужен, поэтому смена мобильного IP не отрезает
+партнёра. Страница и её скрипты токена не содержат.
 
 Страница состоит из вкладок «Выдача», «Запросы» и «Настройки». «Выдача»
 запускает асинхронную сборку `POST /api/v1/content/deliveries/link` и
@@ -818,9 +822,17 @@ sudo docker compose ps
 
 ```
 браузер партнёра
-  → NPM 92.119.114.77:443 (TLS, Access List)
+  → NPM 92.119.114.77:443 (TLS)
   → 172.20.0.1:8001 в сети digital_factory_app_network
   → SSH-туннель linux2 → 127.0.0.1:8000 API на linux1
+  → gate: cookie device_token или 403
+  → /api/v1/content/: cookie устройства или Bearer
+
+YouTube Kit
+  → NPM 92.119.114.77:443 (TLS)
+  → 172.20.0.1:8001 в сети digital_factory_app_network
+  → SSH-туннель linux2 → 127.0.0.1:8000 API на linux1
+  → /api/v1/content/: Authorization: Bearer <delivery_token>
 ```
 
 `172.20.0.1` — шлюз сети `digital_factory_app_network`, в которой живёт
@@ -904,10 +916,9 @@ docker network inspect digital_factory_app_network \
 Он должен совпадать с адресом в юните и в NPM. Если сеть называется иначе,
 подставьте её имя и её шлюз.
 
-### 12.2 NPM: proxy host, TLS и Access List
+### 12.2 NPM: proxy host и TLS
 
-В NPM → Access Lists создайте список «Партнёр» с IP партнёра (один адрес,
-например `203.0.113.10`). В NPM → Hosts → Proxy Hosts → Add:
+В NPM → Hosts → Proxy Hosts → Add:
 
 | Поле | Значение |
 |---|---|
@@ -917,20 +928,23 @@ docker network inspect digital_factory_app_network \
 | Forward Port | `8001` |
 | Block Common Exploits | включено |
 | Websockets Support | выключено |
-| Access List | «Партнёр» |
+| Access List | снята (`access_list_id = 0`) |
 
 DNS-запись `content.slaid098.dev → 92.119.114.77` уже существует; отдельный
 A-рекорд не создаётся.
 
 На вкладке SSL запросите сертификат Let's Encrypt, включите `Force SSL`,
 `HTTP/2 Support` и при желании `HSTS Enabled`. Без `Force SSL` партнёр
-сможет открыть страницу по HTTP в обход HSTS. Если выпуск сертификата
-упирается в Access List, временно отключите список на время выпуска и
-включите обратно после сохранения сертификата.
+сможет открыть страницу по HTTP в обход HSTS. У proxy host снимите привязку
+Access List (`access_list_id = 0`, как у `youtube.slaid098.dev`): IP-фильтр
+заменён cookie устройства, которую проверяет приложение. Сам список
+`Admin_Only` не удаляйте — им пользуются другие хосты; новых списков не
+создавайте.
 
-Токен подставляется только для `/api/v1/content/`: NPM не должен отправлять
-его на страницу и в публичный сток. Откройте у proxy host вкладку Custom
-Locations, добавьте location:
+NPM больше не подставляет `Authorization`: у браузера есть cookie, у YouTube
+Kit — свой Bearer. Custom location `/api/v1/content/` нужен только для
+увеличенных таймаутов, потому что сборка десяти видео занимает минуты.
+Откройте у proxy host вкладку Custom Locations, добавьте location:
 
 | Поле | Значение |
 |---|---|
@@ -942,30 +956,48 @@ Locations, добавьте location:
 В поле Advanced configuration этой custom location вставьте:
 
 ```nginx
-proxy_set_header Authorization "Bearer <токен>";
 proxy_read_timeout 300s;
 proxy_send_timeout 300s;
 ```
 
-`<токен>` — значение `CONTENT_FACTORY_DELIVERY_TOKEN` из `.env` на linux1.
-В репозиторий и в страницу оно не попадает. `proxy_read_timeout 300s`
-нужен, потому что сборка десяти видео занимает минуты; таймаут меньше
-пяти минут оборвёт POST, пока API ещё пишет архив.
-
+`proxy_read_timeout 300s` нужен, потому что сборка десяти видео занимает
+минуты; таймаут меньше пяти минут оборвёт POST, пока API ещё пишет архив.
 `POST /api/v1/content/deliveries/link` отвечает `202` сразу, но за ним идут
 опрос статуса раз в 3 секунды и скачивание локального архива, поэтому оба
-таймаута остаются 300 с. Внешний архив Litterbox принимает до 1 ГБ. Если
-архив больше лимита или заливка не удалась, zip остаётся на сервере, job
-получает `ready_local`, и страница даёт ссылку на
+таймаута остаются 300 с.
+
+Добавьте второй custom location `/join/` с выключенным access log: токен
+одноразовой ссылки не должен попасть в лог NPM.
+
+| Поле | Значение |
+|---|---|
+| Location | `/join/` |
+| Scheme | `http` |
+| Forward Hostname / IP | `172.20.0.1` |
+| Forward Port | `8001` |
+
+В Advanced configuration:
+
+```nginx
+access_log off;
+```
+
+Приложение редактирует `/join/<token>` в своём access-log до
+`/join/[redacted]`, но лог NPM пишется раньше, поэтому его нужно выключить
+отдельно. Таймауты для `/join/` не нужны.
+
+Внешний архив Litterbox принимает до 1 ГБ. Если архив больше лимита или
+заливка не удалась, zip остаётся на сервере, job получает `ready_local`, и
+страница даёт ссылку на
 `/api/v1/content/archives/<language>/<request_id>.zip`. Ссылка Litterbox
-публичная и обходит Access List: это осознанно, видео уже публичны, а ссылка
-живёт 24 часа. Access List и токен применяются к странице, API и локальным
-архивам.
+публичная и обходит gate устройства: это осознанно, видео уже публичны, а
+ссылка живёт 24 часа. Cookie устройства и Bearer применяются к странице, API
+и локальным архивам.
 
 NPM сам добавляет к custom location стандартные `Host`, `X-Real-IP`,
-`X-Forwarded-For` и `X-Forwarded-Proto`. Не добавляйте `Authorization` в
-общий Advanced configuration proxy host: тогда заголовок уйдёт и на `/`, и в
-`/api/v1/stock`, хотя им он не нужен.
+`X-Forwarded-For` и `X-Forwarded-Proto`. Заголовок `Authorization` не
+добавляйте ни в custom locations, ни в общий Advanced configuration proxy
+host: браузер ходит с cookie, а сервис присылает свой Bearer.
 
 Проверьте конфиг и примените изменения:
 
@@ -976,66 +1008,126 @@ sudo docker exec nginx-proxy-manager nginx -t
 Контейнер NPM может называться иначе; имя смотрите в `docker ps`. NPM
 применяет конфиг сам после сохранения, `nginx -t` — только проверка.
 
-### 12.3 Проверка доступа
+### 12.3 Ссылки на устройство и проверка доступа
 
-С разрешённого IP:
+После деплоя снимите у proxy host `content.slaid098.dev` привязку Access List
+(`access_list_id = 0`, как у `youtube.slaid098.dev`): пока IP-фильтр включён,
+NPM ответит `403` раньше, чем приложение проверит cookie. Сам список
+`Admin_Only` не удаляйте — им пользуются другие хосты; новых списков не
+создавайте.
 
-```bash
-curl -fsS -o /dev/null -w '%{http_code}\n' https://content.slaid098.dev/   # 200
-curl -fsS https://content.slaid098.dev/api/v1/stock | head -c 300
-curl -fsS "https://content.slaid098.dev/api/v1/content/topics?language=ru"
-
-request_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
-curl -fsS -X POST https://content.slaid098.dev/api/v1/content/deliveries \
-  -H "Content-Type: application/json" \
-  -d "{\"language\":\"ru\",\"count\":1,\"request_id\":\"$request_id\"}" \
-  -o delivery.zip
-unzip -l delivery.zip
-curl -fsS -o delivery-again.zip \
-  "https://content.slaid098.dev/api/v1/content/archives/ru/$request_id.zip"
-```
-
-Повторное скачивание не пересобирает архив и не тратит остаток. Синхронная
-выдача выше остаётся для воркеров YouTube Kit; ручной сценарий использует
-асинхронную ссылку:
+Ссылку выпускает CLI внутри контейнера `api`:
 
 ```bash
-async_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
-curl -fsS -X POST https://content.slaid098.dev/api/v1/content/deliveries/link \
-  -H "Content-Type: application/json" \
-  -d "{\"language\":\"ru\",\"count\":10,\"request_id\":\"$async_id\"}"
-curl -fsS \
-  "https://content.slaid098.dev/api/v1/content/deliveries/ru/$async_id"
+cd /root/dockers/content-factory
+docker compose exec -T api python scripts/device_access.py issue --label phone
 ```
 
-В браузере с разрешённого IP страница показывает остаток по языкам и темы
-только для чтения. На вкладке «Выдача» выберите язык и количество, нажмите
-«Собрать архив», дождитесь статуса `ready` или `ready_local` и скачайте архив
-по ссылке; повторное скачивание доступно в «Готовых архивах» и не пересобирает
-zip. Вкладка «Запросы» ищет по списку, показывает остаток и `in_file` и
-добавляет новый запрос. Вкладка «Настройки» сначала показывает diff по
-«Проверить», затем применяет его по «Применить» с бэкапом
-`config.yaml.bak-<YYYYmmdd-HHMMSS>`.
+В stdout печатается одна строка `https://content.slaid098.dev/join/<token>`,
+в stderr — `device_id`, `link_expires_at` и `expires_at`. Время жизни ссылки
+по умолчанию 24 часа, устройства — 180 дней
+(`CONTENT_FACTORY_DEVICE_LINK_TTL_HOURS`, `CONTENT_FACTORY_DEVICE_TTL_DAYS`).
 
-С чужого IP (например, с мобильного интернета) NPM возвращает `403`:
+Откройте ссылку на телефоне сразу: ответ `303` ставит cookie `device_token`
+и ведёт на `/`, после чего ссылка мертва. Повторное открытие той же ссылки
+даёт `410`. Список устройств и отзыв:
+
+```bash
+docker compose exec -T api python scripts/device_access.py list
+docker compose exec -T api python scripts/device_access.py revoke --id <id>
+```
+
+`list` показывает `active`, `pending`, `revoked` или `expired`. После
+`revoke` следующий же запрос устройства получает `403`. Вторая ссылка для
+партнёра выпускается отдельно и работает независимо.
+
+Не отправляйте ссылку в мессенджер, который показывает предпросмотр:
+бот может погасить её раньше получателя. Если это случилось, URL уже мёртв,
+действующего доступа предпросмотр не оставляет — выпустите новую ссылку.
+
+Локальный healthcheck не требует cookie и не отдаёт данные стока:
+
+```bash
+curl -fsS -H 'Host: 127.0.0.1:8000' http://127.0.0.1:8000/api/v1/stock
+# {"status":"ok"}
+```
+
+Без cookie через NPM страница получает `403` приложения (не NPM):
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' https://content.slaid098.dev/   # 403
 ```
 
-Локальная проверка без NPM: `http://127.0.0.1:8000/` открывает страницу, но
-запросы к `/api/v1/content/*` без токена получают `401`, и страница пишет
-«Нет доступа к API». Обхода авторизации нет.
+После открытия ссылки cookie можно сохранить и проверить доступ. Токен
+`/join/` не попадает в access-log приложения (`/join/[redacted]`) и в лог NPM
+(custom location `/join/` пишет `access_log off`):
+
+```bash
+curl -fsS -c cookies.txt -o /dev/null -w '%{http_code}\n' \
+  "https://content.slaid098.dev/join/<token>"                            # 303
+curl -fsS -b cookies.txt -o /dev/null -w '%{http_code}\n' \
+  https://content.slaid098.dev/                                          # 200
+curl -fsS -b cookies.txt https://content.slaid098.dev/api/v1/stock | head -c 300
+curl -fsS -b cookies.txt https://content.slaid098.dev/api/v1/content/archives
+```
+
+Сервисные выдачи YouTube Kit идут со своим Bearer-токеном без cookie. Для
+ручной проверки возьмите токен из `.env` на linux1 (в NPM его больше нет):
+
+```bash
+token="$(sudo grep '^CONTENT_FACTORY_DELIVERY_TOKEN=' /root/dockers/content-factory/.env | cut -d= -f2-)"
+curl -fsS -H "Authorization: Bearer $token" \
+  https://content.slaid098.dev/api/v1/content/archives
+```
+
+Те же запросы с Bearer-токеном — так ходит YouTube Kit:
+
+```bash
+request_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+curl -fsS -X POST https://content.slaid098.dev/api/v1/content/deliveries \
+  -H "Authorization: Bearer $token" \
+  -H "Content-Type: application/json" \
+  -d "{\"language\":\"ru\",\"count\":1,\"request_id\":\"$request_id\"}" \
+  -o delivery.zip
+unzip -l delivery.zip
+
+async_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+curl -fsS -X POST https://content.slaid098.dev/api/v1/content/deliveries/link \
+  -H "Authorization: Bearer $token" \
+  -H "Content-Type: application/json" \
+  -d "{\"language\":\"ru\",\"count\":10,\"request_id\":\"$async_id\"}"
+curl -fsS -H "Authorization: Bearer $token" \
+  "https://content.slaid098.dev/api/v1/content/deliveries/ru/$async_id"
+```
+
+Из браузера те же запросы идут с `-b cookies.txt` и без `Authorization`.
+
+В браузере с cookie страница показывает остаток по языкам и темы только для
+чтения. На вкладке «Выдача» выберите язык и количество, нажмите «Собрать
+архив», дождитесь статуса `ready` или `ready_local` и скачайте архив по
+ссылке; повторное скачивание доступно в «Готовых архивах» и не пересобирает
+zip. Вкладка «Запросы» ищет по списку, показывает остаток и `in_file` и
+добавляет новый запрос. Вкладка «Настройки» сначала показывает diff по
+«Проверить», затем применяет его по «Применить» с бэкапом
+`config.yaml.bak-<YYYYmmdd-HHMMSS>`.
+
+Локальная проверка без NPM: `http://127.0.0.1:8000/` без cookie отдаёт
+`403`. Чтобы открыть страницу на localhost по HTTP, задайте
+`CONTENT_FACTORY_DEVICE_COOKIE_SECURE=false` и выпустите ссылку; в проде
+cookie всегда `Secure`. Запросы к `/api/v1/content/*` без cookie и без
+Bearer получают `401`; с cookie страница работает без заголовка.
 
 ### 12.4 Ротация токена
 
 1. Замените `CONTENT_FACTORY_DELIVERY_TOKEN` в `.env` на linux1.
 2. Пересоздайте API, чтобы контейнер прочитал новое значение:
    `sudo env IMAGE_TAG="$(sudo cat .deploy-image-tag)" docker compose up -d api`.
-3. Обновите `proxy_set_header Authorization` в custom location NPM и
-   сохраните proxy host.
+3. Обновите токен в окружении YouTube Kit и перезапустите его сервис.
 4. Повторите проверки из §12.3; старый токен после шага 2 даёт `401`.
 
-Токен хранится в конфиге NPM на linux2 и в `.env` на linux1. Доступ к
-админке NPM и к `/root/dockers/content-factory/.env` должен быть только у
-эксплуатации; в браузер, логи API и git токен не попадает.
+Токен хранится в `.env` на linux1 и в окружении YouTube Kit; в конфиге NPM
+его больше нет, поэтому шага с `proxy_set_header Authorization` не требуется.
+Доступ к `/root/dockers/content-factory/.env` и к окружению YouTube Kit
+должен быть только у эксплуатации; в браузер, логи API и git токен не
+попадает. Одноразовые ссылки `/join/<token>` живут отдельно от токена выдачи:
+их отзывают через `scripts/device_access.py`, а не ротацией.

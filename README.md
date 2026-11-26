@@ -220,6 +220,11 @@ curl -f http://127.0.0.1:8000/api/v1/stock
 | `CONTENT_FACTORY_LOG_LEVEL` | `INFO` | уровень loguru |
 | `CONTENT_FACTORY_DELIVERY_TOKEN` | — | Bearer-токен выдачи; пусто — выдача выключена |
 | `CONTENT_FACTORY_DELIVERY_RETENTION_HOURS` | `24` | TTL zip-архивов, часов (≥ 1) |
+| `CONTENT_FACTORY_DEVICE_GATE_ENABLED` | `true` | требовать cookie доверенного устройства |
+| `CONTENT_FACTORY_DEVICE_LINK_TTL_HOURS` | `24` | срок одноразовой ссылки, часов, 1–720 |
+| `CONTENT_FACTORY_DEVICE_TTL_DAYS` | `180` | срок устройства, дней, 1–3650 |
+| `CONTENT_FACTORY_DEVICE_COOKIE_SECURE` | `true` | флаг `Secure` у cookie `device_token` |
+| `CONTENT_FACTORY_PUBLIC_BASE_URL` | `https://content.slaid098.dev` | адрес для ссылок `/join/`, без завершающего `/` |
 | `OPENAI_BASE_URL` | `https://ollama.com/v1` | общая база OpenAI-совместимого API названий и генератора; `http`/`https`, без пробелов и завершающего `/` |
 | `OPENAI_API_KEY` | — | общий ключ API; пусто — flow `titles` выключен |
 | `TITLES_MODEL` | `deepseek-v4.1-flash` | модель названий |

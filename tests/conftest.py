@@ -42,6 +42,17 @@ def _reset_settings_cache() -> Iterator[None]:
     get_settings.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def _disable_device_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Close the device gate for every test except the gate's own suite.
+
+    The gate defaults to enabled in production; API, UI and delivery tests
+    predate it and talk to the app without a cookie. The gate tests set the
+    variable back to true themselves.
+    """
+    monkeypatch.setenv("CONTENT_FACTORY_DEVICE_GATE_ENABLED", "false")
+
+
 @pytest.fixture
 def log_records() -> Iterator[list[dict[str, Any]]]:
     """Collect raw loguru records for level, message and bound context checks."""

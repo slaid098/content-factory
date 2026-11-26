@@ -16,7 +16,8 @@ ui_router = APIRouter()
 def get_ui_page() -> FileResponse:
     """Return the partner delivery page.
 
-    The page itself is public: the reverse proxy limits access by IP and
+    ``DeviceGateMiddleware`` closes the page: a browser without an active
+    ``device_token`` cookie gets the 403 page instead. The reverse proxy only
     injects the delivery token for ``/api/v1/content/`` requests.
     """
     return FileResponse(

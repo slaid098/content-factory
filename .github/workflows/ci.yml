@@ -87,6 +87,10 @@ jobs:
 
       - name: E2E
         working-directory: frontend
+        env:
+          # E2E проверяет UI и старше device gate: у браузера Playwright нет
+          # cookie устройства. Сам gate покрыт pytest-тестами.
+          CONTENT_FACTORY_DEVICE_GATE_ENABLED: "false"
         run: npm run test:e2e
 
   # Единственный блокирующий аудит-шаг: `audit` остаётся WARN-only, а гейт

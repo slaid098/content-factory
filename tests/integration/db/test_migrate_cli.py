@@ -21,19 +21,19 @@ def test_cli_applies_migrations_and_is_idempotent(
     get_settings.cache_clear()
 
     assert main() == 0
-    assert "применено: 0001, 0002, 0003" in capsys.readouterr().out
+    assert "применено: 0001, 0002, 0003, 0004" in capsys.readouterr().out
 
     db_path = tmp_path / "db" / "db.sqlite3"
     assert db_path.is_file()
     connection = connect(db_path)
     try:
         versions = connection.execute("SELECT version FROM schema_migrations").fetchall()
-        assert [row[0] for row in versions] == ["0001", "0002", "0003"]
+        assert [row[0] for row in versions] == ["0001", "0002", "0003", "0004"]
     finally:
         connection.close()
 
     assert main() == 0
-    assert "применено: 0001, 0002, 0003" in capsys.readouterr().out
+    assert "применено: 0001, 0002, 0003, 0004" in capsys.readouterr().out
 
 
 def test_cli_failure_hides_the_destination_password(

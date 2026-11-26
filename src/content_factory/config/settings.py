@@ -61,11 +61,26 @@ class Settings(BaseSettings):
     delivery_token: str | None = None
     delivery_retention_hours: int = Field(default=24, ge=1)
     database_url: SecretStr | None = None
+    device_gate_enabled: bool = True
+    device_link_ttl_hours: int = Field(default=24, ge=1, le=720)
+    device_ttl_days: int = Field(default=180, ge=1, le=3650)
+    device_cookie_secure: bool = True
+    public_base_url: str = "https://content.slaid098.dev"
 
     @field_validator("data_dir")
     @classmethod
     def _expand_user(cls, value: Path) -> Path:
         return value.expanduser()
+
+    @field_validator("public_base_url")
+    @classmethod
+    def _check_public_base_url(cls, value: str) -> str:
+        clean = value.strip()
+        if not clean:
+            raise ValueError("адрес не должен быть пустым")
+        if clean.endswith("/"):
+            raise ValueError("адрес не должен заканчиваться на /")
+        return clean
 
     @field_validator(
         "telegram_bot_token",
