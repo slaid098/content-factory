@@ -28,6 +28,7 @@ from content_factory.schemas.profiles.api import (
 )
 from content_factory.schemas.profiles.preview import ProfilePreview
 from content_factory.services.profiles import service as profiles_service
+from content_factory.services.profiles import views as profiles_views
 from content_factory.services.profiles.registry import get_profile
 
 _GLOBAL = GeneratorConfig(target=20, refill_at=2)
@@ -50,7 +51,7 @@ def _update(
 
 def test_list_profile_views_without_profiles_is_empty(tmp_path: Path) -> None:
     assert (
-        profiles_service.list_profile_views(
+        profiles_views.list_profile_views(
             tmp_path,
             output_dir=tmp_path / "generated",
             global_config=_GLOBAL,
@@ -64,7 +65,7 @@ def test_list_profile_views_filters_by_language(tmp_path: Path) -> None:
     add_profile(tmp_path, "dating", "profile_2", language="en")
     add_profile(tmp_path, "auto", "profile_3", language="de", niche="auto")
 
-    views = profiles_service.list_profile_views(
+    views = profiles_views.list_profile_views(
         tmp_path,
         output_dir=tmp_path / "generated",
         global_config=_GLOBAL,
@@ -80,7 +81,7 @@ def test_list_profile_views_filters_by_niche(tmp_path: Path) -> None:
     add_profile(tmp_path, "dating", "profile_2", niche="overlay")
     add_profile(tmp_path, "auto", "profile_3", niche="dating")
 
-    views = profiles_service.list_profile_views(
+    views = profiles_views.list_profile_views(
         tmp_path,
         output_dir=tmp_path / "generated",
         global_config=_GLOBAL,
@@ -95,7 +96,7 @@ def test_list_profile_views_combines_language_and_niche(tmp_path: Path) -> None:
     add_profile(tmp_path, "dating", "profile_2", language="de", niche="overlay")
     add_profile(tmp_path, "auto", "profile_3", language="en", niche="dating")
 
-    views = profiles_service.list_profile_views(
+    views = profiles_views.list_profile_views(
         tmp_path,
         output_dir=tmp_path / "generated",
         global_config=_GLOBAL,
@@ -109,7 +110,7 @@ def test_list_profile_views_combines_language_and_niche(tmp_path: Path) -> None:
 def test_list_profile_views_returns_empty_for_an_unknown_language(tmp_path: Path) -> None:
     add_profile(tmp_path, language="de")
 
-    views = profiles_service.list_profile_views(
+    views = profiles_views.list_profile_views(
         tmp_path,
         output_dir=tmp_path / "generated",
         global_config=_GLOBAL,
@@ -135,9 +136,9 @@ def test_list_profile_views_counts_stock_only_for_matching_profiles(
         counted.append(profile_id)
         return 0
 
-    monkeypatch.setattr(profiles_service, "count_by_profile", _count)
+    monkeypatch.setattr(profiles_views, "count_by_profile", _count)
 
-    views = profiles_service.list_profile_views(
+    views = profiles_views.list_profile_views(
         tmp_path,
         output_dir=tmp_path / "generated",
         global_config=_GLOBAL,
@@ -153,7 +154,7 @@ def test_list_profiles_response_counts_before_filter(tmp_path: Path) -> None:
     add_profile(tmp_path, "dating", "profile_2", language="en", niche="overlay")
     add_profile(tmp_path, "auto", "profile_3", language="en", niche="dating")
 
-    response = profiles_service.list_profiles_response(
+    response = profiles_views.list_profiles_response(
         tmp_path,
         output_dir=tmp_path / "generated",
         global_config=_GLOBAL,
@@ -170,7 +171,7 @@ def test_list_profiles_response_counts_before_filter(tmp_path: Path) -> None:
 def test_list_profiles_response_adds_an_unknown_profile_language(tmp_path: Path) -> None:
     add_profile(tmp_path, language="kaz")
 
-    response = profiles_service.list_profiles_response(
+    response = profiles_views.list_profiles_response(
         tmp_path,
         output_dir=tmp_path / "generated",
         global_config=_GLOBAL,
@@ -185,7 +186,7 @@ def test_list_profiles_response_adds_an_unknown_profile_language(tmp_path: Path)
 def test_list_profiles_response_without_profiles_returns_the_catalog(
     tmp_path: Path,
 ) -> None:
-    response = profiles_service.list_profiles_response(
+    response = profiles_views.list_profiles_response(
         tmp_path,
         output_dir=tmp_path / "generated",
         global_config=_GLOBAL,
@@ -265,10 +266,10 @@ def test_counters_fall_back_when_connect_fails(
     def _fail(_path: Path) -> Connection:
         raise OperationalError("cannot open")
 
-    monkeypatch.setattr(profiles_service, "sync_stock", lambda _data_dir: 0)
-    monkeypatch.setattr(profiles_service, "connect", _fail)
+    monkeypatch.setattr(profiles_views, "sync_stock", lambda _data_dir: 0)
+    monkeypatch.setattr(profiles_views, "connect", _fail)
 
-    views = profiles_service.list_profile_views(
+    views = profiles_views.list_profile_views(
         tmp_path,
         output_dir=tmp_path / "generated",
         global_config=_GLOBAL,
@@ -289,9 +290,9 @@ def test_counters_fall_back_when_read_fails(
     def _fail(_connection: Connection, _profile_id: str, **_kwargs: object) -> int:
         raise OperationalError("table is locked")
 
-    monkeypatch.setattr(profiles_service, "count_by_profile", _fail)
+    monkeypatch.setattr(profiles_views, "count_by_profile", _fail)
 
-    views = profiles_service.list_profile_views(
+    views = profiles_views.list_profile_views(
         tmp_path,
         output_dir=tmp_path / "generated",
         global_config=_GLOBAL,
