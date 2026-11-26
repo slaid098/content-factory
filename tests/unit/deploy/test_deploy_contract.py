@@ -375,7 +375,14 @@ def test_prefect_profiles_describe_deployment_contract() -> None:
     )
     assert deployment["work_pool"]["name"] == "content-factory"
     assert deployment["concurrency_limit"] == 1
-    assert "schedules" not in deployment
+    assert deployment["schedules"] == [
+        {
+            "slug": "daily",
+            "cron": "0 4 * * *",
+            "timezone": "UTC",
+            "active": True,
+        }
+    ]
 
     module = importlib.import_module("content_factory.flows.profiles_describe.flow")
     assert callable(module.profiles_describe)

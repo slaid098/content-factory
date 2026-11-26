@@ -80,6 +80,8 @@ def test_prompt_contains_profile_fields_and_prompt_fragments(tmp_path: Path) -> 
     assert "category (категория): dating" in system
     assert "name (имя): profile_1" in system
     assert "language (язык): en" in system
+    assert "язык ответа: русский" in system
+    assert "язык ответа: en" not in system
     assert "niche (ниша): dating" in system
     assert "JSON" in system
     assert "Сцена: {age}" in user
