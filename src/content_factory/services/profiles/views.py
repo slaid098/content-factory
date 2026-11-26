@@ -69,7 +69,7 @@ def _views(
 def _language_options(
     profiles: tuple[ProfileInfo, ...],
 ) -> tuple[LanguageOption, ...]:
-    """Return the full catalog plus profile codes outside it, by label."""
+    """Return the curated catalog plus profile codes outside it, by label."""
     labels = dict(LANGUAGE_LABELS)
     for profile in profiles:
         labels.setdefault(profile.language, language_label(profile.language))
