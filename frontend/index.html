@@ -34,21 +34,24 @@
     <main class="layout">
       <section class="tab-panel" id="panel-delivery" role="tabpanel"
                aria-labelledby="tab-delivery" tabindex="0">
-        <section class="panel stock-panel" aria-labelledby="stock-title">
+        <section class="panel" id="stock-panel" aria-labelledby="stock-title">
           <div class="panel-head">
             <h2 id="stock-title">Остаток на диске</h2>
-            <button type="button" class="ghost" id="refresh">Обновить</button>
+            <button type="button" class="button ghost" id="refresh">Обновить</button>
           </div>
-          <ul class="stock-list" id="stock-list"></ul>
-          <p class="message" id="stock-message" role="status" aria-live="polite" hidden></p>
+          <p class="loading" id="stock-loading" role="status" aria-live="polite" hidden>
+            Загружаем остаток…
+          </p>
+          <ul class="list stock-list" id="stock-list"></ul>
+          <p class="message is-error" id="stock-message" role="status" aria-live="polite" hidden></p>
           <p class="empty" id="stock-empty" hidden>Видео пока нет.</p>
 
           <section class="topics" id="topics" aria-labelledby="topics-title">
-            <div class="panel-head topics-head">
+            <div class="panel-head">
               <h3 id="topics-title">Темы в стоке</h3>
               <span class="muted" id="topics-language"></span>
             </div>
-            <ul class="topic-list" id="topic-list"></ul>
+            <ul class="list topic-list" id="topic-list"></ul>
             <p class="hint" id="topics-message" role="status" aria-live="polite" hidden></p>
             <p class="hint" id="unclassified" hidden></p>
           </section>
@@ -69,21 +72,19 @@
 
               <div class="field">
                 <label class="field-label" for="count">Сколько видео</label>
-                <div class="field-row">
-                  <input id="count" name="count" type="number" inputmode="numeric"
-                         min="1" max="100" step="1" value="1">
-                  <span class="hint" id="count-hint">Не больше 100 за раз.</span>
-                </div>
+                <input id="count" name="count" type="number" inputmode="numeric"
+                       min="1" max="100" step="1" value="1">
+                <p class="hint" id="count-hint">Не больше 100 за раз.</p>
               </div>
 
               <div class="actions">
-                <button type="submit" class="primary" id="deliver">Собрать архив</button>
+                <button type="submit" class="button primary" id="deliver">Собрать архив</button>
                 <span class="status" id="delivery-status" role="status" aria-live="polite"></span>
               </div>
             </form>
 
             <article class="job" id="delivery-job" aria-live="polite" hidden>
-              <div class="panel-head job-head">
+              <div class="panel-head">
                 <h3 id="job-title">Сборка архива</h3>
                 <span class="badge" id="job-state"></span>
               </div>
@@ -91,18 +92,23 @@
               <div class="job-foot">
                 <span class="timer" id="job-timer" hidden></span>
                 <a class="button primary" id="job-link" hidden>Скачать архив</a>
-                <button type="button" class="ghost" id="job-check" hidden>Проверить</button>
+                <button type="button" class="button ghost" id="job-check" hidden>Проверить</button>
               </div>
             </article>
           </section>
 
-          <section class="panel archives-panel" aria-labelledby="archives-title">
+          <section class="panel" aria-labelledby="archives-title">
             <div class="panel-head">
               <h2 id="archives-title">Готовые архивы</h2>
               <span class="muted" id="archives-summary">24 часа</span>
             </div>
-            <p class="message" id="archives-message" role="status" aria-live="polite" hidden></p>
-            <ul class="archive-list" id="archives"></ul>
+            <p class="loading" id="archives-loading" role="status" aria-live="polite" hidden>
+              Загружаем архивы…
+            </p>
+            <p class="message is-error" id="archives-message" role="status" aria-live="polite" hidden></p>
+            <div class="table-wrap">
+              <ul class="list archive-list" id="archives"></ul>
+            </div>
             <p class="empty" id="archives-empty" hidden>Архивов пока нет.</p>
           </section>
         </div>
@@ -113,7 +119,7 @@
         <section class="panel" aria-labelledby="queries-title">
           <div class="panel-head">
             <h2 id="queries-title">Поисковые запросы</h2>
-            <button type="button" class="ghost" id="queries-refresh">Обновить</button>
+            <button type="button" class="button ghost" id="queries-refresh">Обновить</button>
           </div>
 
           <div class="queries-toolbar">
@@ -129,20 +135,22 @@
           </div>
 
           <p class="hint" id="queries-summary"></p>
-          <p class="message" id="queries-message" role="status" aria-live="polite" hidden></p>
-          <ul class="query-list" id="queries-list"></ul>
+          <p class="message is-error" id="queries-message" role="status" aria-live="polite" hidden></p>
+          <div class="table-wrap">
+            <ul class="list query-list" id="queries-list"></ul>
+          </div>
           <p class="empty" id="queries-empty" hidden>Запросов пока нет.</p>
 
           <form class="query-form" id="query-form" novalidate>
             <div class="field">
               <label class="field-label" for="new-query">Новый запрос</label>
-              <div class="field-row">
-                <input id="new-query" name="query" type="text" maxlength="200"
-                       autocomplete="off" placeholder="Введите поисковый запрос">
-                <button type="submit" class="primary" id="query-add">Добавить</button>
-              </div>
+              <input id="new-query" name="query" type="text" maxlength="200"
+                     autocomplete="off" placeholder="Введите поисковый запрос">
             </div>
-            <span class="status" id="query-status" role="status" aria-live="polite"></span>
+            <div class="actions">
+              <button type="submit" class="button primary" id="query-add">Добавить</button>
+              <span class="status" id="query-status" role="status" aria-live="polite"></span>
+            </div>
           </form>
         </section>
       </section>
@@ -152,13 +160,13 @@
         <section class="panel" aria-labelledby="settings-title">
           <div class="panel-head">
             <h2 id="settings-title">Настройки производства</h2>
-            <button type="button" class="ghost" id="settings-refresh">Обновить</button>
+            <button type="button" class="button ghost" id="settings-refresh">Обновить</button>
           </div>
           <p class="hint">
             «Проверить» показывает diff без записи. «Применить» сохраняет файл:
             сервер сначала делает бэкап, затем заменяет конфиг атомарно.
           </p>
-          <p class="message" id="settings-message" role="status" aria-live="polite" hidden></p>
+          <p class="message is-error" id="settings-message" role="status" aria-live="polite" hidden></p>
 
           <form id="settings-form" novalidate>
             <div class="field">
@@ -205,8 +213,8 @@
             </div>
 
             <div class="actions">
-              <button type="button" class="secondary" id="settings-preview">Проверить</button>
-              <button type="submit" class="primary" id="settings-apply" disabled>Применить</button>
+              <button type="button" class="button secondary" id="settings-preview">Проверить</button>
+              <button type="submit" class="button primary" id="settings-apply" disabled>Применить</button>
               <span class="status" id="settings-status" role="status" aria-live="polite"></span>
             </div>
           </form>
@@ -224,7 +232,7 @@
         <section class="panel" aria-labelledby="profiles-title">
           <div class="panel-head">
             <h2 id="profiles-title">Профили</h2>
-            <button type="button" class="ghost" id="profiles-refresh">Обновить</button>
+            <button type="button" class="button ghost" id="profiles-refresh">Обновить</button>
           </div>
           <p class="hint">
             Shorts — добор роликов, посты — добор постов; 0 в цели постов выключает
@@ -232,7 +240,7 @@
             запуск партии остаётся за фоновым тиком.
           </p>
           <p class="status profile-loading" id="profiles-loading" role="status" aria-live="polite" hidden></p>
-          <p class="message" id="profiles-message" role="status" aria-live="polite" hidden></p>
+          <p class="message is-error" id="profiles-message" role="status" aria-live="polite" hidden></p>
           <ul class="profile-list" id="profiles-list"></ul>
           <p class="empty" id="profiles-empty" hidden>Профилей пока нет.</p>
         </section>

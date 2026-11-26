@@ -334,6 +334,109 @@ test("switches tabs by click and keyboard", async ({ page }) => {
   await expect(page.locator("#panel-delivery")).toBeVisible();
 });
 
+test("keeps every tab inside the viewport", async ({ page }) => {
+  const tabs = [
+    {
+      name: "Выдача",
+      panel: "#panel-delivery",
+      controls: ["#stock-title", "#delivery-form", "#deliver", "#archives-title"],
+    },
+    {
+      name: "Запросы",
+      panel: "#panel-queries",
+      controls: ["#queries-language", "#queries-search", "#query-add"],
+    },
+    {
+      name: "Настройки",
+      panel: "#panel-settings",
+      controls: ["#settings-form", "#settings-batch", "#settings-preview"],
+    },
+    {
+      name: "Профили",
+      panel: "#panel-profiles",
+      controls: ["#profiles-refresh", "#profiles-empty"],
+    },
+  ];
+
+  await page.goto("/");
+
+  for (const tab of tabs) {
+    await page.getByRole("tab", { name: tab.name }).click();
+    await expect(page.locator(tab.panel)).toBeVisible();
+    for (const selector of tab.controls) {
+      await expect(page.locator(selector), `${tab.name}: ${selector}`).toBeVisible();
+    }
+
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(overflow, tab.name).toBeLessThanOrEqual(1);
+  }
+});
+
+test("keeps long query content and wide tables inside the scroll container", async ({ page }) => {
+  const longQuery = `длинный-запрос-${"очень-".repeat(60)}конец`;
+  await page.route(/\/api\/v1\/stock$/, (route) =>
+    route.fulfill({
+      json: {
+        generated_at: "2026-11-26T10:00:00Z",
+        languages: [
+          { language: "ru", stock: 1, target: 1, titled: 1, untitled: 0, video_bytes: 1024 },
+        ],
+      },
+    }),
+  );
+  await page.route(/\/api\/v1\/content\/queries\?language=ru$/, (route) =>
+    route.fulfill({
+      json: { queries: [{ query: longQuery, count: 1, in_file: true }], unclassified: 0, total: 1 },
+    }),
+  );
+
+  await page.goto("/");
+  await expect(page.locator("#stock-list .stock-item")).toContainText("1 из 1");
+  await page.getByRole("tab", { name: "Запросы" }).click();
+
+  const item = page.locator("#queries-list .query-item").first();
+  await expect(item).toBeVisible();
+  await expect(item).toContainText("длинный-запрос");
+
+  const wrap = page.locator("#queries-list").locator("xpath=..");
+  await expect(wrap).toHaveClass(/table-wrap/);
+
+  const probe = await wrap.evaluate((element) => {
+    const table = document.createElement("table");
+    table.style.width = "1200px";
+    const row = table.insertRow();
+    const cell = row.insertCell();
+    cell.textContent = "широкая таблица";
+    element.append(table);
+    return {
+      overflowX: getComputedStyle(element).overflowX,
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+    };
+  });
+
+  expect(probe.overflowX).toBe("auto");
+  expect(probe.scrollWidth).toBeGreaterThan(probe.clientWidth);
+
+  const pageOverflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  expect(pageOverflow).toBeLessThanOrEqual(1);
+
+  const escapes = await item.evaluate((element) => {
+    const container = element.closest(".table-wrap");
+    if (!container) {
+      return Number.POSITIVE_INFINITY;
+    }
+    const box = element.getBoundingClientRect();
+    const frame = container.getBoundingClientRect();
+    return box.right - frame.right;
+  });
+  expect(escapes).toBeLessThanOrEqual(1);
+});
+
 test.describe("dark color scheme", () => {
   test.use({ colorScheme: "dark" });
 

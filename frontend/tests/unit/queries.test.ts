@@ -59,6 +59,23 @@ describe("createQueriesView", () => {
     );
   });
 
+  it("marks the list busy while queries load", async () => {
+    const pending = deferred<Response>();
+    mockFetch(() => pending.promise);
+    const view = createView();
+
+    const loading = view.load("ru");
+
+    expect(node("queries-summary").textContent).toBe("Загружаем запросы…");
+    expect(node("queries-list").getAttribute("aria-busy")).toBe("true");
+
+    pending.resolve(jsonResponse(responseBody));
+    await loading;
+
+    expect(node("queries-list").getAttribute("aria-busy")).toBe("false");
+    expect(node("queries-list").children.length).toBe(2);
+  });
+
   it("filters the list by the search field", async () => {
     mockFetch(() => jsonResponse(responseBody));
     const view = createView();

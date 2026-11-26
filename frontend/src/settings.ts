@@ -66,7 +66,10 @@ export function createSettingsView(
       return null;
     }
     elements.refresh.disabled = true;
+    elements.refresh.classList.add("is-busy");
+    elements.form.setAttribute("aria-busy", "true");
     setMessage(elements.message, "");
+    setStatus("Загружаем настройки…", false);
     try {
       const response = await requestJson(SETTINGS_URL);
       const settings = asSettings(response);
@@ -83,6 +86,8 @@ export function createSettingsView(
       return null;
     } finally {
       elements.refresh.disabled = busy;
+      elements.refresh.classList.remove("is-busy");
+      elements.form.setAttribute("aria-busy", String(busy));
     }
   }
 
@@ -109,7 +114,7 @@ export function createSettingsView(
       setStatus("Настройки изменены. Нажмите «Проверить» заново.", false);
       return;
     }
-    setBusy(true);
+    setBusy(true, "apply");
     setMessage(elements.message, "");
     setStatus("Применяем настройки…", false);
     try {
@@ -160,7 +165,7 @@ export function createSettingsView(
       resetDiff();
       return;
     }
-    setBusy(true);
+    setBusy(true, "preview");
     setMessage(elements.message, "");
     setStatus("Проверяем изменения…", false);
     const sent = JSON.stringify(payload);
@@ -203,7 +208,8 @@ export function createSettingsView(
     const cards = languages.map((item) => {
       const source = asObject(item);
       const code = String(source.code ?? "");
-      const row = el("label", "settings-language");
+      const row = el("div", "settings-language");
+      const toggle = el("label", "settings-language-toggle");
       const enabled = el("input");
       enabled.type = "checkbox";
       enabled.className = "settings-enabled";
@@ -218,12 +224,10 @@ export function createSettingsView(
       target.value = String(Number(source.stock_target) || 0);
       target.setAttribute("aria-label", `Целевой остаток: ${languageName(code)}`);
       rows.push({ code, enabled, target });
-      row.append(
-        enabled,
-        el("span", "settings-language-code", languageName(code)),
-        el("span", "hint", "цель"),
-        target,
-      );
+      toggle.append(enabled, el("span", "settings-language-code", languageName(code)));
+      const targetField = el("label", "field");
+      targetField.append(el("span", "field-label", "Цель"), target);
+      row.append(toggle, targetField);
       return row;
     });
     elements.languages.replaceChildren(...cards);
@@ -276,11 +280,13 @@ export function createSettingsView(
     elements.apply.disabled = true;
   }
 
-  function setBusy(value: boolean): void {
+  function setBusy(value: boolean, action: "preview" | "apply" | null = null): void {
     busy = value;
     elements.preview.disabled = value;
     elements.refresh.disabled = value;
     elements.apply.disabled = value || !previewValid;
+    elements.preview.classList.toggle("is-busy", value && action === "preview");
+    elements.apply.classList.toggle("is-busy", value && action === "apply");
     elements.form.setAttribute("aria-busy", String(value));
   }
 

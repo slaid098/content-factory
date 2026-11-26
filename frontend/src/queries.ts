@@ -56,6 +56,7 @@ export function createQueriesView(elements: QueriesElements): QueriesView {
     currentLanguage = language;
     const seq = ++requestSeq;
     setMessage(elements.message, "");
+    elements.list.setAttribute("aria-busy", "true");
     elements.summary.textContent = "Загружаем запросы…";
     try {
       const response = await requestJson(`${QUERIES_URL}?language=${encodeURIComponent(language)}`);
@@ -75,6 +76,10 @@ export function createQueriesView(elements: QueriesElements): QueriesView {
       toggle(elements.list, false);
       toggle(elements.empty, true);
       elements.empty.textContent = "Список запросов недоступен.";
+    } finally {
+      if (seq === requestSeq) {
+        elements.list.setAttribute("aria-busy", "false");
+      }
     }
   }
 
@@ -126,6 +131,7 @@ export function createQueriesView(elements: QueriesElements): QueriesView {
     }
     adding = true;
     elements.add.disabled = true;
+    elements.add.classList.add("is-busy");
     elements.form.setAttribute("aria-busy", "true");
     setStatus("Добавляем запрос…", false);
     try {
@@ -145,6 +151,7 @@ export function createQueriesView(elements: QueriesElements): QueriesView {
     } finally {
       adding = false;
       elements.add.disabled = false;
+      elements.add.classList.remove("is-busy");
       elements.form.removeAttribute("aria-busy");
     }
   }

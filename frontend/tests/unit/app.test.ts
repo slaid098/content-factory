@@ -255,6 +255,29 @@ describe("app", () => {
     expect(node("stock-empty").hidden).toBe(true);
   });
 
+  it("marks the stock panel busy until the request resolves", async () => {
+    const pending = deferred<Response>();
+    mockFetch((input, init) => {
+      if (String(input) === "/api/v1/stock") {
+        return pending.promise;
+      }
+      return handler()(input, init);
+    });
+    vi.resetModules();
+    const booting = import("../../src/app");
+    await booting;
+
+    expect(node("stock-panel").getAttribute("aria-busy")).toBe("true");
+    expect(node("stock-loading").hidden).toBe(false);
+
+    pending.resolve(jsonResponse(defaultStock));
+    await flush();
+
+    expect(node("stock-panel").getAttribute("aria-busy")).toBe("false");
+    expect(node("stock-loading").hidden).toBe(true);
+    expect(node("stock-list").hidden).toBe(false);
+  });
+
   it("switches languages and loads topics and queries for the new one", async () => {
     const fetched = await boot();
     const select = languageSelect();
