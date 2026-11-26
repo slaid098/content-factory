@@ -176,6 +176,27 @@ def test_deploy_job_contract() -> None:
     assert "StrictHostKeyChecking=yes" in deploy["run"]
 
 
+def test_deploy_skips_stale_main_commit() -> None:
+    steps = _workflow()["jobs"]["deploy"]["steps"]
+    names = [step.get("name") for step in steps]
+    guard = next(step for step in steps if step.get("name") == "Check main head")
+
+    assert names.index("Check main head") < names.index("Deploy")
+    assert guard["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert 'gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha' in guard["run"]
+    assert "${GITHUB_SHA}" in guard["run"]
+    assert "::notice::" in guard["run"]
+    assert "Устаревший коммит" in guard["run"]
+    assert "деплой пропущен" in guard["run"]
+    assert "exit 0" in guard["run"]
+    assert "ssh" not in guard["run"]
+
+    current = "steps.main_head.outputs.current == 'true'"
+    for name in ("Check deploy secrets", "Install SSH key", "Deploy"):
+        step = next(step for step in steps if step.get("name") == name)
+        assert step["if"] == current
+
+
 def test_deploy_script_contract() -> None:
     script = _deploy_script()
 
