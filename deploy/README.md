@@ -677,7 +677,8 @@ sudo -n /usr/local/sbin/content-factory-deploy <full-sha>
 4. делает `git fetch` (без интерактивного запроса пароля) и
    `git reset --hard <sha>`;
 5. экспортирует `IMAGE_TAG=sha-<7>`, выполняет `docker compose pull` и
-   `docker compose up -d --remove-orphans`;
+   `docker compose up -d --remove-orphans --no-build`: в проде образ только
+   скачивается из GHCR и никогда не собирается на Linux 1;
 6. до 30 раз с интервалом 2 с проверяет
    `http://127.0.0.1:8000/api/v1/stock`;
 7. проверяет `worker`: находит контейнер через `docker compose ps -q worker`
@@ -691,9 +692,18 @@ sudo -n /usr/local/sbin/content-factory-deploy <full-sha>
    локально или его тег совпадает с новым, откат невозможен — скрипт
    завершается с ненулевым кодом и не пишет state;
 9. только после обеих проверок записывает новый тег в `.deploy-image-tag`;
-10. best-effort запускает `docker compose run --rm --no-deps worker prefect
+10. удаляет старые теги `ghcr.io/slaid098/content-factory`, оставляя текущий,
+    предыдущий, `latest` и образы всех контейнеров (включая остановленные).
+    Ошибка очистки пишется в лог и не отменяет уже состоявшийся деплой;
+11. best-effort запускает `docker compose run --rm --no-deps worker prefect
     deploy --all`: ошибка Prefect логируется, но не отменяет уже выполненный
     `up -d`.
+
+Очистка на шаге 10 ограничена репозиторием
+`ghcr.io/slaid098/content-factory`: образы других стеков на Linux 1 не
+затрагиваются. Каждый деплой скачивает только свой `sha-<7>`, поэтому
+`latest` на хосте может быть старше текущего тега и остаётся запасным
+вариантом для отката при повреждённом `.deploy-image-tag`.
 
 Сервис `init` — one-shot: он завершается с кодом 0, а скрипт отдельно его не
 проверяет. `api` и `worker` объявлены с

@@ -87,7 +87,7 @@ rollback() {
     fi
     log "откат на ${IMAGE}:${previous_tag}"
     export IMAGE_TAG="$previous_tag"
-    docker compose up -d --remove-orphans
+    docker compose up -d --remove-orphans --no-build
 }
 
 healthcheck() {
@@ -186,6 +186,30 @@ workercheck() {
     return 0
 }
 
+# Каждый деплой скачивает новый тег sha-<7>, и без очистки они копятся на
+# диске. Оставляем нужное для работы и отката: образы всех контейнеров
+# (включая остановленные), текущий и предыдущий теги, latest. Чистим только
+# образы этого репозитория; ошибка очистки деплой не отменяет.
+prune_images() {
+    local keep candidate
+    if ! keep=" $(docker ps -a --format '{{.Image}}' | tr '\n' ' ') "; then
+        warn "не удалось получить список контейнеров, старые образы не удалены"
+        return 0
+    fi
+    keep+="${IMAGE}:${tag} ${IMAGE}:${previous_tag} ${IMAGE}:latest "
+    while IFS= read -r candidate; do
+        [[ "$candidate" == "<none>" ]] && continue
+        case " $keep " in
+            *" ${IMAGE}:${candidate} "*) continue ;;
+        esac
+        if docker rmi "${IMAGE}:${candidate}" >/dev/null 2>&1; then
+            log "удалён старый образ ${IMAGE}:${candidate}"
+        else
+            warn "не удалось удалить старый образ ${IMAGE}:${candidate}"
+        fi
+    done < <(docker image ls --format '{{.Tag}}' "$IMAGE")
+}
+
 log "деплой $sha (${IMAGE}:${tag})"
 
 log "обновление кода до $sha"
@@ -200,7 +224,7 @@ export IMAGE_TAG="$tag"
 docker compose pull
 
 log "перезапуск сервисов"
-if ! docker compose up -d --remove-orphans; then
+if ! docker compose up -d --remove-orphans --no-build; then
     if rollback; then
         fail "docker compose up завершился ошибкой, выполнен откат на ${previous_tag}"
     fi
@@ -222,6 +246,7 @@ if ! workercheck; then
 fi
 
 printf '%s\n' "$tag" >"$STATE_FILE"
+prune_images
 
 # Регистрация deployment не должна отменять уже выполненный up -d: при
 # недоступном Prefect контейнеры остаются на новом образе.

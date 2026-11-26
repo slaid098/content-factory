@@ -215,11 +215,44 @@ def test_deploy_script_checks_worker() -> None:
 def test_deploy_script_checks_worker_before_state_write() -> None:
     script = _deploy_script()
 
-    up = script.index("if ! docker compose up -d --remove-orphans; then")
+    up = script.index("if ! docker compose up -d --remove-orphans --no-build; then")
     worker_check = script.index("if ! workercheck; then")
     state_write = script.index('printf \'%s\\n\' "$tag" >"$STATE_FILE"')
 
     assert up < worker_check < state_write
+
+
+def test_deploy_script_never_builds_on_the_host() -> None:
+    script = _deploy_script()
+
+    assert script.count("--no-build") == 2
+    assert "docker compose up -d --remove-orphans --no-build" in script
+    assert "docker compose up -d --remove-orphans;" not in script
+
+
+def test_deploy_script_prunes_old_images_after_state_write() -> None:
+    script = _deploy_script()
+
+    state_write = script.index('printf \'%s\\n\' "$tag" >"$STATE_FILE"')
+    prune_call = script.index("\nprune_images\n")
+    prefect_deploy = script.index("prefect deploy --all")
+
+    assert state_write < prune_call < prefect_deploy
+
+
+def test_deploy_script_prune_keeps_rollback_images_and_is_best_effort() -> None:
+    script = _deploy_script()
+    start = script.index("prune_images() {")
+    end = script.index("\n}\n", start) + len("\n}\n")
+    function = script[start:end]
+
+    assert "docker ps -a --format '{{.Image}}'" in function
+    assert "${IMAGE}:${tag} ${IMAGE}:${previous_tag} ${IMAGE}:latest" in function
+    assert "docker image ls --format '{{.Tag}}' \"$IMAGE\"" in function
+    assert "docker rmi" in function
+    assert "warn" in function
+    assert "return 0" in function
+    assert "fail" not in function
 
 
 def test_deploy_script_rolls_back_when_worker_fails() -> None:
