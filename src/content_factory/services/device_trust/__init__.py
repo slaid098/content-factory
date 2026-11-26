@@ -2,6 +2,7 @@
 
 from content_factory.services.device_trust.service import (
     authenticate,
+    database_ready,
     issue_link,
     list_devices,
     redeem_link,
@@ -10,6 +11,7 @@ from content_factory.services.device_trust.service import (
 
 __all__ = [
     "authenticate",
+    "database_ready",
     "issue_link",
     "list_devices",
     "redeem_link",

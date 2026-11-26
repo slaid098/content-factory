@@ -13,11 +13,11 @@ import hashlib
 import secrets
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from content_factory.db.connection import connect
 from content_factory.db.device_trust import (
-    TrustedDeviceRow,
     activate,
     find_active,
     insert_pending,
@@ -31,6 +31,9 @@ from content_factory.schemas.device_trust.models import (
     RedeemedDevice,
     TrustedDeviceInfo,
 )
+
+if TYPE_CHECKING:
+    from content_factory.db.device_trust import TrustedDeviceRow
 
 # The label is operator-facing only; 150 is the column width.
 _LABEL_MAX_LENGTH = 150
@@ -210,6 +213,22 @@ def revoke_device(db_path: Path, device_id: str, *, now: datetime | None = None)
     return found
 
 
+def database_ready(db_path: Path) -> None:
+    """Run ``SELECT 1`` so the deploy probe sees a live database.
+
+    The probe must not read stock data, only prove that the gate can reach the
+    database at all.
+
+    Raises:
+        DatabaseError: The database cannot be opened or queried.
+    """
+    connection = connect(db_path)
+    try:
+        connection.execute("SELECT 1").fetchone()
+    finally:
+        connection.close()
+
+
 def _moment(now: datetime | None) -> datetime:
     """Return an aware UTC moment, defaulting to the current one."""
     if now is None:
@@ -299,6 +318,7 @@ def _needs_touch(row: TrustedDeviceRow, moment: datetime) -> bool:
 
 __all__ = [
     "authenticate",
+    "database_ready",
     "issue_link",
     "list_devices",
     "redeem_link",

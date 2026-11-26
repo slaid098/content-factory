@@ -26,9 +26,8 @@ from content_factory.api.device_pages import (
 )
 from content_factory.config.settings import Settings, get_settings
 from content_factory.constants import DB_DIR, DB_FILENAME
-from content_factory.db.connection import connect
-from content_factory.db.errors import DatabaseError
-from content_factory.services.device_trust import authenticate
+from content_factory.exceptions.errors import DatabaseError
+from content_factory.services.device_trust import authenticate, database_ready
 
 DEVICE_COOKIE_NAME = "device_token"
 
@@ -84,15 +83,6 @@ def _db_path(settings: Settings) -> Path:
     return settings.data_dir / DB_DIR / DB_FILENAME
 
 
-def _database_ready(db_path: Path) -> None:
-    """Run ``SELECT 1`` through the shared connection port."""
-    connection = connect(db_path)
-    try:
-        connection.execute("SELECT 1").fetchone()
-    finally:
-        connection.close()
-
-
 class DeviceGateMiddleware(BaseHTTPMiddleware):
     """Require an active trusted-device cookie before reaching the app."""
 
@@ -126,7 +116,7 @@ class DeviceGateMiddleware(BaseHTTPMiddleware):
     async def _healthcheck(self, settings: Settings) -> Response:
         """Probe the database and answer ``{"status": "ok"}`` without stock."""
         try:
-            await asyncio.to_thread(_database_ready, _db_path(settings))
+            await asyncio.to_thread(database_ready, _db_path(settings))
         except (DatabaseError, OSError) as ex:
             logger.bind(error=ex, error_type=type(ex).__name__).error(
                 "device gate: local healthcheck failed"

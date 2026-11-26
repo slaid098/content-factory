@@ -195,7 +195,7 @@ def test_healthcheck_database_failure_returns_503(
     def _fail(*_args: object, **_kwargs: object) -> None:
         raise DatabaseError("database is down")
 
-    monkeypatch.setattr("content_factory.api.device_gate.connect", _fail)
+    monkeypatch.setattr("content_factory.api.device_gate.database_ready", _fail)
 
     response = client.get("/api/v1/stock", headers={"Host": "127.0.0.1:8000"})
 

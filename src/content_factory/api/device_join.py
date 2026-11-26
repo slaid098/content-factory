@@ -19,7 +19,7 @@ from content_factory.api.device_gate import DEVICE_COOKIE_NAME
 from content_factory.api.device_pages import invalid_link_page, service_unavailable_page
 from content_factory.config.settings import Settings, get_settings
 from content_factory.constants import DB_DIR, DB_FILENAME
-from content_factory.db.errors import DatabaseError
+from content_factory.exceptions.errors import DatabaseError
 from content_factory.services.device_trust import redeem_link
 
 join_router = APIRouter(tags=["device-access"], include_in_schema=False)
