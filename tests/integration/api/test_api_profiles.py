@@ -25,7 +25,13 @@ from tests.unit.common.profile_helpers import (
 from tests.unit.generator.helpers import make_profile
 
 from content_factory.api.app import create_app
-from content_factory.constants import CONFIG_DIR, DB_DIR, PREVIEW_DIR, PROFILES_DIR
+from content_factory.constants import (
+    CONFIG_DIR,
+    DB_DIR,
+    LANGUAGES,
+    PREVIEW_DIR,
+    PROFILES_DIR,
+)
 from content_factory.services.generator.profiles import _OverlayStyle
 from content_factory.services.profiles import preview
 from content_factory.utils import prompts
@@ -136,6 +142,7 @@ def test_list_returns_profiles_with_stock_overrides_and_last_run(data_dir: Path)
         "category": "auto",
         "name": "profile_2",
         "language": "en",
+        "language_label": "Английский",
         "niche": "auto",
         "title": None,
         "summary": None,
@@ -175,11 +182,117 @@ def test_list_returns_profiles_with_stock_overrides_and_last_run(data_dir: Path)
     assert _TOKEN not in response.text
 
 
-def test_list_without_profiles_returns_empty_array(data_dir: Path) -> None:
+def test_list_without_profiles_returns_empty_list_and_full_catalog(
+    data_dir: Path,
+) -> None:
     response = _get(_client(), _PREFIX)
 
     assert response.status_code == 200
-    assert response.json() == {"profiles": []}
+    body = response.json()
+    assert body["profiles"] == []
+    assert body["niches"] == []
+    assert body["total"] == 0
+    assert [option["code"] for option in body["languages"]] == list(LANGUAGES)
+    assert {"code": "ru", "label": "Русский"} in body["languages"]
+
+
+def test_list_filters_by_language(data_dir: Path) -> None:
+    add_profile(data_dir, "dating", "profile_1", language="de")
+    add_profile(data_dir, "dating", "profile_2", language="en")
+    add_profile(data_dir, "auto", "profile_3", language="de", niche="auto")
+
+    response = _get(_client(), f"{_PREFIX}?language=de")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [profile["id"] for profile in body["profiles"]] == [
+        "auto/profile_3",
+        "dating/profile_1",
+    ]
+    assert {profile["language_label"] for profile in body["profiles"]} == {"Немецкий"}
+    assert body["total"] == 3
+    assert body["niches"] == ["auto", "dating"]
+
+
+def test_list_filters_by_niche(data_dir: Path) -> None:
+    add_profile(data_dir, "dating", "profile_1", niche="dating")
+    add_profile(data_dir, "dating", "profile_2", niche="overlay")
+    add_profile(data_dir, "auto", "profile_3", niche="dating")
+
+    response = _get(_client(), f"{_PREFIX}?niche=dating")
+
+    assert response.status_code == 200
+    assert [profile["id"] for profile in response.json()["profiles"]] == [
+        "auto/profile_3",
+        "dating/profile_1",
+    ]
+
+
+def test_list_combines_language_and_niche_filters(data_dir: Path) -> None:
+    add_profile(data_dir, "dating", "profile_1", language="de", niche="dating")
+    add_profile(data_dir, "dating", "profile_2", language="de", niche="overlay")
+    add_profile(data_dir, "auto", "profile_3", language="en", niche="dating")
+
+    response = _get(_client(), f"{_PREFIX}?language=de&niche=dating")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [profile["id"] for profile in body["profiles"]] == ["dating/profile_1"]
+    assert body["total"] == 3
+
+
+def test_list_without_matching_profiles_keeps_total_and_catalog(data_dir: Path) -> None:
+    add_profile(data_dir, "dating", "profile_1", language="de", niche="dating")
+    add_profile(data_dir, "auto", "profile_2", language="en", niche="auto")
+
+    response = _get(_client(), f"{_PREFIX}?language=ka&niche=dating")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["profiles"] == []
+    assert body["total"] == 2
+    assert body["niches"] == ["auto", "dating"]
+    assert [option["code"] for option in body["languages"]] == list(LANGUAGES)
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["language=RU", "language=ru-RU", "niche=Dating"],
+)
+def test_list_rejects_invalid_filter_format(data_dir: Path, query: str) -> None:
+    add_profile(data_dir, "dating", "profile_1")
+
+    response = _get(_client(), f"{_PREFIX}?{query}")
+
+    assert response.status_code == 422
+
+
+def test_list_defaults_a_profile_without_language_to_russian(data_dir: Path) -> None:
+    directory = add_profile(data_dir, "dating", "profile_1")
+    path = directory / "profile.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    del data["language"]
+    path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+
+    response = _get(_client(), _PREFIX)
+
+    assert response.status_code == 200
+    profile = response.json()["profiles"][0]
+    assert profile["language"] == "ru"
+    assert profile["language_label"] == "Русский"
+
+
+def test_list_adds_a_profile_language_outside_the_catalog(data_dir: Path) -> None:
+    add_profile(data_dir, "dating", "profile_1", language="kaz")
+
+    response = _get(_client(), _PREFIX)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["profiles"][0]["language_label"] == "KAZ"
+    assert {"code": "kaz", "label": "KAZ"} in body["languages"]
+    codes = [option["code"] for option in body["languages"]]
+    assert len(set(codes)) == len(codes)
 
 
 def test_list_returns_profile_title_and_summary(data_dir: Path) -> None:

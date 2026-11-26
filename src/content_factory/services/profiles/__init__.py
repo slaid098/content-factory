@@ -8,6 +8,7 @@ from content_factory.services.profiles.service import (
     is_safe_profile_id,
     list_profile_views,
     list_profiles,
+    list_profiles_response,
     preview_for_profile,
     update_profile_settings,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "is_safe_profile_id",
     "list_profile_views",
     "list_profiles",
+    "list_profiles_response",
     "preview_for_profile",
     "title_policy",
     "update_profile_settings",

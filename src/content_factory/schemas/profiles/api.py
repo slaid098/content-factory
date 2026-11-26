@@ -22,6 +22,15 @@ class ProfileLastRun(BaseModel):
     error: str | None = None
 
 
+class LanguageOption(BaseModel):
+    """One selectable language with its Russian label."""
+
+    model_config = ConfigDict(frozen=True)
+
+    code: str
+    label: str
+
+
 class ProfileResponse(BaseModel):
     """One generator profile with its video and photo stock and refill settings."""
 
@@ -31,6 +40,7 @@ class ProfileResponse(BaseModel):
     category: str
     name: str
     language: str
+    language_label: str
     niche: str
     title: str | None = None
     summary: str | None = None
@@ -52,11 +62,14 @@ class ProfileResponse(BaseModel):
 
 
 class ProfilesResponse(BaseModel):
-    """Every readable profile of the registry."""
+    """Every readable profile of the registry and the filters of its list."""
 
     model_config = ConfigDict(frozen=True)
 
     profiles: tuple[ProfileResponse, ...]
+    languages: tuple[LanguageOption, ...]
+    niches: tuple[str, ...]
+    total: int = Field(ge=0)
 
 
 class ProductionCheck(BaseModel):
@@ -249,6 +262,7 @@ class ProfileUpdateRequest(BaseModel):
 
 
 __all__ = [
+    "LanguageOption",
     "ProductionCheck",
     "ProductionStep",
     "ProfileDeliverySettings",

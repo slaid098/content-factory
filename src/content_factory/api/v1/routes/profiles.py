@@ -6,7 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi import Path as PathParam
 from fastapi.responses import FileResponse
 from loguru import logger
@@ -18,7 +18,12 @@ from content_factory.api.v1.routes.content import (
 )
 from content_factory.config.runtime import load_runtime_config
 from content_factory.config.settings import Settings, load_generator_settings
-from content_factory.constants import CONFIG_DIR, CONFIG_FILENAME
+from content_factory.constants import (
+    CONFIG_DIR,
+    CONFIG_FILENAME,
+    LANGUAGE_CODE_RE,
+    NICHE_CODE_RE,
+)
 from content_factory.exceptions.errors import (
     ConfigError,
     ProfilePreviewError,
@@ -38,7 +43,7 @@ from content_factory.schemas.profiles.api import (
     PromptTextRequest,
 )
 from content_factory.services.profiles import (
-    list_profile_views,
+    list_profiles_response,
     preview_for_profile,
     update_profile_settings,
 )
@@ -63,20 +68,23 @@ _AUTH_RESPONSES: dict[int | str, dict[str, str]] = {
     response_model=ProfilesResponse,
     responses={
         **_AUTH_RESPONSES,
+        status.HTTP_422_UNPROCESSABLE_ENTITY: {"description": "Invalid language or niche format"},
         status.HTTP_500_INTERNAL_SERVER_ERROR: {"description": "Profiles cannot be read"},
     },
 )
 def list_profiles(
     settings: Annotated[Settings, Depends(require_delivery_token)],
+    language: Annotated[str | None, Query(pattern=LANGUAGE_CODE_RE.pattern)] = None,
+    niche: Annotated[str | None, Query(pattern=NICHE_CODE_RE.pattern)] = None,
 ) -> ProfilesResponse:
-    """Return every readable profile with its stock and refill settings."""
+    """Return the filtered profiles with their stock, refill and filter catalog."""
     output_dir, global_config = _context(settings)
-    return ProfilesResponse(
-        profiles=list_profile_views(
-            settings.data_dir,
-            output_dir=output_dir,
-            global_config=global_config,
-        )
+    return list_profiles_response(
+        settings.data_dir,
+        output_dir=output_dir,
+        global_config=global_config,
+        language=language,
+        niche=niche,
     )
 
 
