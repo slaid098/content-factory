@@ -230,7 +230,7 @@ class GeneratorSettings(_OpenAIEndpointSettings):
     vast_api_token: SecretStr | None = Field(default=None, validation_alias="VAST_API_TOKEN")
     model: str = Field(default="deepseek-v4.1-flash", min_length=1)
     server_ready_timeout: int = Field(default=3600, ge=60)
-    rent_pool_size: int = Field(default=3, ge=1, le=8)
+    rent_pool_size: int = Field(default=1, ge=1, le=8)
     videos_per_server: int = Field(default=7, ge=1, le=100)
     max_servers: int = Field(default=4, ge=1, le=10)
     offer_refresh_seconds: int = Field(default=60, ge=10, le=600)

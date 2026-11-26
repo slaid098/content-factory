@@ -49,14 +49,15 @@ def test_blank_optional_values_become_none(monkeypatch) -> None:
     assert settings.api_key is None
 
 
-def test_rent_pool_size_defaults_to_three() -> None:
-    assert GeneratorSettings().rent_pool_size == 3
-
-
-def test_rent_pool_size_reads_the_env(monkeypatch) -> None:
-    monkeypatch.setenv("GENERATOR_RENT_POOL_SIZE", "1")
-
+def test_rent_pool_size_defaults_to_one() -> None:
     assert GeneratorSettings().rent_pool_size == 1
+
+
+@pytest.mark.parametrize("value", ["1", "3"])
+def test_rent_pool_size_reads_the_env(monkeypatch, value: str) -> None:
+    monkeypatch.setenv("GENERATOR_RENT_POOL_SIZE", value)
+
+    assert GeneratorSettings().rent_pool_size == int(value)
 
 
 @pytest.mark.parametrize("value", ["0", "9"])
