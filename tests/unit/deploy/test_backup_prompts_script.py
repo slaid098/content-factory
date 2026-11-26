@@ -10,18 +10,23 @@ _ROOT = Path(__file__).resolve().parents[3]
 _SCRIPT = _ROOT / "scripts" / "backup_prompts.sh"
 
 
-def _run(app_data: Path, backup: Path, remote: Path) -> None:
+def _run(
+    app_data: Path,
+    backup: Path,
+    remote: Path,
+    *,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
         "APP_DATA_DIR": str(app_data),
         "BACKUP_DIR": str(backup),
         "BACKUP_REMOTE": str(remote),
-        "LOCK_FILE": str(backup.parent / "snapshot.lock"),
     }
-    subprocess.run(
+    return subprocess.run(
         ["bash", str(_SCRIPT)],
         env=env,
-        check=True,
+        check=check,
         capture_output=True,
         text=True,
     )
@@ -87,3 +92,15 @@ def test_second_run_without_changes_adds_no_commit(tmp_path: Path) -> None:
     second = _commits(remote)
 
     assert first == second == 1
+
+
+def test_symlink_lock_is_rejected(tmp_path: Path) -> None:
+    app_data, remote, backup = _prepare(tmp_path)
+    victim = tmp_path / "victim"
+    victim.write_text("keep\n", encoding="utf-8")
+    Path(f"{backup}.lock").symlink_to(victim)
+
+    result = _run(app_data, backup, remote, check=False)
+
+    assert result.returncode == 1
+    assert victim.read_text(encoding="utf-8") == "keep\n"

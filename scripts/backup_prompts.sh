@@ -11,7 +11,7 @@ APP_DATA_DIR="${APP_DATA_DIR:-${REPO_DIR}/app_data}"
 BACKUP_DIR="${BACKUP_DIR:-/root/dockers/content-factory-prompts}"
 BACKUP_REMOTE="${BACKUP_REMOTE:-ssh://git@git.slaid098.dev:2222/slaid098/content-factory-prompts.git}"
 BACKUP_SSH_KEY="${BACKUP_SSH_KEY:-/root/.ssh/content-factory-prompts}"
-LOCK_FILE="${LOCK_FILE:-/tmp/content-factory-prompts.lock}"
+LOCK_FILE="${LOCK_FILE:-${BACKUP_DIR}.lock}"
 BRANCH="main"
 
 export GIT_SSH_COMMAND="ssh -i ${BACKUP_SSH_KEY} -p 2222 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
@@ -33,18 +33,23 @@ copy_text_files() {
         -exec cp -p --parents -t "$target" {} +
 }
 
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-    log "предыдущий снимок ещё выполняется, пропуск"
-    exit 0
-fi
-
 if [[ ! -d "${APP_DATA_DIR}/profiles" ]]; then
     log "нет каталога ${APP_DATA_DIR}/profiles"
     exit 1
 fi
 
 mkdir -p -- "$BACKUP_DIR"
+
+if [[ -L "${LOCK_FILE}" ]]; then
+    log "lock-файл является симлинком: ${LOCK_FILE}"
+    exit 1
+fi
+
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    log "предыдущий снимок ещё выполняется, пропуск"
+    exit 0
+fi
 
 if [[ ! -d "${BACKUP_DIR}/.git" ]]; then
     git -C "$BACKUP_DIR" init -q -b "$BRANCH"
