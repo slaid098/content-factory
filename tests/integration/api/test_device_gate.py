@@ -40,6 +40,19 @@ def test_api_without_cookie_returns_json_403(client: TestClient) -> None:
     assert response.json() == {"detail": "device not trusted"}
 
 
+def test_version_endpoint_is_open_without_cookie(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GIT_SHA", "a" * 40)
+    monkeypatch.setenv("BUILT_AT", "2026-01-01T00:00:00Z")
+
+    response = client.get("/api/version")
+
+    assert response.status_code == 200
+    assert response.json()["version"] == "a" * 40
+
+
 def test_page_without_cookie_is_a_self_contained_html_403(client: TestClient) -> None:
     response = client.get("/docs")
 

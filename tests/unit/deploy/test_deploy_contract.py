@@ -134,6 +134,7 @@ def test_workflow_triggers() -> None:
 
     assert triggers["push"]["branches"] == ["main"]
     assert triggers["pull_request"]["branches"] == ["main"]
+    assert triggers["schedule"] == [{"cron": "0 2 * * *"}]
     assert "workflow_dispatch" in triggers
 
 
@@ -149,19 +150,59 @@ def test_workflow_jobs_and_permissions() -> None:
     for job_name in ("build-push", "deploy"):
         condition = jobs[job_name]["if"]
         assert "github.ref == 'refs/heads/main'" in condition
-        assert "github.event_name == 'push'" in condition
+        assert "github.event_name == 'schedule'" in condition
         assert "github.event_name == 'workflow_dispatch'" in condition
+        assert "github.event_name == 'push'" not in condition
 
 
 def test_build_push_publishes_latest_and_short_sha() -> None:
     steps = _workflow()["jobs"]["build-push"]["steps"]
-    short_sha = next(step for step in steps if step.get("id") == "image")
+    image = next(step for step in steps if step.get("id") == "image")
     build = _build_push_step()
 
-    assert "sha-${GITHUB_SHA::7}" in short_sha["run"]
+    assert "sha-${GITHUB_SHA::7}" in image["run"]
+    assert "date -u" in image["run"]
     tags = build["with"]["tags"]
     assert "ghcr.io/slaid098/content-factory:latest" in tags
     assert "ghcr.io/slaid098/content-factory:${{ steps.image.outputs.tag }}" in tags
+
+
+def test_build_push_bakes_release_identity() -> None:
+    build = _build_push_step()["with"]
+
+    assert "GIT_SHA=${{ github.sha }}" in build["build-args"]
+    assert "BUILT_AT=${{ steps.image.outputs.built_at }}" in build["build-args"]
+
+
+def test_prod_dockerfile_bakes_release_identity() -> None:
+    dockerfile = (_ROOT / _PROD_DOCKERFILE).read_text(encoding="utf-8")
+
+    assert "ARG GIT_SHA=unknown" in dockerfile
+    assert "ARG BUILT_AT=unknown" in dockerfile
+    assert "GIT_SHA=${GIT_SHA}" in dockerfile
+    assert "BUILT_AT=${BUILT_AT}" in dockerfile
+
+
+def test_release_job_contract() -> None:
+    workflow = _workflow()
+    jobs = workflow["jobs"]
+    job = jobs["release"]
+
+    assert job["needs"] == "deploy"
+    assert job["if"] == "needs.deploy.outputs.deployed == 'true'"
+    assert job["permissions"] == {"contents": "write", "pull-requests": "read"}
+    assert jobs["deploy"]["outputs"]["deployed"] == "${{ steps.main_head.outputs.current }}"
+    assert job["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert job["env"]["GIT_SHA"] == "${{ github.sha }}"
+
+    checkout = next(step for step in job["steps"] if step.get("uses") == "actions/checkout@v4")
+    assert checkout["with"] == {"fetch-depth": 0, "fetch-tags": True}
+
+    runs = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "http://127.0.0.1:8000/api/version" in runs
+    assert "scripts/release.py" in runs
+    assert "GIT_SHA" in runs
+    assert "тег ставится на фактический SHA" in runs
 
 
 def test_deploy_job_contract() -> None:

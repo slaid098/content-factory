@@ -194,7 +194,9 @@ CF ведёт очередь исходников и буфер готовых �
 `./app_data` переживает пересоздание контейнеров, партнёр забирает файлы по
 SFTP, конфиг и запросы уходят в ночной бэкап. Образ собирается в CI и
 публикуется в GHCR (`ghcr.io/slaid098/content-factory`), деплой на Linux 1
-идёт автоматически после зелёного `main`.
+идёт по расписанию и вручную через `workflow_dispatch` из `main`; push в
+`main` только прогоняет CI. После деплоя workflow публикует GitHub Release с
+тегом `release-YYYY.MM.DD-<short-sha>` на выкаченный SHA.
 
 ```bash
 docker compose pull

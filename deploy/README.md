@@ -34,17 +34,19 @@ Linux 1. Корень принадлежит root, поэтому деплой-�
 
 ## 2. Контур CI/CD
 
-`.github/workflows/ci.yml` состоит из трёх job'ов:
+`.github/workflows/ci.yml` состоит из четырёх job'ов:
 
 | Job | Когда | Что делает |
 |---|---|---|
-| `ci` | push и PR в `main` | `ruff check`, `ruff format --check`, `mypy`, `pytest` |
-| `build-push` | после `ci`, только push в `main` или `workflow_dispatch` из `main` | собирает образ и пушит `latest` и `sha-<7>` |
+| `ci` | push и PR в `main`, по расписанию и `workflow_dispatch` | `ruff check`, `ruff format --check`, `mypy`, `pytest` |
+| `build-push` | после `ci`, только по расписанию или `workflow_dispatch` из `main` | собирает образ с SHA и временем сборки и пушит `latest` и `sha-<7>` |
 | `deploy` | после `build-push` | заходит по SSH на Linux 1 и запускает `/usr/local/sbin/content-factory-deploy <full-sha>` |
+| `release` | после успешного `deploy` | читает фактический SHA через `/api/version`, ставит тег `release-YYYY.MM.DD-<short-sha>` и публикует GitHub Release |
 
-Красный `ci` останавливает цепочку: `build-push` объявлен с `needs: ci`, а
-`deploy` — с `needs: build-push`. PR и push в другие ветки не собирают и не
-деплоят образ.
+Push в `main` больше не запускает сборку и деплой: код попадает на прод
+ночным запуском по расписанию или ручным `workflow_dispatch` из `main`.
+Красный `ci` останавливает цепочку: `build-push` объявлен с `needs: ci`,
+`deploy` — с `needs: build-push`, `release` — с `needs: deploy`.
 
 Образ: `ghcr.io/slaid098/content-factory`. Теги:
 
@@ -52,8 +54,13 @@ Linux 1. Корень принадлежит root, поэтому деплой-�
 - `sha-<7>` — первые 7 символов `github.sha`, иммутабельный тег для отката.
 
 `deploy` использует `concurrency: group: deploy-production` с
-`cancel-in-progress: false`: одновременные пуши в `main` выполняются по
-очереди, текущий деплой не обрывается.
+`cancel-in-progress: false`: одновременные запуски выполняются по очереди,
+текущий деплой не обрывается.
+
+`release` пропускается, если `deploy` пропустил устаревший SHA или упал.
+Тег ставится на фактический SHA с прод-хоста, а не на `github.sha`; notes
+содержат только заголовки PR и ссылки. Повторный деплой того же SHA не
+создаёт второй Release.
 
 Секретов в репозитории нет. Workflow получает их из GitHub Secrets:
 
@@ -574,7 +581,7 @@ sudo /usr/local/sbin/content-factory-deploy not-a-sha; echo "exit=$?"  # 2
 
 ### 8.3 Первый запуск
 
-Запустите workflow вручную из `main` (или сделайте push в `main`):
+Запустите workflow вручную из `main`:
 
 ```bash
 gh workflow run ci.yml --ref main
@@ -582,9 +589,11 @@ gh run watch
 ```
 
 Цепочка: `ci` → `build-push` (образ `latest` и `sha-<7>`) → `deploy`
-(`sudo /usr/local/sbin/content-factory-deploy <full-sha>`). Деплой-скрипт
-проверит SHA, обновит git-чекаут, выполнит `docker compose pull`, поднимет
-сервисы, дождётся здорового API и стабильного `worker`.
+(`sudo /usr/local/sbin/content-factory-deploy <full-sha>`) → `release`.
+Деплой-скрипт проверит SHA, обновит git-чекаут, выполнит `docker compose
+pull`, поднимет сервисы, дождётся здорового API и стабильного `worker`.
+После этого `release` прочитает `/api/version` на хосте и поставит тег и
+GitHub Release на фактический SHA.
 
 Проверка на Linux 1:
 
@@ -778,8 +787,10 @@ sudo env IMAGE_TAG="$(sudo cat .deploy-image-tag)" docker compose up -d worker
 
 ## 11. Обновление и обслуживание
 
-Обычное обновление — push в `main`. CI собирает образ, деплой обновляет
-Linux 1 и регистрирует deployment в Prefect.
+Обычное обновление — ночной запуск workflow по расписанию или ручной
+`workflow_dispatch` из `main`. Push в `main` только прогоняет CI и не
+деплоит. CI собирает образ, деплой обновляет Linux 1 и регистрирует
+deployment в Prefect, release публикует тег и GitHub Release.
 
 Ручной прогон того же контура:
 

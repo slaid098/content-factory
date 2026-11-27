@@ -17,6 +17,7 @@ from content_factory.api.v1.routes.profiles import profiles_router
 from content_factory.api.v1.routes.queries import queries_router
 from content_factory.api.v1.routes.settings import settings_router
 from content_factory.api.v1.routes.stock import stock_router
+from content_factory.api.version import version_router
 from content_factory.config.settings import Settings
 from content_factory.services.delivery import (
     create_cleanup_scheduler,
@@ -48,6 +49,7 @@ def create_app() -> FastAPI:
     """Build the FastAPI application."""
     app = FastAPI(title="content-factory", version="0.1.0", lifespan=_lifespan)
     app.add_middleware(DeviceGateMiddleware)
+    app.include_router(version_router)
     app.include_router(stock_router, prefix="/api/v1", tags=["stock"])
     app.include_router(content_router, prefix="/api/v1", tags=["content"])
     app.include_router(profiles_router, prefix="/api/v1", tags=["content"])

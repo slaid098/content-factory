@@ -66,11 +66,20 @@ class Settings(BaseSettings):
     device_ttl_days: int = Field(default=180, ge=1, le=3650)
     device_cookie_secure: bool = True
     public_base_url: str = "https://content.slaid098.dev"
+    git_sha: str = Field(default="unknown", validation_alias="GIT_SHA")
+    built_at: str | None = Field(default=None, validation_alias="BUILT_AT")
 
     @field_validator("data_dir")
     @classmethod
     def _expand_user(cls, value: Path) -> Path:
         return value.expanduser()
+
+    @field_validator("git_sha", mode="before")
+    @classmethod
+    def _default_git_sha(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            return "unknown"
+        return value.strip()
 
     @field_validator("public_base_url")
     @classmethod
@@ -86,6 +95,7 @@ class Settings(BaseSettings):
         "telegram_bot_token",
         "telegram_chat_id",
         "delivery_token",
+        "built_at",
         mode="before",
     )
     @classmethod
