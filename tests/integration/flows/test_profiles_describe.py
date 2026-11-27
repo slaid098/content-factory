@@ -35,15 +35,23 @@ def _flow_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 class _Writer:
     """Text model double that fails for profiles named in *failing*."""
 
-    def __init__(self, failing: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        failing: tuple[str, ...] = (),
+        answer: str | None = None,
+    ) -> None:
         self.failing = failing
+        self.answer = answer or json.dumps(
+            {"title": _TITLE, "summary": _SUMMARY},
+            ensure_ascii=False,
+        )
         self.prompts: list[str] = []
 
     def write(self, system_prompt: str, user_prompt: str = "") -> str:
         self.prompts.append(system_prompt)
         if any(f"name (имя): {name}" in system_prompt for name in self.failing):
             raise TextError("текстовая модель недоступна")
-        return json.dumps({"title": _TITLE, "summary": _SUMMARY}, ensure_ascii=False)
+        return self.answer
 
 
 def _data(profile: Path) -> dict[str, Any]:
@@ -110,3 +118,49 @@ def test_second_run_skips_the_described_profile(tmp_path: Path) -> None:
 
     assert profiles_describe.fn(writer=second) == "described=0 skipped=1 failed=0"
     assert second.prompts == []
+
+
+def test_force_describes_a_filled_profile(tmp_path: Path) -> None:
+    filled = add_profile(
+        tmp_path,
+        "dating",
+        "profile_1",
+        title="Старое название",
+        summary="Старое описание профиля для оператора без конкретной сцены.",
+    )
+    writer = _Writer()
+
+    outcome = profiles_describe.fn(writer=writer, force=True)
+
+    assert outcome == "described=1 skipped=0 failed=0"
+    assert len(writer.prompts) == 1
+    assert "name (имя): profile_1" in writer.prompts[0]
+    data = _data(filled)
+    assert data["title"] == _TITLE
+    assert data["summary"] == _SUMMARY
+
+
+def test_force_generic_answer_fails_and_keeps_old_fields(tmp_path: Path) -> None:
+    filled = add_profile(
+        tmp_path,
+        "dating",
+        "profile_1",
+        title="Старое название",
+        summary="Старое описание профиля для оператора без конкретной сцены.",
+    )
+    generic = json.dumps(
+        {
+            "title": "Контент в Content Factory",
+            "summary": "Генератор создаёт контент для профиля в Content Factory.",
+        },
+        ensure_ascii=False,
+    )
+    writer = _Writer(answer=generic)
+
+    outcome = profiles_describe.fn(writer=writer, force=True)
+
+    assert outcome == "described=0 skipped=0 failed=1"
+    assert len(writer.prompts) == 2
+    data = _data(filled)
+    assert data["title"] == "Старое название"
+    assert data["summary"] == "Старое описание профиля для оператора без конкретной сцены."
