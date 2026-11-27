@@ -66,7 +66,7 @@ from content_factory.services.generator.report import (
     _write_report,
 )
 from content_factory.services.generator.rotation import read_profile_cursor
-from content_factory.services.generator.vast import VastSession
+from content_factory.services.generator.session_factory import _production_sessions
 from content_factory.services.generator.workflow import build_workflow
 from content_factory.utils.run_id import profile_run_dir, validate_run_id
 
@@ -244,7 +244,7 @@ def _run_all(
             run_dir,
             report,
             config,
-            session_factory or VastSession,
+            session_factory or _production_sessions(data_root, run_id),
             client_factory or comfy.ComfyClient,
             text_writer,
             store,

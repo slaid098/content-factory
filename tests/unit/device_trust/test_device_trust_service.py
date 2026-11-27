@@ -230,4 +230,4 @@ def test_migration_creates_the_trusted_devices_table(connection: Connection) -> 
     versions = connection.execute(
         "SELECT version FROM schema_migrations ORDER BY version"
     ).fetchall()
-    assert [row[0] for row in versions] == ["0001", "0002", "0003", "0004"]
+    assert [row[0] for row in versions] == ["0001", "0002", "0003", "0004", "0005"]

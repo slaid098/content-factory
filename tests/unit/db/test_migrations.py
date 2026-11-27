@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,8 +11,9 @@ import pytest
 from content_factory.config.settings import get_settings
 from content_factory.db import connection as connection_module
 from content_factory.db.connection import connect
-from content_factory.db.errors import DatabaseError
+from content_factory.db.errors import DatabaseError, IntegrityError
 from content_factory.db.migrations import runner
+from content_factory.db.migrations.runner import applied_versions
 
 
 class _EmptyCursor:
@@ -119,3 +121,45 @@ def test_connect_closes_the_connection_when_migrations_fail(
 
     assert fake.events[-1] == "close"
     assert "unlock" in fake.events
+
+
+def test_generator_servers_migration_is_idempotent_and_keeps_contract_unique(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "db" / "db.sqlite3"
+    connection = connect(db_path)
+    try:
+        assert connection.has_table("generator_servers")
+        assert "0005" in applied_versions(connection)
+        assert connection.columns("generator_servers") == {
+            "id",
+            "run_id",
+            "profile",
+            "status",
+            "contract_id",
+            "ip",
+            "port",
+            "gpu",
+            "image",
+            "cost_per_hour",
+            "created_at",
+            "updated_at",
+            "destroyed_at",
+            "last_error",
+        }
+
+        migration = importlib.import_module("content_factory.db.migrations.0005_generator_servers")
+        migration.apply(connection)
+        migration.apply(connection)
+
+        insert = (
+            "INSERT INTO generator_servers (id, status, created_at, updated_at, contract_id) "
+            "VALUES (?, ?, ?, ?, ?)"
+        )
+        connection.execute(insert, ("s1", "renting", "t0", "t0", None))
+        connection.execute(insert, ("s2", "renting", "t0", "t0", None))
+        connection.execute(insert, ("s3", "ready", "t0", "t0", "c1"))
+        with pytest.raises(IntegrityError):
+            connection.execute(insert, ("s4", "ready", "t0", "t0", "c1"))
+    finally:
+        connection.close()

@@ -71,3 +71,17 @@ deployments:
         timezone: UTC
         active: true
     concurrency_limit: 1
+
+  - name: generator_recovery
+    description: "Погашение осиротевших серверов генератора Vast.ai"
+    entrypoint: src/content_factory/flows/generator_recovery/flow.py:generator_recovery
+    work_pool:
+      name: content-factory
+    # Частый тик: свободный GENERATOR_LOCK означает, что аренда не идёт,
+    # и осиротевший сервер нужно погасить в пределах grace-периода.
+    schedules:
+      - slug: every-2-minutes
+        cron: "*/2 * * * *"
+        timezone: UTC
+        active: true
+    concurrency_limit: 1
