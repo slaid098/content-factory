@@ -7,15 +7,13 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from loguru import logger
 
 from content_factory.config.settings import GeneratorSettings
-from content_factory.db.errors import DatabaseError
-from content_factory.db.server_journal import ServerJournal
-from content_factory.exceptions.generator import RentError
+from content_factory.exceptions.generator import JournalError, RentError
 from content_factory.schemas.generator.server import ServerConnection, ServerInfo
 from content_factory.services.generator.profiles import _Profile
 from content_factory.services.generator.vast_cli import (
@@ -24,6 +22,9 @@ from content_factory.services.generator.vast_cli import (
     _VastFatal,
     _VastTransient,
 )
+
+if TYPE_CHECKING:
+    from content_factory.schemas.generator.journal import ServerJournal
 
 GENERATOR_LABEL = "content-factory-generator"
 _LABEL = GENERATOR_LABEL
@@ -508,7 +509,7 @@ class VastSession:
                 image=self._profile.image,
                 cost_per_hour=cost,
             )
-        except DatabaseError as ex:
+        except JournalError as ex:
             raise RentError(f"журнал серверов недоступен, аренда {offer_id} отменена: {ex}") from ex
 
     def _journal_call(
@@ -520,7 +521,7 @@ class VastSession:
         """Run one journal update; a database failure must not leak a server."""
         try:
             call()
-        except DatabaseError as ex:
+        except JournalError as ex:
             logger.bind(
                 contract_id=contract_id,
                 action=action,

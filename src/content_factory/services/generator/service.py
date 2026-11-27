@@ -16,8 +16,7 @@ from content_factory.config.settings import (
     get_settings,
     load_generator_settings,
 )
-from content_factory.constants import DB_DIR, DB_FILENAME, PROFILES_DIR
-from content_factory.db.server_journal import ServerJournal
+from content_factory.constants import PROFILES_DIR
 from content_factory.exceptions.generator import GeneratorError
 from content_factory.schemas.generator.pipeline import Layer, content_type
 from content_factory.schemas.generator.run import (
@@ -67,7 +66,7 @@ from content_factory.services.generator.report import (
     _write_report,
 )
 from content_factory.services.generator.rotation import read_profile_cursor
-from content_factory.services.generator.vast import VastSession
+from content_factory.services.generator.session_factory import _production_sessions
 from content_factory.services.generator.workflow import build_workflow
 from content_factory.utils.run_id import profile_run_dir, validate_run_id
 
@@ -256,16 +255,6 @@ def _run_all(
         generated += report.totals.generated
         failed += report.totals.failed
     return run_dirs, generated, failed
-
-
-def _production_sessions(data_root: Path, run_id: str) -> _SessionFactory:
-    """Build the rental factory that journals every Vast.ai server."""
-    journal = ServerJournal(data_root / DB_DIR / DB_FILENAME)
-
-    def create(profile: _Profile, settings: GeneratorSettings) -> VastSession:
-        return VastSession(profile, settings, journal=journal, run_id=run_id)
-
-    return create
 
 
 def _prepare(

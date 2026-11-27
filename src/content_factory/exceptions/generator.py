@@ -21,6 +21,10 @@ class RentError(GeneratorError):
     """Raised when a Vast.ai server cannot be rented, prepared or destroyed."""
 
 
+class JournalError(GeneratorError):
+    """Raised when the rented-server journal cannot be read or written."""
+
+
 class ComfyError(GeneratorError):
     """Raised when ComfyUI rejects a workflow or stops returning results."""
 

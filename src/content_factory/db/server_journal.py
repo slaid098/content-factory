@@ -3,7 +3,9 @@
 Every method opens its own connection, so the journal is safe to use from the
 thread pool that races rental offers. The methods are small adapters over
 :mod:`content_factory.db.generator_servers`; the recovery flow uses the same
-repository functions directly.
+repository functions directly. Database failures are translated into
+:class:`~content_factory.exceptions.generator.JournalError`, so the generator
+capsule catches one domain error and never imports the database layer.
 """
 
 from __future__ import annotations
@@ -14,8 +16,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from loguru import logger
+
 from content_factory.db import generator_servers
 from content_factory.db.connection import Connection, connect
+from content_factory.db.errors import DatabaseError
+from content_factory.exceptions.generator import JournalError
 from content_factory.schemas.generator.server import ServerConnection
 
 
@@ -97,16 +103,42 @@ class ServerJournal:
 
 @contextmanager
 def _write(db_path: Path) -> Iterator[Connection]:
-    """Open one write connection and commit the block as a transaction."""
-    connection = connect(db_path)
+    """Open one write connection, commit the block and translate DB failures."""
+    try:
+        connection = connect(db_path)
+    except DatabaseError as ex:
+        raise JournalError(f"журнал серверов недоступен: {ex}") from ex
     try:
         yield connection
         connection.commit()
+    except DatabaseError as ex:
+        _rollback(connection)
+        raise JournalError(f"журнал серверов недоступен: {ex}") from ex
     except BaseException:
-        connection.rollback()
+        _rollback(connection)
         raise
     finally:
+        _close(connection)
+
+
+def _rollback(connection: Connection) -> None:
+    """Roll back the current transaction without masking the original error."""
+    try:
+        connection.rollback()
+    except DatabaseError as ex:
+        logger.bind(error=str(ex), error_type=type(ex).__name__).warning(
+            f"Журнал серверов: откат транзакции не удался: {ex}"
+        )
+
+
+def _close(connection: Connection) -> None:
+    """Close the connection without masking the original error."""
+    try:
         connection.close()
+    except DatabaseError as ex:
+        logger.bind(error=str(ex), error_type=type(ex).__name__).warning(
+            f"Журнал серверов: соединение не закрылось: {ex}"
+        )
 
 
 def _now() -> str:

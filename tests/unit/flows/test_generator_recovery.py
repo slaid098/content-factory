@@ -13,7 +13,8 @@ from content_factory.db.connection import connect
 from content_factory.db.errors import DatabaseError
 from content_factory.db.lock import GENERATOR_LOCK, lock_path, try_acquire
 from content_factory.exceptions.generator import RentError
-from content_factory.flows.generator_recovery import flow as recovery
+from content_factory.flows.generator_recovery import flow as flow_module
+from content_factory.flows.generator_recovery import recovery as recovery_module
 from content_factory.flows.generator_recovery.flow import generator_recovery
 from content_factory.services.generator.vast import (
     GENERATOR_LABEL,
@@ -28,7 +29,7 @@ _NOW = 1_800_000_000.0
 def _flow_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Point the flow at an isolated data directory and a fixed clock."""
     monkeypatch.setenv("CONTENT_FACTORY_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(recovery, "time", lambda: _NOW)
+    monkeypatch.setattr(flow_module, "time", lambda: _NOW)
 
 
 def _iso(seconds: float) -> str:
@@ -265,7 +266,7 @@ def test_failed_teardown_keeps_the_row_for_the_next_tick(
     def failing(provider: VastProvider, contract_id: str) -> bool:
         raise RentError("still there")
 
-    monkeypatch.setattr(recovery, "destroy_verified", failing)
+    monkeypatch.setattr(recovery_module, "destroy_verified", failing)
     first = _run(provider)  # type: ignore[arg-type]
 
     assert first == "destroyed=0 lost=0 failed=1"
@@ -274,7 +275,7 @@ def test_failed_teardown_keeps_the_row_for_the_next_tick(
     assert row.last_error == "still there"
     assert set(provider.instances) == {"c1"}
 
-    monkeypatch.setattr(recovery, "destroy_verified", destroy_verified)
+    monkeypatch.setattr(recovery_module, "destroy_verified", destroy_verified)
     second = _run(provider)  # type: ignore[arg-type]
 
     assert second == "destroyed=1 lost=0 failed=0"
@@ -312,7 +313,7 @@ def test_database_error_returns_an_outcome_without_raising(
     def broken(_path: Path):
         raise DatabaseError("database is down")
 
-    monkeypatch.setattr(recovery, "connect", broken)
+    monkeypatch.setattr(flow_module, "connect", broken)
     provider = _Provider([_instance(age_minutes=11)])
 
     outcome = _run(provider)  # type: ignore[arg-type]

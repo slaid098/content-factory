@@ -10,6 +10,7 @@ from content_factory.db import generator_servers
 from content_factory.db.connection import connect
 from content_factory.db.errors import IntegrityError
 from content_factory.db.server_journal import ServerJournal
+from content_factory.exceptions.generator import JournalError
 from content_factory.schemas.generator.server import ServerConnection
 
 _T0 = "2026-11-27T10:00:00+00:00"
@@ -161,3 +162,16 @@ def test_server_journal_writes_through_its_own_connections(tmp_path: Path) -> No
     assert row.destroyed_at is not None
     assert row.run_id == "run-1"
     assert row.profile == "dating/profile_1"
+
+
+def test_journal_translates_database_failures_to_the_domain_error(tmp_path: Path) -> None:
+    journal = ServerJournal(tmp_path)
+
+    with pytest.raises(JournalError, match="журнал серверов"):
+        journal.start(
+            run_id=None,
+            profile=None,
+            gpu=None,
+            image=None,
+            cost_per_hour=None,
+        )
