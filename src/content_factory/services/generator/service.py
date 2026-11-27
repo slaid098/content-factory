@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import random
-import threading
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 from loguru import logger
 
@@ -18,27 +17,11 @@ from content_factory.config.settings import (
 )
 from content_factory.constants import PROFILES_DIR
 from content_factory.exceptions.generator import GeneratorError
-from content_factory.schemas.generator.pipeline import Layer, content_type
-from content_factory.schemas.generator.run import (
-    RunItem,
-    RunReport,
-    RunServer,
-    RunStatus,
-    RunStep,
-)
-from content_factory.schemas.generator.server import ServerInfo
+from content_factory.schemas.generator.journal import RunJournal
+from content_factory.schemas.generator.run import RunStatus
 from content_factory.schemas.generator.text import TextWriter
-from content_factory.services import production
-from content_factory.services.generator import (
-    comfy,
-    media,
-    overlay,
-    profiles,
-    qa,
-    rotation,
-    safety,
-    texts,
-)
+from content_factory.services.generator import media, profiles, rotation, safety
+from content_factory.services.generator.batch import _run_all
 from content_factory.services.generator.comfy import (
     _ClientFactory,
     _SessionFactory,
@@ -46,8 +29,8 @@ from content_factory.services.generator.comfy import (
 )
 from content_factory.services.generator.plan import (
     _PlannedItem,
-    attempt_seed,
     plan_batch,
+    planned_item,
     validate_count,
 )
 from content_factory.services.generator.profiles import (
@@ -57,21 +40,12 @@ from content_factory.services.generator.profiles import (
     parse_names,
     vast_layer,
 )
-from content_factory.services.generator.publish import publish_stock
-from content_factory.services.generator.report import (
-    _FINAL_DIR,
-    _finalize,
-    _report,
-    _status,
-    _write_report,
-)
+from content_factory.services.generator.report import _status
+from content_factory.services.generator.resume import resume_unfinished
 from content_factory.services.generator.rotation import read_profile_cursor
-from content_factory.services.generator.session_factory import _production_sessions
-from content_factory.services.generator.workflow import build_workflow
-from content_factory.utils.run_id import profile_run_dir, validate_run_id
+from content_factory.utils.run_id import validate_run_id
 
-_SOURCE_DIR = "source"
-_TEXT_DIR = "text"
+PlannedItem = _PlannedItem
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +75,8 @@ def generate_batch(
     safety_checker: safety._Checker | None = None,
     rng: random.Random | None = None,
     now: datetime | None = None,
+    journal: RunJournal | None = None,
+    plan: Sequence[_PlannedItem] | None = None,
 ) -> _BatchResult:
     """Produce a batch of dating videos and write ``run.json``.
 
@@ -126,6 +102,8 @@ def generate_batch(
         safety_checker: Clef frame checker; tests inject a fake one.
         rng: Random source, seeded in tests.
         now: Run start moment, fixed in tests.
+        journal: Run journal; the calling flow passes its writer.
+        plan: Plan restored from the journal; never rebuilt when present.
 
     Returns:
         Run id, final status, output directories and counters.
@@ -152,7 +130,7 @@ def generate_batch(
         run_id if run_id is not None else choose_run_id(config.output_dir, loaded, started)
     )
     layers = [vast_layer(profile) for profile in loaded]
-    prepared = _prepare(config, loaded, count, selected_run_id, randomizer)
+    prepared = _prepare(config, loaded, count, selected_run_id, randomizer, plan)
     checker = _prepare_media(config, dry_run, safety_checker)
     data_root = root.parent
     run_dirs, generated, failed = _run_all(
@@ -170,10 +148,23 @@ def generate_batch(
         checker,
         randomizer,
         data_root,
+        journal,
     )
+    return _batch_result(selected_run_id, dry_run, run_dirs, generated, failed)
+
+
+def _batch_result(
+    run_id: str,
+    dry_run: bool,
+    run_dirs: Sequence[Path],
+    generated: int,
+    failed: int,
+) -> _BatchResult:
+    """Build the outcome of one batch from its counters."""
+    status = RunStatus.DRY_RUN.value if dry_run else _status(generated, failed)
     return _BatchResult(
-        run_id=selected_run_id,
-        status=RunStatus.DRY_RUN.value if dry_run else _status(generated, failed),
+        run_id=run_id,
+        status=status,
         run_dirs=tuple(run_dirs),
         generated=generated,
         failed=failed,
@@ -197,74 +188,22 @@ def _prepare_media(
     return checker
 
 
-def _run_all(
-    prepared: list[tuple[_Profile, tuple[_PlannedItem, ...]]],
-    layers: list[Layer],
-    config: GeneratorSettings,
-    run_id: str,
-    started: datetime,
-    count: int,
-    dry_run: bool,
-    session_factory: _SessionFactory | None,
-    client_factory: _ClientFactory | None,
-    text_writer: TextWriter | None,
-    store: _Store | None,
-    checker: safety._Checker | None,
-    randomizer: random.Random,
-    data_root: Path,
-) -> tuple[list[Path], int, int]:
-    """Write one report per profile, produce its videos and count the outcomes."""
-    run_dirs: list[Path] = []
-    generated = 0
-    failed = 0
-    for (profile, items), layer in zip(prepared, layers, strict=True):
-        slug = profiles.profile_slug(profile)
-        run_dir = profile_run_dir(config.output_dir, profile.language, slug, run_id)
-        report = _report(profile, items, run_id, started, count, dry_run)
-        report.production = [
-            RunStep(
-                producer=entry.producer,
-                type=content_type(entry.output),
-                qa=list(entry.checks),
-            )
-            for entry in profile.production
-        ]
-        for item in report.items:
-            item.producer = layer.producer
-            item.type = content_type(layer.output)
-            item.qa = list(layer.checks)
-        _write_report(run_dir, report)
-        run_dirs.append(run_dir)
-        if dry_run:
-            continue
-        _produce_safely(
-            profile,
-            layer,
-            items,
-            run_dir,
-            report,
-            config,
-            session_factory or _production_sessions(data_root, run_id),
-            client_factory or comfy.ComfyClient,
-            text_writer,
-            store,
-            checker,
-            randomizer,
-            data_root,
-        )
-        generated += report.totals.generated
-        failed += report.totals.failed
-    return run_dirs, generated, failed
-
-
 def _prepare(
     config: GeneratorSettings,
     loaded: list[_Profile],
     count: int,
     run_id: str,
     randomizer: random.Random,
+    plan: Sequence[_PlannedItem] | None = None,
 ) -> list[tuple[_Profile, tuple[_PlannedItem, ...]]]:
-    """Read the rotation cursor of every profile and build its batch plan."""
+    """Read the rotation cursor of every profile and build its batch plan.
+
+    An explicit *plan* comes from the run journal and is never rebuilt: the
+    producers keep the cards, seeds and lengths written before the first
+    network call.
+    """
+    if plan is not None:
+        return _prepare_from_plan(loaded, count, plan)
     return [
         (
             profile,
@@ -273,227 +212,44 @@ def _prepare(
                 count,
                 run_id,
                 rng=randomizer,
-                start_after=rotation.read_cursor(_cursor_path(config.output_dir, profile)),
+                start_after=rotation.read_cursor(
+                    rotation.cursor_path(
+                        config.output_dir,
+                        profile.language,
+                        profiles.profile_slug(profile),
+                    )
+                ),
             ),
         )
         for profile in loaded
     ]
 
 
-def _produce_safely(
-    profile: _Profile,
-    layer: Layer,
-    items: tuple[_PlannedItem, ...],
-    run_dir: Path,
-    report: RunReport,
-    settings: GeneratorSettings,
-    session_factory: _SessionFactory,
-    client_factory: _ClientFactory,
-    text_writer: TextWriter | None,
-    store: _Store | None,
-    checker: safety._Checker | None,
-    rng: random.Random,
-    data_root: Path,
-) -> None:
-    """Run one profile and fail its remaining items before re-raising an error."""
-    try:
-        _produce(
-            profile,
-            layer,
-            items,
-            run_dir,
-            report,
-            settings,
-            session_factory,
-            client_factory,
-            text_writer,
-            store,
-            checker,
-            rng,
-            data_root,
-        )
-    except BaseException as ex:
-        report.status = RunStatus.FAILED
-        report.finished_at = datetime.now(UTC)
-        for item in report.items:
-            if item.status not in (RunStatus.DONE, RunStatus.FAILED):
-                item.status, item.error = RunStatus.FAILED, str(ex)
-        _write_report(run_dir, report)
-        raise
-
-
-def _produce(
-    profile: _Profile,
-    layer: Layer,
-    items: tuple[_PlannedItem, ...],
-    run_dir: Path,
-    report: RunReport,
-    settings: GeneratorSettings,
-    session_factory: _SessionFactory,
-    client_factory: _ClientFactory,
-    text_writer: TextWriter | None,
-    store: _Store | None,
-    checker: safety._Checker | None,
-    rng: random.Random,
-    data_root: Path,
-) -> None:
-    """Run the remote phase and then the local post-processing."""
-    prompt_lock = threading.Lock()
-
-    def build(item: _PlannedItem, attempt: int) -> dict[str, Any]:
-        with prompt_lock:
-            prompt = profiles.build_prompt(profile, item.look, rng)
-        return build_workflow(profile, item, prompt, seed=attempt_seed(item.seed, attempt))
-
-    def verify(item: _PlannedItem, source: Path, attempt: int) -> str | None:
-        reason = checker.verify(item, source, attempt) if checker is not None else None
-        if reason:
-            return reason
-        extra = tuple(name for name in layer.checks if name != "clef")
-        return production.run_qa(extra, production.QA_SOURCE, {}) if extra else None
-
-    report.status = RunStatus.GENERATING
-    _write_report(run_dir, report)
-    if comfy.server_count(len(items), settings) > 1:
-        batch = comfy.run_servers(
-            profile,
-            settings,
-            comfy.split_batch(items, settings),
-            session_factory,
-            client_factory,
-            build,
-            run_dir / _SOURCE_DIR,
-            store=store,
-            verify=verify,
-        )
-        report.server = _server(profile, batch.servers[0]) if batch.servers else None
-        results = batch.results
-    else:
-        info, results = comfy.run_server(
-            session_factory(profile, settings),
-            client_factory,
-            items,
-            build,
-            run_dir / _SOURCE_DIR,
-            label=profile.name,
-            settings=settings,
-            store=store,
-            verify=verify,
-        )
-        report.server = _server(profile, info)
-    report.status = RunStatus.POSTPROCESSING
-    _write_report(run_dir, report)
-    _postprocess(profile, layer, results, run_dir, report, settings, text_writer, rng, data_root)
-    _finalize(report, run_dir, items)
-
-
-def _postprocess(
-    profile: _Profile,
-    layer: Layer,
-    results: tuple[comfy._JobResult, ...],
-    run_dir: Path,
-    report: RunReport,
-    settings: GeneratorSettings,
-    text_writer: TextWriter | None,
-    rng: random.Random,
-    data_root: Path,
-) -> None:
-    """Generate texts, overlay cards, mix music and check every mp4."""
-    writer = text_writer or texts.TextClient(settings)
-    by_file = {entry.file: entry for entry in report.items}
-    for result in results:
-        item = by_file.get(result.item.filename)
-        if item is None:
-            continue
-        if result.path is None:
-            item.status = RunStatus.FAILED
-            item.error = result.error or "источник не сгенерирован"
-            _write_report(run_dir, report)
-            continue
-        try:
-            _finish_item(profile, layer, item, result.path, run_dir, writer, rng, data_root)
-        except (GeneratorError, OSError) as ex:
-            item.status = RunStatus.FAILED
-            item.error = str(ex)
-            logger.bind(file=item.file, error=str(ex), error_type=type(ex).__name__).error(
-                "Постобработка ролика не удалась"
+def _prepare_from_plan(
+    loaded: list[_Profile],
+    count: int,
+    plan: Sequence[_PlannedItem],
+) -> list[tuple[_Profile, tuple[_PlannedItem, ...]]]:
+    """Group journal items by profile and require exactly *count* per profile."""
+    prepared: list[tuple[_Profile, tuple[_PlannedItem, ...]]] = []
+    for profile in loaded:
+        items = tuple(item for item in plan if item.profile == profile.name)
+        if len(items) != count:
+            raise GeneratorError(
+                f"журнал рана дал {len(items)} элементов профиля {profile.name!r}, "
+                f"ожидалось {count}"
             )
-        else:
-            _advance_cursor(settings.output_dir, profile, item, report.run_id)
-            logger.bind(file=item.file, duration=item.duration).info("Ролик готов")
-        _write_report(run_dir, report)
-    for item in report.items:
-        if item.status not in (RunStatus.DONE, RunStatus.FAILED):
-            item.status, item.error = RunStatus.FAILED, item.error or "результат не получен"
-    _write_report(run_dir, report)
+        prepared.append((profile, items))
+    unknown = {item.profile for item in plan} - {profile.name for profile in loaded}
+    if unknown:
+        raise GeneratorError(f"журнал рана содержит чужие профили: {sorted(unknown)}")
+    return prepared
 
 
-def _advance_cursor(output_dir: Path, profile: _Profile, item: RunItem, run_id: str) -> None:
-    """Move the rotation cursor after a finished video without failing it."""
-    if item.look_id is None:
-        return
-    try:
-        rotation.advance_cursor(
-            _cursor_path(output_dir, profile),
-            item.look_id,
-            run_id,
-            datetime.now(UTC),
-        )
-    except OSError as ex:
-        logger.bind(
-            profile=profile.name,
-            look_id=item.look_id,
-            error=str(ex),
-            error_type=type(ex).__name__,
-        ).warning("Курсор карточек не обновлён — следующий прогон может повторить карточку")
-
-
-def _finish_item(
-    profile: _Profile,
-    layer: Layer,
-    item: RunItem,
-    source: Path,
-    run_dir: Path,
-    writer: TextWriter,
-    rng: random.Random,
-    data_root: Path,
-) -> None:
-    """Run the local stages of one video and publish its final into the stock."""
-    if item.frames is None:
-        raise GeneratorError(f"у ролика {item.file} не задано число кадров")
-    card = texts.generate_overlay(profile, writer, rng=rng)
-    texts.save_overlay(run_dir / _TEXT_DIR / f"{Path(item.file).stem}.json", card)
-    audio = rng.choice(profile.audio_tracks) if profile.audio_tracks else None
-    final = run_dir / _FINAL_DIR / item.file
-    overlay.mix(profile, card, source, final, audio)
-    info = qa.check_declared(
-        layer.checks,
-        final,
-        media.video_seconds(item.frames, profile.fps),
-        expect_audio=bool(profile.audio_tracks),
-    )
-    publish_stock(profile, final, data_root)
-    item.duration = round(info.duration, 2)
-    item.status = RunStatus.DONE
-
-
-def _server(profile: _Profile, info: ServerInfo) -> RunServer:
-    """Build the ``server`` block of ``run.json``."""
-    connection = info.connection
-    return RunServer(
-        contract_id=connection.contract_id,
-        ip=connection.ip,
-        gpu=connection.gpu or profile.gpu,
-        image=profile.image,
-        cost_per_hour=info.cost_per_hour,
-    )
-
-
-def _cursor_path(output_dir: Path, profile: _Profile) -> Path:
-    """Return the rotation cursor path of one ``language + profile`` pair."""
-    return (
-        output_dir / profile.language / profiles.profile_slug(profile) / rotation.ROTATION_FILENAME
-    )
-
-
-__all__ = ["generate_batch", "publish_stock", "read_profile_cursor"]
+__all__ = [
+    "PlannedItem",
+    "generate_batch",
+    "planned_item",
+    "read_profile_cursor",
+    "resume_unfinished",
+]

@@ -31,6 +31,39 @@ def read_cursor(path: Path) -> str | None:
     Returns:
         ``last_look_id`` from the file or ``None`` when it cannot be used.
     """
+    payload = _read_payload(path)
+    if payload is None:
+        return None
+    look_id = payload.get("last_look_id")
+    if not isinstance(look_id, str):
+        _warn(path, f"поле last_look_id должно быть строкой, получено {type(look_id).__name__}")
+        return None
+    return look_id
+
+
+def read_cursor_state(path: Path) -> tuple[str, str | None] | None:
+    """Read the card id and the run that moved the cursor.
+
+    Args:
+        path: Path of ``rotation.json``.
+
+    Returns:
+        ``(last_look_id, run_id)``, or ``None`` when the cursor is missing or
+        unusable. ``run_id`` is ``None`` for older cursor files without it.
+    """
+    payload = _read_payload(path)
+    if payload is None:
+        return None
+    look_id = payload.get("last_look_id")
+    if not isinstance(look_id, str):
+        _warn(path, f"поле last_look_id должно быть строкой, получено {type(look_id).__name__}")
+        return None
+    run_id = payload.get("run_id")
+    return look_id, run_id if isinstance(run_id, str) else None
+
+
+def _read_payload(path: Path) -> dict[str, Any] | None:
+    """Read the cursor JSON object, logging a missing or broken file once."""
     try:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -46,11 +79,12 @@ def read_cursor(path: Path) -> str | None:
     if not isinstance(payload, dict):
         _warn(path, f"ожидался JSON-объект, получено {type(payload).__name__}")
         return None
-    look_id = payload.get("last_look_id")
-    if not isinstance(look_id, str):
-        _warn(path, f"поле last_look_id должно быть строкой, получено {type(look_id).__name__}")
-        return None
-    return look_id
+    return payload
+
+
+def cursor_path(output_dir: Path, language: str, slug: str) -> Path:
+    """Return the rotation cursor path of one ``language + profile`` pair."""
+    return output_dir / language / slug / ROTATION_FILENAME
 
 
 def read_profile_cursor(output_dir: Path, language: str, slug: str) -> str | None:

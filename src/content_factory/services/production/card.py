@@ -22,16 +22,19 @@ from content_factory.schemas.generator.text import TextWriter
 from content_factory.services.generator import (
     TextClient,
     generate_overlay,
+    load_overlay,
     load_profile,
     profile_slug,
     publish_photo,
     render_card,
+    save_overlay,
     validate_count,
 )
 from content_factory.services.production.paths import context_run_dir
 from content_factory.utils.run_id import validate_run_id
 
 _FINAL_DIR = "final"
+_TEXT_DIR = "text"
 _JPEG_QUALITY = 90
 _MAX_CAPTION_BYTES = 4096
 _JPEG_MEDIA_TYPE = "image/jpeg"
@@ -138,16 +141,29 @@ class CardProducer:
         writer = self._writer or TextClient(context.settings)
         renderer = self._renderer or render_card
         artifacts: list[Artifact] = []
+        planned = context.planned.get(layer.name)
         for profile in context.profiles:
             loaded = load_profile(profile.name, context.data_dir / PROFILES_DIR)
             run_dir = context_run_dir(context, loaded.language, profile_slug(loaded))
-            for seq in range(1, context.count + 1):
-                filename = _post_name(loaded.name, context.run_id, seq)
+            own = (
+                [artifact for artifact in planned if artifact.profile == loaded.name]
+                if planned is not None
+                else []
+            )
+            names = (
+                [artifact.item for artifact in own]
+                if own
+                else [
+                    _post_name(loaded.name, context.run_id, seq)
+                    for seq in range(1, context.count + 1)
+                ]
+            )
+            for filename in names:
                 artifacts.append(
                     self._produce_item(
                         loaded,
                         filename,
-                        run_dir / _FINAL_DIR,
+                        run_dir,
                         writer,
                         renderer,
                         context,
@@ -155,19 +171,39 @@ class CardProducer:
                 )
         return tuple(artifacts)
 
+    def produce_one(
+        self,
+        profile: Any,
+        filename: str,
+        run_dir: Path,
+        context: PipelineContext,
+    ) -> Artifact:
+        """Produce, check and publish one photo of a resumed run."""
+        writer = self._writer or TextClient(context.settings)
+        renderer = self._renderer or render_card
+        return self._produce_item(profile, filename, run_dir, writer, renderer, context)
+
     def _produce_item(
         self,
         profile: Any,
         filename: str,
-        final_dir: Path,
+        run_dir: Path,
         writer: TextWriter,
         renderer: _Renderer,
         context: PipelineContext,
     ) -> Artifact:
         """Produce, check and publish one photo; failures stay on the artifact."""
-        final = final_dir / filename
+        final = run_dir / _FINAL_DIR / filename
         try:
-            size = _produce_item(profile, writer, renderer, final, context)
+            size = _produce_item(
+                profile,
+                filename,
+                writer,
+                renderer,
+                final,
+                run_dir / _TEXT_DIR,
+                context,
+            )
         except (
             GeneratorError,
             OSError,
@@ -179,6 +215,8 @@ class CardProducer:
             logger.bind(file=filename, error=str(ex), error_type=type(ex).__name__).error(
                 "Фото не собрано"
             )
+            if context.journal is not None:
+                context.journal.failed(context.run_id, profile.name, filename, str(ex))
             return _artifact(profile, filename, final, "failed", str(ex))
         logger.bind(file=filename).info("Фото готово")
         return _artifact(profile, filename, final, "done", None, size)
@@ -186,12 +224,17 @@ class CardProducer:
 
 def _produce_item(
     profile: Any,
+    filename: str,
     writer: TextWriter,
     renderer: _Renderer,
     final: Path,
+    text_dir: Path,
     context: PipelineContext,
 ) -> int:
     """Generate, check and publish one photo; return its JPEG size.
+
+    A saved card is reused, so a restart renders the same text again. A final
+    photo and its sidecar that are already on disk are accepted as they are.
 
     Raises:
         QaError: The mandatory image check rejected the photo.
@@ -202,15 +245,28 @@ def _produce_item(
         OverflowError: The image size overflows the renderer.
         Image.DecompressionBombError: The JPEG declares too many pixels.
     """
-    overlay = generate_overlay(profile, writer)
-    caption = _checked_caption(overlay)
-    _render_jpeg(profile, overlay, renderer, final)
-    _write_sidecar(final, caption)
+    card_path = text_dir / f"{Path(filename).stem}.json"
+    sidecar = final.with_suffix(".json")
+    saved = load_overlay(card_path)
+    if saved is not None and final.is_file() and sidecar.is_file():
+        overlay = saved
+        caption = _checked_caption(overlay)
+    else:
+        overlay = saved if saved is not None else generate_overlay(profile, writer)
+        caption = _checked_caption(overlay)
+        if saved is None:
+            save_overlay(card_path, overlay)
+        _render_jpeg(profile, overlay, renderer, final)
+        _write_sidecar(final, caption)
     reason = check_image(final, profile.width, profile.height)
     if reason is not None:
         raise QaError(reason)
     size = final.stat().st_size
+    if context.journal is not None:
+        context.journal.postprocessing(context.run_id, profile.name, filename, str(final))
     publish_photo(profile, final, context.data_dir)
+    if context.journal is not None:
+        context.journal.published(context.run_id, profile.name, filename)
     return size
 
 
@@ -290,9 +346,12 @@ def _render_jpeg(
     except (OSError, ValueError) as ex:
         raise OverlayError(f"не удалось нарисовать карточку: {ex}") from ex
     target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.tmp")
     try:
-        image.save(target, format="JPEG", quality=_JPEG_QUALITY)
+        image.save(temporary, format="JPEG", quality=_JPEG_QUALITY)
+        temporary.replace(target)
     except OSError as ex:
+        temporary.unlink(missing_ok=True)
         raise OverlayError(f"не удалось сохранить JPEG {target}: {ex}") from ex
 
 
@@ -330,7 +389,14 @@ def _write_sidecar(final: Path, caption: str) -> None:
         )
     except UnicodeEncodeError as ex:
         raise GeneratorError("текст поста не кодируется в UTF-8") from ex
-    final.with_suffix(".json").write_bytes(payload)
+    sidecar = final.with_suffix(".json")
+    temporary = sidecar.with_name(f".{sidecar.name}.tmp")
+    try:
+        temporary.write_bytes(payload)
+        temporary.replace(sidecar)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def check_image(path: Path, width: int, height: int) -> str | None:

@@ -17,6 +17,7 @@ from content_factory.schemas.generator.pipeline import (
     Layer,
     PipelineContext,
 )
+from content_factory.utils.fields import positive_int
 
 _Verifier = Callable[[Artifact], str | None]
 
@@ -69,8 +70,8 @@ def source_reason(artifact: Artifact) -> str | None:
 
 def image_reason(artifact: Artifact) -> str | None:
     """Open the finished JPEG and return the first defect reason."""
-    width = _integer(artifact.meta.get("width"))
-    height = _integer(artifact.meta.get("height"))
+    width = positive_int(artifact.meta.get("width"))
+    height = positive_int(artifact.meta.get("height"))
     if width is None or height is None:
         return f"у фото {artifact.item} нет размера профиля"
     from content_factory.services.production.card import check_image
@@ -92,13 +93,6 @@ def _number(value: object) -> float | None:
         return None
     number = float(value)
     return number if number > 0 else None
-
-
-def _integer(value: object) -> int | None:
-    """Return a positive integer or ``None``."""
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return value if value > 0 else None
 
 
 __all__ = ["ArtifactCheck", "image_reason", "mp4_reason", "source_reason"]

@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import copy
+import random
+import threading
+from collections.abc import Callable
 from typing import Any
 
 from content_factory.exceptions.generator import ProfileError
-from content_factory.services.generator.plan import _PlannedItem
+from content_factory.services.generator import profiles
+from content_factory.services.generator.plan import _PlannedItem, attempt_seed
 from content_factory.services.generator.profiles import _Profile
 
 _VIDEO_LATENT_NODE = "5"
@@ -70,6 +74,26 @@ def build_workflow(
         {"frame_rate": profile.fps, "filename_prefix": prefix, "save_metadata": False},
     )
     return graph
+
+
+def workflow_builder(
+    profile: _Profile,
+    rng: random.Random,
+    lock: threading.Lock | None = None,
+) -> Callable[[_PlannedItem, int], dict[str, Any]]:
+    """Return a thread-safe workflow builder for one profile.
+
+    The shared random source is guarded while a scene prompt is generated:
+    several ComfyUI jobs call the builder from different threads.
+    """
+    guard = lock or threading.Lock()
+
+    def build(item: _PlannedItem, attempt: int) -> dict[str, Any]:
+        with guard:
+            prompt = profiles.build_prompt(profile, item.look, rng)
+        return build_workflow(profile, item, prompt, seed=attempt_seed(item.seed, attempt))
+
+    return build
 
 
 def _update(graph: dict[str, Any], node_id: str, values: dict[str, Any]) -> None:

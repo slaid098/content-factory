@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from content_factory.schemas.content.delivery import ContentType
+from content_factory.schemas.generator.journal import RunJournal
 from content_factory.schemas.generator.run import ProfileRef
 from content_factory.utils.run_id import validate_run_id
 
@@ -146,6 +147,8 @@ class PipelineContext:
     dry_run: bool = False
     rng: random.Random = field(default_factory=random.Random)
     now: datetime = field(default_factory=lambda: datetime.now(UTC))
+    journal: RunJournal | None = None
+    planned: dict[str, tuple[Artifact, ...]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Reject a run id that cannot name a directory of this run.

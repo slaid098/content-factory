@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from pathlib import Path
 
 from loguru import logger
 
@@ -28,6 +29,14 @@ class _PlannedItem:
     seed: int
     frames: int
     filename: str
+
+
+def sequence_from_filename(filename: str) -> int:
+    """Return the one-based sequence stored in a deterministic file name."""
+    try:
+        return int(Path(filename).stem.rsplit("_", 1)[-1])
+    except (ValueError, IndexError):
+        return 1
 
 
 def plan_batch(
@@ -106,6 +115,48 @@ def attempt_seed(seed: int, attempt: int) -> int:
     value = ((value ^ (value >> 27)) * _SEED_MIX_B) & _SEED_MASK
     value ^= value >> 31
     return value % _MAX_SEED or 1
+
+
+def planned_item(
+    profile: _Profile,
+    filename: str,
+    *,
+    look_id: str | None,
+    seed: int | None,
+    frames: int | None,
+    seq: int,
+) -> _PlannedItem:
+    """Rebuild one planned video from a journal row or planned artifact.
+
+    Args:
+        profile: Loaded profile of the item.
+        filename: Deterministic output name written to the journal.
+        look_id: Appearance card of the plan.
+        seed: Planned seed; an absent value cannot be restored.
+        frames: Planned frame count.
+        seq: One-based position in the production order.
+
+    Returns:
+        The planned item with the stored card, seed and length.
+
+    Raises:
+        GeneratorError: The look, seed or frame count is missing or unknown.
+    """
+    look = next((item for item in profile.looks if item.id == look_id), None)
+    if look is None:
+        raise GeneratorError(
+            f"в журнале рана неизвестная карточка {look_id!r} профиля {profile.name}"
+        )
+    if seed is None or frames is None:
+        raise GeneratorError(f"в журнале рана у {filename!r} нет seed или frames")
+    return _PlannedItem(
+        profile=profile.name,
+        seq=seq,
+        look=look,
+        seed=seed,
+        frames=frames,
+        filename=filename,
+    )
 
 
 def validate_count(count: int) -> None:

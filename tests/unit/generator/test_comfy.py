@@ -19,6 +19,7 @@ from content_factory.services.generator.comfy import (
     ComfyClient,
     _OutputFile,
     extract_output,
+    find_prompt,
     run_jobs,
 )
 from content_factory.services.generator.plan import _PlannedItem, plan_batch
@@ -784,3 +785,121 @@ def test_comfy_failure_does_not_spend_the_safety_regeneration(tmp_path: Path) ->
     assert seen == [2, 3]
     assert len(transport.submitted) == 3
     assert results[0].path is not None
+
+
+class _ResumeTransport(_Transport):
+    """Transport that also answers whole-history and queue lookups."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.history_map: dict[str, dict[str, Any]] = {}
+        self.queue_payload: dict[str, Any] = {}
+
+    def submit(self, workflow: dict[str, Any]) -> str:
+        prompt = super().submit(workflow)
+        self.history_map[prompt] = {
+            "outputs": {"15": {"gifs": [{"filename": str(workflow.get("file") or prompt)}]}}
+        }
+        return prompt
+
+    def history(self, prompt_id: str) -> dict[str, Any] | None:
+        self.history_calls += 1
+        return self.history_map.get(prompt_id)
+
+    def history_all(self) -> dict[str, Any]:
+        return dict(self.history_map)
+
+    def queue(self) -> dict[str, Any]:
+        return dict(self.queue_payload)
+
+
+def _history(item: _PlannedItem) -> dict[str, Any]:
+    return {
+        "outputs": {
+            "15": {
+                "gifs": [
+                    {
+                        "filename": f"{item.filename.removesuffix('.mp4')}.mp4",
+                        "subfolder": "",
+                        "type": "output",
+                    }
+                ]
+            }
+        }
+    }
+
+
+def test_initial_prompt_is_adopted_without_resubmission(tmp_path: Path) -> None:
+    transport = _ResumeTransport()
+    item = _items(tmp_path, count=1)[0]
+    transport.history_map["p1"] = _history(item)
+
+    results = run_jobs(
+        transport,
+        (),
+        _build,
+        tmp_path / "source",
+        store=lambda path, content: path.write_bytes(content),
+        initial=[(item, 2, "p1")],
+    )
+
+    assert transport.submitted == []
+    assert results[0].path == tmp_path / "source" / item.filename
+    assert results[0].path.is_file()
+
+
+def test_start_attempts_sets_the_first_submission_attempt(tmp_path: Path) -> None:
+    transport = _ResumeTransport()
+    item = _items(tmp_path, count=1)[0]
+    seen: list[int] = []
+
+    def build(item: _PlannedItem, attempt: int) -> dict[str, Any]:
+        seen.append(attempt)
+        return _build(item, attempt)
+
+    run_jobs(
+        transport,
+        (item,),
+        build,
+        tmp_path / "source",
+        store=lambda path, content: path.write_bytes(content),
+        start_attempts={item.seq: 3},
+    )
+
+    assert seen == [3]
+
+
+def test_find_prompt_matches_the_output_name_in_history(tmp_path: Path) -> None:
+    transport = _ResumeTransport()
+    item = _items(tmp_path, count=1)[0]
+    transport.history_map["p2"] = _history(item)
+
+    assert find_prompt(transport, item) == "p2"
+
+
+def test_find_prompt_matches_a_pending_queue_entry(tmp_path: Path) -> None:
+    transport = _ResumeTransport()
+    item = _items(tmp_path, count=1)[0]
+    transport.queue_payload = {
+        "queue_running": [
+            [0, "p3", {"15": {"inputs": {"filename_prefix": item.filename.removesuffix(".mp4")}}}]
+        ],
+        "queue_pending": [],
+    }
+
+    assert find_prompt(transport, item) == "p3"
+
+
+def test_find_prompt_prefers_a_known_prompt_that_still_exists(tmp_path: Path) -> None:
+    transport = _ResumeTransport()
+    item = _items(tmp_path, count=1)[0]
+    transport.history_map["p4"] = _history(item)
+
+    assert find_prompt(transport, item, "p4") == "p4"
+
+
+def test_find_prompt_returns_none_when_the_workflow_is_gone(tmp_path: Path) -> None:
+    transport = _ResumeTransport()
+    item = _items(tmp_path, count=1)[0]
+
+    assert find_prompt(transport, item) is None

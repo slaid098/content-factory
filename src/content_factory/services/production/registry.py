@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, MutableMapping
+from typing import TYPE_CHECKING
 
 from content_factory.exceptions.generator import ProfileError
 from content_factory.schemas.generator.pipeline import LayerProducer
+
+if TYPE_CHECKING:
+    from content_factory.schemas.generator.text import TextWriter
+    from content_factory.services.production.card import CardProducer
 
 VAST_PRODUCER = "vast"
 _CARD_PRODUCER = "card"
@@ -52,6 +57,17 @@ def _card() -> LayerProducer:
     from content_factory.services.production.card import CardProducer
 
     return CardProducer()
+
+
+def card_producer(writer: TextWriter | None = None) -> CardProducer:
+    """Build a photo producer with an optional text-model port.
+
+    Args:
+        writer: Text model port; the producer defaults to :class:`TextClient`.
+    """
+    from content_factory.services.production.card import CardProducer
+
+    return CardProducer(writer=writer)
 
 
 _BUILTINS: Mapping[str, _ProducerFactory] = {
@@ -136,4 +152,12 @@ def reset() -> None:
         _DEFAULT.register(name, factory)
 
 
-__all__ = ["ProducerRegistry", "available", "default_producers", "register", "reset", "resolve"]
+__all__ = [
+    "ProducerRegistry",
+    "available",
+    "card_producer",
+    "default_producers",
+    "register",
+    "reset",
+    "resolve",
+]

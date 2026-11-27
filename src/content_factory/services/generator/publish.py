@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import filecmp
 import os
 import shutil
 import tempfile
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 
 from loguru import logger
@@ -17,6 +19,14 @@ from content_factory.services.generator.profiles import _Profile, profile_niche
 _STOCK_FILE_MODE = 0o644
 
 
+@dataclass(frozen=True, slots=True)
+class _Placed:
+    """Result of placing one stock file."""
+
+    stat: os.stat_result
+    created: bool
+
+
 def publish_stock(profile: _Profile, final: Path, data_root: Path) -> Path:
     """Publish one final video into ``content/<niche>/<language>/``.
 
@@ -26,9 +36,11 @@ def publish_stock(profile: _Profile, final: Path, data_root: Path) -> Path:
     is complete. On a filesystem without hard links the stock name appears
     before the copy finishes, but an existing file is still never overwritten.
     A copied stock file gets mode ``0644`` so the partner can read it. An
-    existing stock file is a publication error. The niche and the language are
-    validated again here, and the resolved destination must stay inside the
-    stock root, so a malformed profile cannot write anywhere else.
+    existing stock file with the same content means the video was already
+    published and is not an error; different content is a publication error.
+    The niche and the language are validated again here, and the resolved
+    destination must stay inside the stock root, so a malformed profile cannot
+    write anywhere else.
 
     Args:
         profile: Profile that produced the video; an empty niche falls back
@@ -41,7 +53,7 @@ def publish_stock(profile: _Profile, final: Path, data_root: Path) -> Path:
 
     Raises:
         GeneratorError: The niche or language is invalid, the destination
-            escapes the stock root, the stock file already exists, the
+            escapes the stock root, the stock file has different content, the
             destination cannot be created or neither linking nor copying
             succeeded.
     """
@@ -54,14 +66,15 @@ def publish_photo(profile: _Profile, final: Path, data_root: Path) -> Path:
     """Publish a photo and its text sidecar as one stock pair.
 
     The text sidecar is placed first and the photo last, so a published photo
-    is never without its text. Both destinations must be free before anything
-    is placed. On a filesystem with hard links each name appears only after its
-    copy is complete; without hard links a name appears before its copy
-    finishes, but an existing file is still never overwritten. Copied stock
-    files get mode ``0644`` so the partner can read them. When the photo cannot
-    be placed, the sidecar is removed, but only while it is still the inode
-    this call created, so a file replaced by someone else is never deleted.
-    The source files stay in ``generated/``.
+    is never without its text. Each file is handled on its own: a file that is
+    already published with the same content is accepted, a different file at
+    its destination is an error. On a filesystem with hard links each name
+    appears only after its copy is complete; without hard links a name appears
+    before its copy finishes, but an existing file is still never overwritten.
+    Copied stock files get mode ``0644`` so the partner can read them. When the
+    photo cannot be placed, a sidecar created by this call is removed, but only
+    while it is still the inode this call created, so a file replaced by
+    someone else is never deleted. The source files stay in ``generated/``.
 
     Args:
         profile: Profile that produced the photo.
@@ -73,30 +86,33 @@ def publish_photo(profile: _Profile, final: Path, data_root: Path) -> Path:
 
     Raises:
         GeneratorError: The sidecar is missing, the niche or language is
-            invalid, a destination escapes the stock root or already exists,
-            or either file cannot be linked or copied.
+            invalid, a destination escapes the stock root or holds different
+            content, or either file cannot be linked or copied.
     """
     sidecar = final.with_suffix(".json")
     if not sidecar.is_file():
         raise GeneratorError(f"не удалось положить в сток: нет текста поста {sidecar}")
     destination = _stock_path(profile, final.name, data_root)
     sidecar_destination = _stock_path(profile, sidecar.name, data_root)
-    sidecar_created = _place(sidecar, sidecar_destination)
+    sidecar_placed = _place(sidecar, sidecar_destination)
     try:
         _place(final, destination)
     except GeneratorError:
-        _remove_if_same(sidecar_destination, sidecar_created)
+        if sidecar_placed.created:
+            _remove_if_same(sidecar_destination, sidecar_placed.stat)
         raise
     return destination
 
 
 def _stock_path(profile: _Profile, name: str, data_root: Path) -> Path:
-    """Return a free, validated destination inside the stock root.
+    """Return a validated destination inside the stock root.
+
+    An existing file is accepted by :func:`_place` only when its content
+    matches the source; the path itself is still checked against the root.
 
     Raises:
         GeneratorError: The niche or language is invalid, the destination
-            escapes the stock root, it already exists or its directory cannot
-            be created.
+            escapes the stock root or its directory cannot be created.
     """
     niche = profile_niche(profile)
     if (
@@ -111,8 +127,6 @@ def _stock_path(profile: _Profile, name: str, data_root: Path) -> Path:
     destination = (stock_root / niche / profile.language / name).resolve()
     if not destination.is_relative_to(stock_root):
         raise GeneratorError(_publish_error(destination))
-    if destination.exists():
-        raise GeneratorError(_publish_error(destination))
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
     except OSError as ex:
@@ -120,26 +134,26 @@ def _stock_path(profile: _Profile, name: str, data_root: Path) -> Path:
     return destination
 
 
-def _place(source: Path, destination: Path) -> os.stat_result:
-    """Link *source* to *destination* and return the inode that was placed.
+def _place(source: Path, destination: Path) -> _Placed:
+    """Link *source* to *destination* or accept an identical existing file.
 
-    The returned stat describes the source inode, taken before linking, so it
-    never depends on what the destination name points to later. When a hard
-    link is impossible, the source is copied into an exclusive temporary file
-    in the destination directory and linked under its final name only after
-    the copy is complete; the final name never receives a partial file and
-    never replaces an existing one.
+    The returned stat describes the inode that now holds the destination name.
+    When a hard link is impossible, the source is copied into an exclusive
+    temporary file in the destination directory and linked under its final name
+    only after the copy is complete; the final name never receives a partial
+    file and never replaces an existing one. An existing destination with the
+    same content is treated as already published; different content raises.
 
     Args:
         source: Finished file inside the run ``final`` directory.
-        destination: Free stock path of the file.
+        destination: Stock path of the file.
 
     Returns:
-        Stat of the inode placed at *destination*.
+        Stat of the inode at *destination* and whether this call created it.
 
     Raises:
-        GeneratorError: The source cannot be read, the destination exists or
-            neither linking nor copying succeeded.
+        GeneratorError: The source cannot be read, the destination holds
+            different content, or neither linking nor copying succeeded.
     """
     try:
         created = source.stat()
@@ -147,14 +161,33 @@ def _place(source: Path, destination: Path) -> os.stat_result:
         raise GeneratorError(_publish_error(destination)) from ex
     try:
         os.link(source, destination)
-    except FileExistsError as ex:
-        raise GeneratorError(_publish_error(destination)) from ex
+    except FileExistsError:
+        return _existing(source, destination)
     except OSError:
         return _copy_exclusive(source, destination)
-    return created
+    return _Placed(created, True)
 
 
-def _copy_exclusive(source: Path, destination: Path) -> os.stat_result:
+def _existing(source: Path, destination: Path) -> _Placed:
+    """Accept an existing destination only when it equals *source*.
+
+    Raises:
+        GeneratorError: The destination is unreadable or has other content.
+    """
+    try:
+        current = destination.stat()
+    except OSError as ex:
+        raise GeneratorError(_publish_error(destination)) from ex
+    try:
+        same = filecmp.cmp(source, destination, shallow=False)
+    except OSError as ex:
+        raise GeneratorError(_publish_error(destination)) from ex
+    if not same:
+        raise GeneratorError(_publish_error(destination))
+    return _Placed(current, False)
+
+
+def _copy_exclusive(source: Path, destination: Path) -> _Placed:
     """Copy *source* into a temporary file and place it at *destination*.
 
     The temporary copy is made readable by the partner (``0644``) regardless
@@ -166,14 +199,14 @@ def _copy_exclusive(source: Path, destination: Path) -> os.stat_result:
 
     Args:
         source: Finished file inside the run ``final`` directory.
-        destination: Free stock path of the file.
+        destination: Stock path of the file.
 
     Returns:
         Stat of the inode placed at *destination*.
 
     Raises:
         GeneratorError: The source cannot be read, the temporary file cannot
-            be written, or the destination already exists.
+            be written, or the destination holds different content.
     """
     try:
         fd, temp_name = tempfile.mkstemp(
@@ -186,11 +219,11 @@ def _copy_exclusive(source: Path, destination: Path) -> os.stat_result:
         created = _fill_temp(source, fd, destination)
         try:
             os.link(temp, destination)
-        except FileExistsError as ex:
-            raise GeneratorError(_publish_error(destination)) from ex
+        except FileExistsError:
+            return _existing(source, destination)
         except OSError:
             return _copy_into_new_inode(temp, destination)
-        return created
+        return _Placed(created, True)
     finally:
         _remove(temp)
 
@@ -233,7 +266,7 @@ def _fill_temp(source: Path, fd: int, destination: Path) -> os.stat_result:
     return created
 
 
-def _copy_into_new_inode(source: Path, destination: Path) -> os.stat_result:
+def _copy_into_new_inode(source: Path, destination: Path) -> _Placed:
     """Copy *source* into an exclusively created *destination*.
 
     Used when the filesystem does not support hard links. ``open("xb")``
@@ -243,18 +276,19 @@ def _copy_into_new_inode(source: Path, destination: Path) -> os.stat_result:
 
     Args:
         source: Completed temporary file next to the destination.
-        destination: Free stock path of the file.
+        destination: Stock path of the file.
 
     Returns:
         Stat of the inode created at *destination*.
 
     Raises:
-        GeneratorError: The destination exists or cannot be written.
+        GeneratorError: The destination holds different content or cannot be
+            written.
     """
     try:
         writer = destination.open("xb")
-    except FileExistsError as ex:
-        raise GeneratorError(_publish_error(destination)) from ex
+    except FileExistsError:
+        return _existing(source, destination)
     except OSError as ex:
         raise GeneratorError(_publish_error(destination)) from ex
     created: os.stat_result | None = None
@@ -265,7 +299,7 @@ def _copy_into_new_inode(source: Path, destination: Path) -> os.stat_result:
         with writer, source.open("rb") as reader:
             shutil.copyfileobj(reader, writer)
         completed = True
-        return created
+        return _Placed(created, True)
     except OSError as ex:
         raise GeneratorError(_publish_error(destination)) from ex
     finally:

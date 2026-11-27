@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from content_factory.exceptions.generator import GeneratorError, ProfileError
+from content_factory.schemas.generator.journal import JournalPlanItem
 from content_factory.schemas.generator.pipeline import (
     Artifact,
     ItemFailure,
@@ -25,6 +26,7 @@ from content_factory.schemas.generator.pipeline import (
 )
 from content_factory.services.production.qa import CheckRegistry
 from content_factory.services.production.registry import ProducerRegistry
+from content_factory.utils.fields import optional_int, optional_text
 
 _ItemKey = tuple[str, str]
 
@@ -81,9 +83,14 @@ def run_pipeline(
             item_failures: tuple[ItemFailure, ...] = ()
             produced = artifacts
         else:
+            if context.journal is not None:
+                planned = _plan_layer(item, context)
+                context.planned[item.layer.name] = planned
+                _journal_plan(item, context, planned)
             inputs = _inputs_of(item.layer, by_name, failed)
             produced, artifacts, item_failures = _run_layer(item, context, inputs)
             artifacts = _without_failed(artifacts, failed)
+            _journal_results(item, context, produced, item_failures)
         outcome = LayerOutcome(
             layer=item.layer.name,
             artifacts=artifacts,
@@ -188,6 +195,65 @@ def _plan_layer(item: _ResolvedLayer, context: PipelineContext) -> tuple[Artifac
         ) from ex
     _validate_artifacts(item.layer, planned, context)
     return planned
+
+
+def _journal_plan(
+    item: _ResolvedLayer,
+    context: PipelineContext,
+    planned: tuple[Artifact, ...],
+) -> None:
+    """Write the plan of one layer before its producer touches the network."""
+    if context.journal is None:
+        return
+    context.journal.plan(
+        context.run_id,
+        tuple(
+            JournalPlanItem(
+                profile=artifact.profile,
+                file=artifact.item,
+                producer=item.layer.producer,
+                type=item.layer.output.value,
+                look_id=optional_text(artifact.meta.get("look_id")),
+                seed=optional_int(artifact.meta.get("seed")),
+                frames=optional_int(artifact.meta.get("frames")),
+            )
+            for artifact in planned
+        ),
+    )
+
+
+def _journal_results(
+    item: _ResolvedLayer,
+    context: PipelineContext,
+    produced: tuple[Artifact, ...],
+    failures: tuple[ItemFailure, ...],
+) -> None:
+    """Write the final status of every produced or missing item of a layer."""
+    if context.journal is None:
+        return
+    reasons = {(failure.profile, failure.item): failure.reason for failure in failures}
+    reported: set[_ItemKey] = set()
+    for artifact in produced:
+        key = (artifact.profile, artifact.item)
+        reported.add(key)
+        reason = reasons.get(key)
+        if reason is not None:
+            context.journal.failed(context.run_id, artifact.profile, artifact.item, reason)
+            continue
+        status = artifact.meta.get("status")
+        if status == "done":
+            context.journal.published(context.run_id, artifact.profile, artifact.item)
+        elif status == "failed":
+            error = artifact.meta.get("error")
+            context.journal.failed(
+                context.run_id,
+                artifact.profile,
+                artifact.item,
+                str(error) if error else f"item {artifact.item} не прошёл слой {item.layer.name!r}",
+            )
+    for (profile, name), reason in reasons.items():
+        if (profile, name) not in reported:
+            context.journal.failed(context.run_id, profile, name, reason)
 
 
 def _run_layer(

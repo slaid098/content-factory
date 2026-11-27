@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-from content_factory.db import generator_servers
+from content_factory.db import generator_runs, generator_servers
 from content_factory.exceptions.generator import RentError
 from content_factory.schemas.generator.recovery import RecoveryOutcome
 from content_factory.services.generator import GENERATOR_LABEL, VastProvider, destroy_verified
@@ -52,6 +52,7 @@ def recover(
         DatabaseError: A journal write fails.
     """
     rows = generator_servers.list_unfinished(connection)
+    reserved = {run.run_id for run in generator_runs.list_unfinished_runs(connection)}
     present = _instances(provider.list_instances())
     bound = {row.contract_id: row for row in rows if row.contract_id is not None}
     destroyed = 0
@@ -71,13 +72,15 @@ def recover(
                 failed += 1
             continue
         handled.add(row.id)
+        if row.run_id in reserved:
+            continue
         if not _orphaned(row, started, now):
             continue
         if _destroy_bound(connection, provider, row, now):
             destroyed += 1
         else:
             failed += 1
-    lost = _mark_lost(connection, rows, present, handled, now)
+    lost = _mark_lost(connection, rows, present, handled, now, reserved)
     return RecoveryOutcome(destroyed=destroyed, lost=lost, failed=failed)
 
 
@@ -167,11 +170,12 @@ def _mark_lost(
     present: Mapping[str, Mapping[str, Any]],
     handled: set[str],
     now: float,
+    reserved: set[str],
 ) -> int:
     """Mark rows whose instance vanished, and old contract-less rentals, lost."""
     lost = 0
     for row in rows:
-        if row.id in handled:
+        if row.id in handled or row.run_id in reserved:
             continue
         if row.contract_id is None:
             if row.status != generator_servers.RENTING:

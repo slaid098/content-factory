@@ -233,6 +233,24 @@ def get_row(connection: Connection, server_id: str) -> GeneratorServerRow | None
     return None if row is None else _row(row)
 
 
+def get_by_contract(connection: Connection, contract_id: str) -> GeneratorServerRow | None:
+    """Return the journal row bound to *contract_id*, or ``None``."""
+    row = connection.execute(
+        f"SELECT {_COLUMNS} FROM generator_servers WHERE contract_id = ?",
+        (contract_id,),
+    ).fetchone()
+    return None if row is None else _row(row)
+
+
+def list_for_run(connection: Connection, run_id: str) -> list[GeneratorServerRow]:
+    """Return every server row of one generator run in creation order."""
+    rows = connection.execute(
+        f"SELECT {_COLUMNS} FROM generator_servers WHERE run_id = ? ORDER BY created_at, id",
+        (run_id,),
+    ).fetchall()
+    return [_row(row) for row in rows]
+
+
 def _row(row: Row) -> GeneratorServerRow:
     """Build one journal row from a database row."""
     return GeneratorServerRow(
@@ -262,8 +280,10 @@ __all__ = [
     "UNFINISHED_STATUSES",
     "GeneratorServerRow",
     "bind_contract",
+    "get_by_contract",
     "get_row",
     "insert_renting",
+    "list_for_run",
     "list_unfinished",
     "mark_destroyed",
     "mark_destroying",
