@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +19,7 @@ from content_factory.config.settings import (
 )
 from content_factory.constants import PROFILES_DIR
 from content_factory.exceptions.generator import GeneratorError
+from content_factory.schemas.generator.journal import RunJournal
 from content_factory.schemas.generator.pipeline import Layer, content_type
 from content_factory.schemas.generator.run import (
     RunItem,
@@ -101,6 +103,8 @@ def generate_batch(
     safety_checker: safety._Checker | None = None,
     rng: random.Random | None = None,
     now: datetime | None = None,
+    journal: RunJournal | None = None,
+    plan: Sequence[_PlannedItem] | None = None,
 ) -> _BatchResult:
     """Produce a batch of dating videos and write ``run.json``.
 
@@ -152,7 +156,7 @@ def generate_batch(
         run_id if run_id is not None else choose_run_id(config.output_dir, loaded, started)
     )
     layers = [vast_layer(profile) for profile in loaded]
-    prepared = _prepare(config, loaded, count, selected_run_id, randomizer)
+    prepared = _prepare(config, loaded, count, selected_run_id, randomizer, plan)
     checker = _prepare_media(config, dry_run, safety_checker)
     data_root = root.parent
     run_dirs, generated, failed = _run_all(
@@ -170,6 +174,7 @@ def generate_batch(
         checker,
         randomizer,
         data_root,
+        journal,
     )
     return _BatchResult(
         run_id=selected_run_id,
@@ -212,6 +217,7 @@ def _run_all(
     checker: safety._Checker | None,
     randomizer: random.Random,
     data_root: Path,
+    journal: RunJournal | None = None,
 ) -> tuple[list[Path], int, int]:
     """Write one report per profile, produce its videos and count the outcomes."""
     run_dirs: list[Path] = []
@@ -251,6 +257,7 @@ def _run_all(
             checker,
             randomizer,
             data_root,
+            journal,
         )
         generated += report.totals.generated
         failed += report.totals.failed
@@ -263,8 +270,16 @@ def _prepare(
     count: int,
     run_id: str,
     randomizer: random.Random,
+    plan: Sequence[_PlannedItem] | None = None,
 ) -> list[tuple[_Profile, tuple[_PlannedItem, ...]]]:
-    """Read the rotation cursor of every profile and build its batch plan."""
+    """Read the rotation cursor of every profile and build its batch plan.
+
+    An explicit *plan* comes from the run journal and is never rebuilt: the
+    producers keep the cards, seeds and lengths written before the first
+    network call.
+    """
+    if plan is not None:
+        return _prepare_from_plan(loaded, count, plan)
     return [
         (
             profile,
@@ -278,6 +293,27 @@ def _prepare(
         )
         for profile in loaded
     ]
+
+
+def _prepare_from_plan(
+    loaded: list[_Profile],
+    count: int,
+    plan: Sequence[_PlannedItem],
+) -> list[tuple[_Profile, tuple[_PlannedItem, ...]]]:
+    """Group journal items by profile and require exactly *count* per profile."""
+    prepared: list[tuple[_Profile, tuple[_PlannedItem, ...]]] = []
+    for profile in loaded:
+        items = tuple(item for item in plan if item.profile == profile.name)
+        if len(items) != count:
+            raise GeneratorError(
+                f"журнал рана дал {len(items)} элементов профиля {profile.name!r}, "
+                f"ожидалось {count}"
+            )
+        prepared.append((profile, items))
+    unknown = {item.profile for item in plan} - {profile.name for profile in loaded}
+    if unknown:
+        raise GeneratorError(f"журнал рана содержит чужие профили: {sorted(unknown)}")
+    return prepared
 
 
 def _produce_safely(
@@ -294,6 +330,7 @@ def _produce_safely(
     checker: safety._Checker | None,
     rng: random.Random,
     data_root: Path,
+    journal: RunJournal | None = None,
 ) -> None:
     """Run one profile and fail its remaining items before re-raising an error."""
     try:
@@ -311,6 +348,7 @@ def _produce_safely(
             checker,
             rng,
             data_root,
+            journal,
         )
     except BaseException as ex:
         report.status = RunStatus.FAILED
@@ -318,6 +356,8 @@ def _produce_safely(
         for item in report.items:
             if item.status not in (RunStatus.DONE, RunStatus.FAILED):
                 item.status, item.error = RunStatus.FAILED, str(ex)
+                if journal is not None:
+                    journal.failed(report.run_id, item.profile, item.file, str(ex))
         _write_report(run_dir, report)
         raise
 
@@ -336,6 +376,7 @@ def _produce(
     checker: safety._Checker | None,
     rng: random.Random,
     data_root: Path,
+    journal: RunJournal | None = None,
 ) -> None:
     """Run the remote phase and then the local post-processing."""
     prompt_lock = threading.Lock()
@@ -352,6 +393,21 @@ def _produce(
         extra = tuple(name for name in layer.checks if name != "clef")
         return production.run_qa(extra, production.QA_SOURCE, {}) if extra else None
 
+    def on_submit(item: _PlannedItem, attempt: int, prompt_id: str, contract_id: str) -> None:
+        if journal is not None:
+            journal.submitted(
+                report.run_id,
+                profile.name,
+                item.filename,
+                prompt_id,
+                attempt,
+                contract_id,
+            )
+
+    def on_download(item: _PlannedItem, source: Path) -> None:
+        if journal is not None:
+            journal.downloaded(report.run_id, profile.name, item.filename, str(source))
+
     report.status = RunStatus.GENERATING
     _write_report(run_dir, report)
     if comfy.server_count(len(items), settings) > 1:
@@ -365,6 +421,8 @@ def _produce(
             run_dir / _SOURCE_DIR,
             store=store,
             verify=verify,
+            on_submit=on_submit,
+            on_download=on_download,
         )
         report.server = _server(profile, batch.servers[0]) if batch.servers else None
         results = batch.results
@@ -379,11 +437,24 @@ def _produce(
             settings=settings,
             store=store,
             verify=verify,
+            on_submit=on_submit,
+            on_download=on_download,
         )
         report.server = _server(profile, info)
     report.status = RunStatus.POSTPROCESSING
     _write_report(run_dir, report)
-    _postprocess(profile, layer, results, run_dir, report, settings, text_writer, rng, data_root)
+    _postprocess(
+        profile,
+        layer,
+        results,
+        run_dir,
+        report,
+        settings,
+        text_writer,
+        rng,
+        data_root,
+        journal,
+    )
     _finalize(report, run_dir, items)
 
 
@@ -397,6 +468,7 @@ def _postprocess(
     text_writer: TextWriter | None,
     rng: random.Random,
     data_root: Path,
+    journal: RunJournal | None = None,
 ) -> None:
     """Generate texts, overlay cards, mix music and check every mp4."""
     writer = text_writer or texts.TextClient(settings)
@@ -408,13 +480,26 @@ def _postprocess(
         if result.path is None:
             item.status = RunStatus.FAILED
             item.error = result.error or "источник не сгенерирован"
+            _fail_item(journal, report.run_id, item, item.error)
             _write_report(run_dir, report)
             continue
         try:
-            _finish_item(profile, layer, item, result.path, run_dir, writer, rng, data_root)
+            _finish_item(
+                profile,
+                layer,
+                item,
+                result.path,
+                run_dir,
+                writer,
+                rng,
+                data_root,
+                journal,
+                report.run_id,
+            )
         except (GeneratorError, OSError) as ex:
             item.status = RunStatus.FAILED
             item.error = str(ex)
+            _fail_item(journal, report.run_id, item, item.error)
             logger.bind(file=item.file, error=str(ex), error_type=type(ex).__name__).error(
                 "Постобработка ролика не удалась"
             )
@@ -425,20 +510,45 @@ def _postprocess(
     for item in report.items:
         if item.status not in (RunStatus.DONE, RunStatus.FAILED):
             item.status, item.error = RunStatus.FAILED, item.error or "результат не получен"
+            _fail_item(journal, report.run_id, item, item.error)
     _write_report(run_dir, report)
 
 
+def _fail_item(
+    journal: RunJournal | None,
+    run_id: str,
+    item: RunItem,
+    error: str,
+) -> None:
+    """Mark one journal item failed when a run carries a journal."""
+    if journal is not None:
+        journal.failed(run_id, item.profile, item.file, error)
+
+
 def _advance_cursor(output_dir: Path, profile: _Profile, item: RunItem, run_id: str) -> None:
-    """Move the rotation cursor after a finished video without failing it."""
+    """Move the rotation cursor forward after a finished video.
+
+    A cursor written by the same run is never moved back: when several chunks
+    finish out of order, the later card keeps the cursor. A cursor left by an
+    earlier run may move to any card, so a batch that wraps around the card
+    list still advances.
+    """
     if item.look_id is None:
         return
+    path = _cursor_path(output_dir, profile)
+    state = rotation.read_cursor_state(path)
+    if state is not None:
+        current_id, current_run = state
+        order = [look.id for look in profile.looks]
+        if (
+            current_run == run_id
+            and current_id in order
+            and item.look_id in order
+            and order.index(item.look_id) <= order.index(current_id)
+        ):
+            return
     try:
-        rotation.advance_cursor(
-            _cursor_path(output_dir, profile),
-            item.look_id,
-            run_id,
-            datetime.now(UTC),
-        )
+        rotation.advance_cursor(path, item.look_id, run_id, datetime.now(UTC))
     except OSError as ex:
         logger.bind(
             profile=profile.name,
@@ -457,13 +567,14 @@ def _finish_item(
     writer: TextWriter,
     rng: random.Random,
     data_root: Path,
+    journal: RunJournal | None = None,
+    run_id: str | None = None,
 ) -> None:
     """Run the local stages of one video and publish its final into the stock."""
     if item.frames is None:
         raise GeneratorError(f"у ролика {item.file} не задано число кадров")
-    card = texts.generate_overlay(profile, writer, rng=rng)
-    texts.save_overlay(run_dir / _TEXT_DIR / f"{Path(item.file).stem}.json", card)
-    audio = rng.choice(profile.audio_tracks) if profile.audio_tracks else None
+    card = _load_or_generate_card(profile, item, run_dir, writer, rng, journal is not None)
+    audio = _choose_audio(profile, item, run_dir, rng, journal is not None)
     final = run_dir / _FINAL_DIR / item.file
     overlay.mix(profile, card, source, final, audio)
     info = qa.check_declared(
@@ -472,9 +583,56 @@ def _finish_item(
         media.video_seconds(item.frames, profile.fps),
         expect_audio=bool(profile.audio_tracks),
     )
+    if journal is not None and run_id is not None:
+        journal.postprocessing(run_id, item.profile, item.file, str(final))
     publish_stock(profile, final, data_root)
+    if journal is not None and run_id is not None:
+        journal.published(run_id, item.profile, item.file)
     item.duration = round(info.duration, 2)
     item.status = RunStatus.DONE
+
+
+def _load_or_generate_card(
+    profile: _Profile,
+    item: RunItem,
+    run_dir: Path,
+    writer: TextWriter,
+    rng: random.Random,
+    reuse: bool,
+) -> texts._Overlay:
+    """Reuse the saved card of a resumed item or generate and save a new one."""
+    path = run_dir / _TEXT_DIR / f"{Path(item.file).stem}.json"
+    if reuse:
+        saved = texts.load_overlay(path)
+        if saved is not None:
+            return saved
+    card = texts.generate_overlay(profile, writer, rng=rng)
+    texts.save_overlay(path, card)
+    return card
+
+
+def _choose_audio(
+    profile: _Profile,
+    item: RunItem,
+    run_dir: Path,
+    rng: random.Random,
+    reuse: bool,
+) -> Path | None:
+    """Reuse the saved music choice of a resumed item or pick a new one."""
+    if not profile.audio_tracks:
+        return None
+    path = run_dir / _TEXT_DIR / f"{Path(item.file).stem}.audio"
+    if reuse and path.is_file():
+        saved = path.read_text(encoding="utf-8").strip()
+        if not saved:
+            return None
+        candidate = Path(saved)
+        if candidate.is_file():
+            return candidate
+    audio = rng.choice(profile.audio_tracks)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{audio}\n", encoding="utf-8")
+    return audio
 
 
 def _server(profile: _Profile, info: ServerInfo) -> RunServer:

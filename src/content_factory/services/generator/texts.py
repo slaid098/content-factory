@@ -199,6 +199,59 @@ def save_overlay(path: Path, overlay: _Overlay) -> None:
     )
 
 
+def load_overlay(path: Path) -> _Overlay | None:
+    """Read a saved card, returning ``None`` when the file is unusable.
+
+    A missing file is the normal first post-processing state. A broken file is
+    logged as a warning and treated as absent, so the caller regenerates the
+    card instead of failing the whole item.
+
+    Args:
+        path: Saved ``text/<name>.json``.
+
+    Returns:
+        Parsed card, or ``None`` when it is missing or malformed.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError as ex:
+        _warn_card(path, f"не удалось прочитать файл: {ex}", ex)
+        return None
+    try:
+        payload: Any = json.loads(raw)
+    except json.JSONDecodeError as ex:
+        _warn_card(path, f"битый JSON: {ex}", ex)
+        return None
+    blocks = payload.get("blocks") if isinstance(payload, dict) else None
+    if not isinstance(blocks, list):
+        _warn_card(path, "ожидался объект с массивом blocks")
+        return None
+    parsed: list[_TextBlock] = []
+    for block in blocks:
+        lines = block.get("lines") if isinstance(block, dict) else None
+        if not isinstance(lines, list) or not all(isinstance(line, str) for line in lines):
+            _warn_card(path, "блок карточки должен содержать массив строк lines")
+            return None
+        parsed.append(_TextBlock(lines=tuple(lines)))
+    if not parsed:
+        _warn_card(path, "карточка не содержит блоков")
+        return None
+    return _Overlay(blocks=tuple(parsed))
+
+
+def _warn_card(path: Path, reason: str, error: Exception | None = None) -> None:
+    """Log an unusable saved card with its path and reason."""
+    context = logger.bind(path=str(path), reason=reason)
+    if error is None:
+        context.warning("Сохранённая карточка текста не прочитана")
+    else:
+        context.bind(error=str(error), error_type=type(error).__name__).warning(
+            "Сохранённая карточка текста не прочитана"
+        )
+
+
 def _parse_single(text: str) -> _Overlay | None:
     """Build an overlay from block tags or from plain text."""
     if _BLOCK_RE.search(text):

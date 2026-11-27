@@ -17,9 +17,10 @@ from content_factory.constants import DB_DIR, DB_FILENAME
 from content_factory.db.connection import connect
 from content_factory.db.errors import DatabaseError
 from content_factory.db.lock import GENERATOR_LOCK, lock_path, try_acquire
+from content_factory.db.run_journal import RunJournalWriter
 from content_factory.exceptions.generator import RentError
 from content_factory.flows.generator_recovery import recovery
-from content_factory.services.generator import VastProvider
+from content_factory.services.generator import VastProvider, resume
 
 
 @flow(name="generator_recovery")
@@ -66,6 +67,20 @@ def _recover(settings: Settings, provider: VastProvider | None) -> str:
     try:
         try:
             vast = provider or _provider()
+            outcomes = resume.resume_unfinished(
+                connection,
+                data_dir=settings.data_dir,
+                settings=load_generator_settings(),
+                provider=vast,
+                journal=RunJournalWriter(settings.data_dir / DB_DIR / DB_FILENAME),
+            )
+            for item in outcomes:
+                logger.bind(
+                    run_id=item.run_id,
+                    status=item.status,
+                    generated=item.generated,
+                    failed=item.failed,
+                ).info("Восстановление: незавершённый ран продолжен")
             outcome = recovery.recover(connection, vast, now=time())
         except DatabaseError as ex:
             logger.bind(error=str(ex), error_type=type(ex).__name__).error(

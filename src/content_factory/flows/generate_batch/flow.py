@@ -15,18 +15,23 @@ from content_factory.config.settings import (
     load_generator_settings,
     prepare_data_dirs,
 )
-from content_factory.constants import DB_DIR, PROFILES_DIR
+from content_factory.constants import DB_DIR, DB_FILENAME, PROFILES_DIR
+from content_factory.db import generator_runs
+from content_factory.db.connection import connect
 from content_factory.db.lock import GENERATOR_LOCK, lock_path, try_acquire
+from content_factory.db.run_journal import RunJournalWriter
 from content_factory.exceptions.generator import GeneratorBusyError, ProfileError
 from content_factory.schemas.content.delivery import ContentType
 from content_factory.schemas.generator.pipeline import Layer, PipelineContext, RecipeProfile
 from content_factory.schemas.generator.run import RunStatus
 from content_factory.services import production
 from content_factory.services.generator import (
+    VastProvider,
     choose_run_id,
     load_profile,
     parse_names,
     profile_slug,
+    resume,
     validate_count,
     write_report,
 )
@@ -36,6 +41,30 @@ if TYPE_CHECKING:
     from content_factory.config.settings import GeneratorSettings
 
 
+def _resume_unfinished(data_dir: Path, settings: GeneratorSettings) -> None:
+    """Finish runs left by a killed process before a new batch is planned."""
+    connection = connect(data_dir / DB_DIR / DB_FILENAME)
+    try:
+        if not generator_runs.list_unfinished_runs(connection):
+            return
+        token = settings.vast_api_token.get_secret_value() if settings.vast_api_token else ""
+        outcomes = resume.resume_unfinished(
+            connection,
+            data_dir=data_dir,
+            settings=settings,
+            provider=VastProvider(token),
+        )
+    finally:
+        connection.close()
+    for outcome in outcomes:
+        logger.bind(
+            run_id=outcome.run_id,
+            status=outcome.status,
+            generated=outcome.generated,
+            failed=outcome.failed,
+        ).info("Незавершённый ран генератора обработан перед новой партией")
+
+
 def _run_group(
     group: tuple[RecipeProfile, ...],
     count: int,
@@ -43,11 +72,20 @@ def _run_group(
     settings: GeneratorSettings,
     dry_run: bool,
     taken: set[str],
+    content_type: str | None = None,
+    journal: RunJournalWriter | None = None,
 ) -> tuple[str, int, int]:
     """Run one recipe group and write the report of every profile in it."""
     profiles = tuple(group)
     started = datetime.now(UTC)
     run_id = choose_run_id(settings.output_dir, list(profiles), started, taken=taken)
+    if journal is not None:
+        journal.start_run(
+            run_id=run_id,
+            profiles=[profile.name for profile in profiles],
+            count=count,
+            content_type=content_type,
+        )
     context = PipelineContext(
         profiles=profiles,
         count=count,
@@ -56,14 +94,20 @@ def _run_group(
         run_id=run_id,
         dry_run=dry_run,
         now=started,
+        journal=journal,
     )
     layers = profiles[0].production
-    result = production.run_pipeline(
-        context,
-        layers,
-        producers=production.default_producers(),
-        checks=production.default_checks(),
-    )
+    try:
+        result = production.run_pipeline(
+            context,
+            layers,
+            producers=production.default_producers(),
+            checks=production.default_checks(),
+        )
+    except BaseException as ex:
+        if journal is not None:
+            journal.finish_run(run_id, "failed", str(ex))
+        raise
     generated = failed = 0
     for profile in profiles:
         report = production.build_report(profile, layers, context, result)
@@ -76,6 +120,8 @@ def _run_group(
         write_report(run_dir, report)
         generated += report.totals.generated
         failed += report.totals.failed
+    if journal is not None:
+        journal.finish_run(run_id, "failed" if failed else "done")
     return run_id, generated, failed
 
 
@@ -130,6 +176,8 @@ def generate_batch(
         raise GeneratorBusyError("генератор уже запущен: дождитесь конца текущей партии")
     try:
         generator_settings = load_generator_settings()
+        if not dry_run:
+            _resume_unfinished(settings.data_dir, generator_settings)
         loaded = [
             load_profile(name, settings.data_dir / PROFILES_DIR) for name in parse_names(profiles)
         ]
@@ -144,6 +192,7 @@ def generate_batch(
         run_ids: list[str] = []
         generated = failed = 0
         taken: set[str] = set()
+        journal = None if dry_run else RunJournalWriter(settings.data_dir / DB_DIR / DB_FILENAME)
         for group in production.group_profiles(loaded):
             run_id, batch_generated, batch_failed = _run_group(
                 group,
@@ -152,6 +201,8 @@ def generate_batch(
                 generator_settings,
                 dry_run,
                 taken,
+                None if selected is None else selected.value,
+                journal,
             )
             run_ids.append(run_id)
             taken.add(run_id)
@@ -189,29 +240,5 @@ def _filter_recipe(
     layers: tuple[Layer, ...],
     selected: ContentType,
 ) -> tuple[Layer, ...]:
-    """Keep the recipe layers of *selected* and reject dangling inputs.
-
-    Args:
-        name: Profile id used in error messages.
-        layers: Recipe layers in execution order.
-        selected: Content type the batch should produce.
-
-    Returns:
-        The layers that produce *selected*, in their original order.
-
-    Raises:
-        ProfileError: The recipe has no layer of that type, or a kept layer
-            depends on a layer of another type that the filter would drop.
-    """
-    kept = tuple(layer for layer in layers if layer.output.value == selected.value)
-    if not kept:
-        raise ProfileError(f"у профиля {name} нет слоя type={selected.value!r}")
-    names = {layer.name for layer in kept}
-    for layer in kept:
-        for source in layer.inputs:
-            if source not in names:
-                raise ProfileError(
-                    f"у профиля {name} слой {layer.name!r} типа {selected.value!r} "
-                    f"зависит от слоя {source!r} другого типа"
-                )
-    return kept
+    """Keep the recipe layers of *selected* and reject dangling inputs."""
+    return production.filter_recipe(name, layers, selected)

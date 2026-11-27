@@ -314,13 +314,18 @@ def mix(
     """
     output.parent.mkdir(parents=True, exist_ok=True)
     card_path = output.with_name(f"{output.stem}.card.png")
+    temporary = output.with_name(f".{output.stem}.tmp{output.suffix}")
     try:
-        render_card(profile, overlay).save(card_path)
-        media.run(_command(source, card_path, output, audio))
-    except OSError as ex:
-        raise OverlayError(f"не удалось подготовить карточку {card_path}: {ex}") from ex
+        try:
+            render_card(profile, overlay).save(card_path)
+        except OSError as ex:
+            raise OverlayError(f"не удалось подготовить карточку {card_path}: {ex}") from ex
+        media.run(_command(source, card_path, temporary, audio))
+        if temporary.is_file():
+            temporary.replace(output)
     finally:
         card_path.unlink(missing_ok=True)
+        temporary.unlink(missing_ok=True)
 
 
 def _box(

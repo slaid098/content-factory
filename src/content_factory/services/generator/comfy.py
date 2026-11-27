@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,6 +59,14 @@ class _ComfyTransport(Protocol):
         """Return the finished history item or ``None`` while running."""
         ...
 
+    def queue(self) -> dict[str, Any]:
+        """Return the current ``/queue`` payload."""
+        ...
+
+    def history_all(self) -> dict[str, Any]:
+        """Return the whole ``/history`` payload."""
+        ...
+
     def system_stats(self) -> dict[str, Any]:
         """Return the server health payload of ``/system_stats``."""
         ...
@@ -87,6 +95,8 @@ class _ServerSession(Protocol):
 _SessionFactory = Callable[[_Profile, GeneratorSettings], _ServerSession]
 _ClientFactory = Callable[[ServerConnection], _ComfyTransport]
 _Store = Callable[[Path, bytes], None]
+_SubmitHook = Callable[[_PlannedItem, int, str, str], None]
+_DownloadHook = Callable[[_PlannedItem, Path], None]
 
 
 class ComfyClient:
@@ -126,6 +136,18 @@ class ComfyClient:
         _raise_status(response, "история ComfyUI")
         item = _json_body(response, "история ComfyUI").get(prompt_id)
         return item if isinstance(item, dict) else None
+
+    def queue(self) -> dict[str, Any]:
+        """Return the current ``/queue`` payload of the server."""
+        response = self._http().get(f"{self._connection.url()}/queue")
+        _raise_status(response, "очередь ComfyUI")
+        return _json_body(response, "очередь ComfyUI")
+
+    def history_all(self) -> dict[str, Any]:
+        """Return the whole ``/history`` payload of the server."""
+        response = self._http().get(f"{self._connection.url()}/history")
+        _raise_status(response, "история ComfyUI")
+        return _json_body(response, "история ComfyUI")
 
     def system_stats(self) -> dict[str, Any]:
         """Return the health payload of the server without its raw body.
@@ -205,6 +227,97 @@ def extract_output(history: dict[str, Any]) -> _OutputFile:
     raise ComfyError(f"в истории ComfyUI нет файлов: {sorted(outputs) if outputs else []}")
 
 
+def find_prompt(
+    client: _ComfyTransport,
+    item: _PlannedItem,
+    prompt_id: str | None = None,
+) -> str | None:
+    """Find the ComfyUI prompt that produces the deterministic file of *item*.
+
+    The workflow names its output after ``item.filename`` without the ``.mp4``
+    suffix, so a prompt stays identifiable after a restart even when its
+    ``prompt_id`` was never written to the journal. The known *prompt_id* is
+    checked first; then the whole history and queue of the server are scanned
+    for the output prefix.
+
+    Args:
+        client: ComfyUI transport of the server.
+        item: Planned video whose output name is searched.
+        prompt_id: Prompt id stored in the journal, when present.
+
+    Returns:
+        The prompt id found in ``/history`` or ``/queue``, or ``None``.
+    """
+    prefix = item.filename.removesuffix(".mp4")
+    if prompt_id:
+        if client.history(prompt_id) is not None:
+            return prompt_id
+        if _queue_has_prompt(client.queue(), prompt_id):
+            return prompt_id
+    for candidate, history in client.history_all().items():
+        if _history_matches(history, prefix):
+            return str(candidate)
+    for entry in _queue_entries(client.queue()):
+        if _entry_matches(entry, prefix):
+            return str(entry[1])
+    return None
+
+
+def _queue_entries(payload: dict[str, Any]) -> list[list[Any]]:
+    """Return the running and pending queue entries of a ``/queue`` payload."""
+    entries: list[list[Any]] = []
+    for key in ("queue_running", "queue_pending"):
+        raw = payload.get(key)
+        if not isinstance(raw, list):
+            continue
+        entries.extend(entry for entry in raw if isinstance(entry, list) and len(entry) > 1)
+    return entries
+
+
+def _queue_has_prompt(payload: dict[str, Any], prompt_id: str) -> bool:
+    """Return whether a queued entry names *prompt_id*."""
+    return any(str(entry[1]) == prompt_id for entry in _queue_entries(payload))
+
+
+def _entry_matches(entry: list[Any], prefix: str) -> bool:
+    """Return whether the workflow of a queue entry writes *prefix*."""
+    prompt = entry[2] if len(entry) > 2 else None
+    return _has_prefix(prompt, prefix)
+
+
+def _history_matches(history: object, prefix: str) -> bool:
+    """Return whether a history item holds an output with *prefix*."""
+    if not isinstance(history, dict):
+        return False
+    outputs = history.get("outputs")
+    if not isinstance(outputs, dict):
+        return False
+    for output in outputs.values():
+        if not isinstance(output, dict):
+            continue
+        for key in ("gifs", "videos", "images"):
+            files = output.get(key)
+            if not isinstance(files, list):
+                continue
+            for item in files:
+                if isinstance(item, dict) and str(item.get("filename") or "").startswith(prefix):
+                    return True
+    return False
+
+
+def _has_prefix(value: object, prefix: str, depth: int = 0) -> bool:
+    """Search a prompt dict for a ``filename_prefix`` equal to *prefix*."""
+    if depth > 8:
+        return False
+    if isinstance(value, dict):
+        if str(value.get("filename_prefix") or "") == prefix:
+            return True
+        return any(_has_prefix(nested, prefix, depth + 1) for nested in value.values())
+    if isinstance(value, list):
+        return any(_has_prefix(nested, prefix, depth + 1) for nested in value)
+    return False
+
+
 def run_jobs(
     client: _ComfyTransport,
     items: Sequence[_PlannedItem],
@@ -221,6 +334,10 @@ def run_jobs(
     health_fail_limit: int = 3,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
+    on_submit: Callable[[_PlannedItem, int, str], None] | None = None,
+    on_download: Callable[[_PlannedItem, Path], None] | None = None,
+    initial: Sequence[tuple[_PlannedItem, int, str]] = (),
+    start_attempts: Mapping[int, int] | None = None,
 ) -> tuple[_JobResult, ...]:
     """Generate every planned video on one server, two jobs in flight.
 
@@ -251,6 +368,14 @@ def run_jobs(
         health_fail_limit: Consecutive health errors that declare the server dead.
         sleep: Pause function; tests replace it to stay fast.
         clock: Monotonic clock; tests replace it to simulate timeouts.
+        on_submit: Called with the item, attempt and prompt id right after
+            the workflow is queued.
+        on_download: Called with the item and source path right after a
+            verified download.
+        initial: Prompts already queued on the server, with their item and
+            attempt; they are polled instead of submitted again.
+        start_attempts: Attempt number of the first submission per item
+            ``seq``; absent items start from the first attempt.
 
     Returns:
         One result per item, ordered by ``seq``.
@@ -260,17 +385,22 @@ def run_jobs(
     """
     directory.mkdir(parents=True, exist_ok=True)
     saver = store or _store_video
+    started_at = clock()
+    attempts_by_seq = start_attempts or {}
     state = _BatchState(
-        queue=deque((item, 1) for item in items),
-        running={},
+        queue=deque((item, attempts_by_seq.get(item.seq, 1)) for item in items),
+        running={
+            prompt_id: _Running(item=item, attempt=attempt, started=started_at)
+            for item, attempt, prompt_id in initial
+        },
         finished={},
         comfy_failures={},
         safety_rejections={},
     )
-    health = _HealthProbe(client, health_interval, health_fail_limit, clock, clock())
+    health = _HealthProbe(client, health_interval, health_fail_limit, clock, started_at)
     while state.queue or state.running:
         health.check(state)
-        _fill(client, build, state, attempts, clock)
+        _fill(client, build, state, attempts, clock, on_submit)
         if not state.running:
             continue
         ready = _ready(client, state.running)
@@ -281,7 +411,7 @@ def run_jobs(
             continue
         prompt_id, history = ready
         job = state.running.pop(prompt_id)
-        _fill(client, build, state, attempts, clock)
+        _fill(client, build, state, attempts, clock, on_submit)
         _download(
             client,
             history,
@@ -292,6 +422,7 @@ def run_jobs(
             attempts,
             verify,
             safety_frame_attempts,
+            on_download,
         )
     return tuple(state.finished[index] for index in sorted(state.finished))
 
@@ -371,6 +502,10 @@ def run_server(
     settings: GeneratorSettings,
     store: _Store | None = None,
     verify: Callable[[_PlannedItem, Path, int], str | None] | None = None,
+    on_submit: _SubmitHook | None = None,
+    on_download: _DownloadHook | None = None,
+    initial: Sequence[tuple[_PlannedItem, int, str]] = (),
+    start_attempts: Mapping[int, int] | None = None,
 ) -> tuple[ServerInfo, tuple[_JobResult, ...]]:
     """Rent one server, generate every item and destroy it before returning.
 
@@ -388,6 +523,11 @@ def run_server(
         settings: Generator settings with timeouts and safety attempts.
         store: Saver of downloaded bytes; defaults to the ffmpeg cut.
         verify: Safety check of a saved source; returns a defect reason.
+        on_submit: Called with the item, attempt, prompt id and contract id.
+        on_download: Called with the item and its source path.
+        initial: Prompts already queued on the adopted server.
+        start_attempts: Attempt number of the first submission per item
+            ``seq``.
 
     Returns:
         Ready server info and one result per item, ordered by ``seq``.
@@ -404,6 +544,10 @@ def run_server(
             settings,
             store,
             verify,
+            on_submit,
+            on_download,
+            initial,
+            start_attempts,
         )
     except Exception as ex:  # noqa: BLE001 — teardown must run before re-raising
         _log_chunk(0, items, info, str(ex), type(ex).__name__)
@@ -425,6 +569,8 @@ def run_servers(
     *,
     store: _Store | None = None,
     verify: Callable[[_PlannedItem, Path, int], str | None] | None = None,
+    on_submit: _SubmitHook | None = None,
+    on_download: _DownloadHook | None = None,
 ) -> _BatchRun:
     """Generate every chunk on its own server, one rent race at a time.
 
@@ -445,6 +591,8 @@ def run_servers(
         directory: Directory that receives downloaded silent sources.
         store: Saver of downloaded bytes; defaults to the ffmpeg cut.
         verify: Safety check of a saved source; returns a defect reason.
+        on_submit: Called with the item, attempt, prompt id and contract id.
+        on_download: Called with the item and its source path.
 
     Returns:
         First ready servers in chunk order and one result per planned video,
@@ -466,6 +614,8 @@ def run_servers(
                 rent_lock=rent_lock,
                 store=store,
                 verify=verify,
+                on_submit=on_submit,
+                on_download=on_download,
             )
             for index, chunk in enumerate(chunks)
         ]
@@ -486,6 +636,8 @@ def _run_chunk(
     rent_lock: threading.Lock,
     store: _Store | None,
     verify: Callable[[_PlannedItem, Path, int], str | None] | None,
+    on_submit: _SubmitHook | None = None,
+    on_download: _DownloadHook | None = None,
 ) -> _ChunkOutcome:
     """Rent one server and generate one chunk; a failure stays in its chunk."""
     session = session_factory(profile, settings)
@@ -505,6 +657,8 @@ def _run_chunk(
                 settings,
                 store,
                 verify,
+                on_submit,
+                on_download,
             )
         finally:
             _destroy(session, profile.name)
@@ -526,9 +680,19 @@ def _generate(
     settings: GeneratorSettings,
     store: _Store | None,
     verify: Callable[[_PlannedItem, Path, int], str | None] | None,
+    on_submit: _SubmitHook | None = None,
+    on_download: _DownloadHook | None = None,
+    initial: Sequence[tuple[_PlannedItem, int, str]] = (),
+    start_attempts: Mapping[int, int] | None = None,
 ) -> tuple[_JobResult, ...]:
     """Run one chunk on a ready server and close its HTTP client."""
     client = client_factory(info.connection)
+    contract_id = info.connection.contract_id
+
+    def submit_hook(item: _PlannedItem, attempt: int, prompt_id: str) -> None:
+        if on_submit is not None:
+            on_submit(item, attempt, prompt_id, contract_id)
+
     try:
         return run_jobs(
             client,
@@ -540,6 +704,10 @@ def _generate(
             safety_frame_attempts=settings.safety_frame_attempts,
             job_timeout=settings.comfy_job_timeout,
             health_interval=settings.comfy_health_interval,
+            on_submit=submit_hook if on_submit is not None else None,
+            on_download=on_download,
+            initial=initial,
+            start_attempts=start_attempts,
         )
     finally:
         client.close()
@@ -661,6 +829,7 @@ def _fill(
     state: _BatchState,
     attempts: int,
     clock: Callable[[], float],
+    on_submit: Callable[[_PlannedItem, int, str], None] | None = None,
 ) -> None:
     """Submit prompts until two are in flight or the queue is empty."""
     while state.queue and len(state.running) < _MAX_IN_FLIGHT:
@@ -670,6 +839,8 @@ def _fill(
         except GeneratorError as ex:
             _retry(item, attempt, ex, state, attempts, "постановка")
             continue
+        if on_submit is not None:
+            on_submit(item, attempt, prompt_id)
         state.running[prompt_id] = _Running(item=item, attempt=attempt, started=clock())
 
 
@@ -695,6 +866,7 @@ def _download(
     attempts: int,
     verify: Callable[[_PlannedItem, Path, int], str | None] | None,
     safety_frame_attempts: int,
+    on_download: Callable[[_PlannedItem, Path], None] | None = None,
 ) -> None:
     """Download a ready result, save it and run the safety check."""
     try:
@@ -723,6 +895,8 @@ def _download(
         if reason is not None:
             _reject(job.item, job.attempt, reason, path, state, safety_frame_attempts)
             return
+    if on_download is not None:
+        on_download(job.item, path)
     state.finished[job.item.seq] = _JobResult(item=job.item, path=path)
     logger.bind(file=path.name, seed=job.item.seed).info("Исходник видео сохранён")
 

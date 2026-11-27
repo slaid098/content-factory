@@ -7,8 +7,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.unit.generator.helpers import make_profile
 
-from content_factory.db import generator_servers
+from content_factory.db import generator_runs, generator_servers
 from content_factory.db.connection import connect
 from content_factory.db.errors import DatabaseError
 from content_factory.db.lock import GENERATOR_LOCK, lock_path, try_acquire
@@ -16,6 +17,7 @@ from content_factory.exceptions.generator import RentError
 from content_factory.flows.generator_recovery import flow as flow_module
 from content_factory.flows.generator_recovery import recovery as recovery_module
 from content_factory.flows.generator_recovery.flow import generator_recovery
+from content_factory.schemas.generator.journal import JournalPlanItem
 from content_factory.services.generator.vast import (
     GENERATOR_LABEL,
     destroy_verified,
@@ -23,12 +25,14 @@ from content_factory.services.generator.vast import (
 from content_factory.services.generator.vast_cli import VastProvider
 
 _NOW = 1_800_000_000.0
+_RUN_ID = "20260101T000000Z"
 
 
 @pytest.fixture(autouse=True)
 def _flow_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Point the flow at an isolated data directory and a fixed clock."""
     monkeypatch.setenv("CONTENT_FACTORY_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("GENERATOR_OUTPUT_DIR", str(tmp_path / "generated"))
     monkeypatch.setattr(flow_module, "time", lambda: _NOW)
 
 
@@ -47,6 +51,7 @@ def _insert_renting(
     minutes_old: float = 0,
     contract_id: str | None = "c1",
     ready: bool = False,
+    run_id: str = _RUN_ID,
 ) -> str:
     """Insert one journal row as if the rental started *minutes_old* ago."""
     created = _iso(_NOW - minutes_old * 60)
@@ -55,7 +60,7 @@ def _insert_renting(
         generator_servers.insert_renting(
             connection,
             server_id=server_id,
-            run_id="run-1",
+            run_id=run_id,
             profile="dating/profile_1",
             gpu="L40S",
             image="img",
@@ -320,3 +325,107 @@ def test_database_error_returns_an_outcome_without_raising(
 
     assert outcome == "db_unavailable"
     assert provider.destroyed == []
+
+
+def _insert_run(
+    tmp_path: Path,
+    *,
+    run_id: str = _RUN_ID,
+    profile: str = "dating/profile_1",
+    status: str = "running",
+    file: str | None = None,
+) -> None:
+    """Insert one run row and, when named, one finished item of it."""
+    connection = _db(tmp_path)
+    try:
+        generator_runs.insert_run(
+            connection,
+            run_id=run_id,
+            profiles=[profile],
+            count=1,
+            content_type="video",
+            now=_iso(_NOW),
+        )
+        if file is not None:
+            generator_runs.insert_plan(
+                connection,
+                run_id,
+                [
+                    JournalPlanItem(
+                        profile=profile,
+                        file=file,
+                        producer="vast",
+                        type="video",
+                        look_id="c01",
+                        seed=7,
+                        frames=119,
+                    )
+                ],
+                _iso(_NOW),
+            )
+            generator_runs.mark_published(
+                connection,
+                run_id=run_id,
+                profile=profile,
+                file=file,
+                now=_iso(_NOW),
+            )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _run_status(tmp_path: Path, run_id: str = _RUN_ID) -> str:
+    connection = _db(tmp_path)
+    try:
+        row = generator_runs.get_run(connection, run_id)
+    finally:
+        connection.close()
+    assert row is not None
+    return row.status
+
+
+def test_bound_server_of_an_unfinished_run_is_not_reaped(tmp_path: Path) -> None:
+    _insert_renting(tmp_path, minutes_old=11, ready=True)
+    _insert_run(tmp_path)
+    connection = _db(tmp_path)
+    try:
+        outcome = recovery_module.recover(
+            connection,
+            _Provider([_instance(age_minutes=11)]),  # type: ignore[arg-type]
+            now=_NOW,
+        )
+    finally:
+        connection.close()
+
+    assert (outcome.destroyed, outcome.lost, outcome.failed) == (0, 0, 0)
+    assert _row(tmp_path).status == generator_servers.READY
+
+
+def test_recovery_resumes_the_run_before_reaping_its_server(tmp_path: Path) -> None:
+    make_profile(tmp_path / "profiles", name="dating/profile_1")
+    _insert_run(tmp_path, status="done", file="dating_profile_1_20260101T000000Z_001.mp4")
+    _insert_renting(tmp_path, minutes_old=11, ready=True)
+    provider = _Provider([_instance(age_minutes=11)])
+
+    outcome = _run(provider)  # type: ignore[arg-type]
+
+    assert outcome == "destroyed=0 lost=0 failed=0"
+    assert provider.destroyed == ["c1"]
+    assert _row(tmp_path).status == generator_servers.DESTROYED
+    assert _run_status(tmp_path) == "done"
+
+
+def test_busy_generator_lock_does_not_resume_the_run(tmp_path: Path) -> None:
+    _insert_run(tmp_path)
+    lock = try_acquire(lock_path(tmp_path / "db", GENERATOR_LOCK))
+    assert lock is not None
+    provider = _Provider([_instance()])
+    try:
+        outcome = _run(provider)  # type: ignore[arg-type]
+    finally:
+        lock.release()
+
+    assert outcome == "busy"
+    assert provider.queries == 0
+    assert _run_status(tmp_path) == "running"

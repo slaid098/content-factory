@@ -146,4 +146,37 @@ def _qa_names(
     return tuple(names)
 
 
-__all__ = ["DEFAULT_RECIPE", "read_recipe"]
+def filter_recipe(
+    name: str,
+    layers: tuple[Layer, ...],
+    selected: ContentType,
+) -> tuple[Layer, ...]:
+    """Keep the recipe layers of *selected* and reject dangling inputs.
+
+    Args:
+        name: Profile id used in error messages.
+        layers: Recipe layers in execution order.
+        selected: Content type the batch should produce.
+
+    Returns:
+        The layers that produce *selected*, in their original order.
+
+    Raises:
+        ProfileError: The recipe has no layer of that type, or a kept layer
+            depends on a layer of another type that the filter would drop.
+    """
+    kept = tuple(layer for layer in layers if layer.output.value == selected.value)
+    if not kept:
+        raise ProfileError(f"у профиля {name} нет слоя type={selected.value!r}")
+    names = {layer.name for layer in kept}
+    for layer in kept:
+        for source in layer.inputs:
+            if source not in names:
+                raise ProfileError(
+                    f"у профиля {name} слой {layer.name!r} типа {selected.value!r} "
+                    f"зависит от слоя {source!r} другого типа"
+                )
+    return kept
+
+
+__all__ = ["DEFAULT_RECIPE", "filter_recipe", "read_recipe"]

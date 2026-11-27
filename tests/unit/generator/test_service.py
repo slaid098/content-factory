@@ -799,7 +799,7 @@ def test_dead_server_does_not_stop_the_other_chunk(tmp_path: Path, monkeypatch) 
     assert [item["status"] for item in report["items"]] == ["failed"] * 7 + ["done"] * 7
     assert all(item["error"] == "сервер перестал отвечать" for item in report["items"][:7])
     cursor = json.loads(_cursor_path(tmp_path).read_text(encoding="utf-8"))
-    assert cursor["last_look_id"] == "c02"
+    assert cursor["last_look_id"] == "c03"
 
 
 def test_all_servers_dead_fail_the_batch_after_teardown(tmp_path: Path, monkeypatch) -> None:

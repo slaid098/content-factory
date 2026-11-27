@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import random
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 from pydantic import ValidationError
@@ -24,6 +24,7 @@ from content_factory.services.generator import (
     profile_slug,
     read_profile_cursor,
 )
+from content_factory.services.generator.plan import _PlannedItem, planned_item
 from content_factory.services.production.paths import context_run_dir
 
 _FINAL_DIR = "final"
@@ -79,8 +80,14 @@ class VastProducer:
         context: PipelineContext,
     ) -> tuple[Artifact, ...]:
         """Generate the whole group with one ``generate_batch`` call."""
-        del layer, inputs
+        del inputs
         names = ",".join(profile.name for profile in context.profiles)
+        plan = _planned_items(context, layer)
+        extras: dict[str, Any] = {}
+        if context.journal is not None:
+            extras["journal"] = context.journal
+        if plan is not None:
+            extras["plan"] = plan
         generate_batch(
             profiles=names,
             count=context.count,
@@ -89,36 +96,100 @@ class VastProducer:
             run_id=context.run_id,
             rng=context.rng,
             now=context.now,
+            **extras,
         )
-        return tuple(self._artifacts(context))
+        return tuple(self._artifacts(context, layer))
 
-    def _artifacts(self, context: PipelineContext) -> list[Artifact]:
+    def _artifacts(self, context: PipelineContext, layer: Layer) -> list[Artifact]:
         """Describe planned items; the report only supplies statuses and errors."""
         artifacts: list[Artifact] = []
+        planned_by_profile = _planned_by_profile(context, layer)
         for profile in context.profiles:
             loaded = load_profile(profile.name, context.data_dir / PROFILES_DIR)
             run_dir = context_run_dir(context, loaded.language, profile_slug(loaded))
             report = _read_report(run_dir / _RUN_FILENAME)
             reported, server = _trusted_report(report, context.run_id, loaded.name)
-            planned = plan_batch(
-                loaded,
-                context.count,
-                context.run_id,
-                rng=random.Random(0),  # names only: seeds do not name files
-            )
-            for item in planned:
+            for planned in planned_by_profile.get(loaded.name, ()):
                 artifacts.append(
                     _artifact(
                         loaded.name,
                         run_dir,
-                        item.filename,
-                        reported.get(item.filename),
+                        planned,
+                        reported.get(planned.item),
                         server,
                         loaded.fps,
                         bool(loaded.audio_tracks),
                     )
                 )
         return artifacts
+
+
+def _planned_items(context: PipelineContext, layer: Layer) -> tuple[_PlannedItem, ...] | None:
+    """Convert the journal plan of a layer into planned videos, when present."""
+    artifacts = context.planned.get(layer.name)
+    if artifacts is None:
+        return None
+    items: list[_PlannedItem] = []
+    for profile in context.profiles:
+        loaded = load_profile(profile.name, context.data_dir / PROFILES_DIR)
+        own = [artifact for artifact in artifacts if artifact.profile == loaded.name]
+        for seq, artifact in enumerate(own, start=1):
+            items.append(
+                planned_item(
+                    loaded,
+                    artifact.item,
+                    look_id=_text(artifact, "look_id"),
+                    seed=_integer(artifact, "seed"),
+                    frames=_integer(artifact, "frames"),
+                    seq=seq,
+                )
+            )
+    return tuple(items)
+
+
+def _planned_by_profile(
+    context: PipelineContext,
+    layer: Layer,
+) -> dict[str, tuple[Artifact, ...]]:
+    """Return the planned artifacts of every profile, rebuilding them if absent."""
+    planned = context.planned.get(layer.name)
+    if planned is not None:
+        return {
+            profile.name: tuple(a for a in planned if a.profile == profile.name)
+            for profile in context.profiles
+        }
+    rebuilt: dict[str, tuple[Artifact, ...]] = {}
+    for profile in context.profiles:
+        loaded = load_profile(profile.name, context.data_dir / PROFILES_DIR)
+        run_dir = context_run_dir(context, loaded.language, profile_slug(loaded))
+        cursor = read_profile_cursor(
+            context.settings.output_dir,
+            loaded.language,
+            profile_slug(loaded),
+        )
+        rebuilt[loaded.name] = tuple(
+            Artifact(
+                item=item.filename,
+                profile=loaded.name,
+                kind=ArtifactKind.VIDEO,
+                path=run_dir / _FINAL_DIR / item.filename,
+                media_type=_VIDEO_MEDIA_TYPE,
+                meta={
+                    "look_id": item.look.id,
+                    "seed": item.seed,
+                    "frames": item.frames,
+                    "status": "planned",
+                },
+            )
+            for item in plan_batch(
+                loaded,
+                context.count,
+                context.run_id,
+                rng=context.rng,
+                start_after=cursor,
+            )
+        )
+    return rebuilt
 
 
 def _trusted_report(
@@ -144,14 +215,15 @@ def _trusted_report(
 def _artifact(
     profile: str,
     run_dir: Path,
-    filename: str,
+    planned: Artifact,
     item: RunItem | None,
     server: RunServer | None,
     fps: int,
     expect_audio: bool,
 ) -> Artifact:
     """Describe one planned video, using its report item when it matches."""
-    frames = item.frames if item is not None else None
+    filename = planned.item
+    frames = item.frames if item is not None else _integer(planned, "frames")
     if item is None:
         status, error = "failed", "нет отчёта генератора"
     elif item.status is RunStatus.DONE:
@@ -165,8 +237,8 @@ def _artifact(
         path=_final_path(run_dir, filename),
         media_type=_VIDEO_MEDIA_TYPE,
         meta={
-            "look_id": item.look_id if item is not None else None,
-            "seed": item.seed if item is not None else None,
+            "look_id": item.look_id if item is not None else _text(planned, "look_id"),
+            "seed": item.seed if item is not None else _integer(planned, "seed"),
             "frames": frames,
             "duration": item.duration if item is not None else None,
             "status": status,
@@ -176,6 +248,23 @@ def _artifact(
             "server": server.model_dump() if server is not None else None,
         },
     )
+
+
+def _text(artifact: Artifact, key: str) -> str | None:
+    """Return an optional non-empty string field of artifact meta."""
+    value = artifact.meta.get(key)
+    if value is None:
+        return None
+    text = str(value)
+    return text or None
+
+
+def _integer(artifact: Artifact, key: str) -> int | None:
+    """Return an optional integer field of artifact meta."""
+    value = artifact.meta.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
 
 
 def _plain_name(filename: str) -> bool:

@@ -8,6 +8,7 @@ MIGRATION_MODULES = (
     "content_factory.db.migrations.0003_photo_refill",
     "content_factory.db.migrations.0004_trusted_devices",
     "content_factory.db.migrations.0005_generator_servers",
+    "content_factory.db.migrations.0006_generator_runs",
 )
 
 __all__ = ["MIGRATION_MODULES"]
