@@ -37,6 +37,7 @@ class _JobResult:
     item: _PlannedItem
     path: Path | None = None
     error: str | None = None
+    final: Path | None = None
 
 
 class _ServerSession(Protocol):

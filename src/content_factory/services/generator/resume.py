@@ -170,6 +170,7 @@ def _resume_one(
     rng: random.Random,
 ) -> RunOutcome:
     """Resume one run, marking it failed when it cannot continue."""
+    loaded: list[_Profile] | None = None
     try:
         loaded = _load_profiles(run, data_dir / PROFILES_DIR)
         _ensure_plan(connection, run, loaded, data_dir, settings, journal, rng)
@@ -202,6 +203,11 @@ def _resume_one(
         )
         _fail_run(connection, run, journal, str(ex))
         rows = generator_runs.list_items(connection, run.run_id)
+        if loaded is not None:
+            try:
+                _write_reports(connection, run, loaded, rows, settings, force_failed=True)
+            except (GeneratorError, OSError, ValueError):
+                logger.bind(run_id=run.run_id).error("run.json не пересобран после сбоя")
         return _outcome(run.run_id, generator_runs.FAILED, rows)
     finally:
         _destroy_run_servers(connection, run, provider)
@@ -348,6 +354,10 @@ def _video_results(
     for row in rows:
         if row.status in generator_runs.TERMINAL_ITEM_STATUSES:
             continue
+        final = Path(row.final_path) if row.final_path else None
+        if final is not None and final.is_file():
+            results.append(comfy._JobResult(item=_planned(profile, row), final=final))
+            continue
         source = _source(row)
         if source is not None:
             results.append(comfy._JobResult(item=_planned(profile, row), path=source))
@@ -470,10 +480,7 @@ def _assigned_rows(
     plans: dict[str, _PlannedItem],
     servers: Sequence[_LiveServer],
     known: dict[str, generator_servers.GeneratorServerRow],
-) -> tuple[
-    dict[str, list[generator_runs.GeneratorItemRow]],
-    list[comfy._JobResult],
-]:
+) -> tuple[dict[str, list[generator_runs.GeneratorItemRow]], list[comfy._JobResult]]:
     """Group rows by live server; fail rows of a server that is gone but known."""
     assigned: dict[str, list[generator_runs.GeneratorItemRow]] = {
         server.row.id: [] for server in servers
@@ -830,6 +837,7 @@ def _write_reports(
     loaded: Sequence[_Profile],
     rows: Sequence[generator_runs.GeneratorItemRow],
     settings: GeneratorSettings,
+    force_failed: bool = False,
 ) -> None:
     """Rebuild ``run.json`` of every profile from the journal rows."""
     for profile in loaded:
@@ -838,7 +846,7 @@ def _write_reports(
             settings.output_dir, profile.language, profile_slug(profile), run.run_id
         )
         server = _server_block(connection, run, profile.name)
-        report = _report(run, profile, own, server, profile.production, run_dir)
+        report = _report(run, profile, own, server, profile.production, run_dir, force_failed)
         _write_report(run_dir, report)
 
 
@@ -849,6 +857,7 @@ def _report(
     server: RunServer | None,
     recipe: Sequence[Layer],
     run_dir: Path,
+    force_failed: bool = False,
 ) -> RunReport:
     """Build the report of one profile from journal rows."""
     items = [_run_item(profile, row, recipe) for row in rows]
@@ -860,7 +869,7 @@ def _report(
         run_id=run.run_id,
         started_at=start_moment(run.started_at),
         finished_at=datetime.now(UTC),
-        status=RunStatus.FAILED if failed else RunStatus.DONE,
+        status=RunStatus.FAILED if force_failed or failed else RunStatus.DONE,
         profiles=[profile.name],
         count=run.count,
         production=[

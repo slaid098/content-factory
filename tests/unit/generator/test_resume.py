@@ -566,6 +566,37 @@ def test_downloaded_source_skips_the_server_and_finishes_postprocessing(
     assert _item_rows(tmp_path)[0].status == "done"
 
 
+def test_recorded_final_is_published_without_postprocessing_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_profile(tmp_path / "profiles")
+    _start_run(tmp_path, (_item(_FILE),))
+    final = _run_dir(tmp_path) / "final" / _FILE
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"final")
+    _journal(tmp_path).postprocessing(_RUN_ID, _PROFILE, _FILE, str(final))
+    mixes: list[Any] = []
+
+    def mix(*args: Any, **kwargs: Any) -> None:
+        mixes.append((args, kwargs))
+        raise AssertionError("the recorded final must not be rendered again")
+
+    monkeypatch.setattr(batch.overlay, "mix", mix)
+
+    outcomes = _resume(
+        tmp_path,
+        provider=_Provider(),
+        client_factory=lambda connection: (_ for _ in ()).throw(AssertionError("no network")),
+    )
+
+    assert outcomes[0].status == "done"
+    assert mixes == []
+    assert _item_rows(tmp_path)[0].status == "done"
+    stock = tmp_path / "content" / "dating" / "ru" / _FILE
+    assert stock.read_bytes() == b"final"
+    assert [path.name for path in stock.parent.iterdir()] == [_FILE]
+
+
 def test_published_item_is_reconciled_and_the_cursor_does_not_move_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -612,7 +643,7 @@ def test_published_item_is_reconciled_and_the_cursor_does_not_move_back(
 
     assert outcomes[0].status == "done"
     assert writer.calls == 0
-    assert audios == [audio]
+    assert audios == []
     assert stock.read_bytes() == b"final"
     assert json.loads(cursor.read_text(encoding="utf-8"))["last_look_id"] == "c02"
     assert _item_rows(tmp_path)[0].status == "done"
@@ -638,6 +669,10 @@ def test_lost_server_fails_the_run_without_renting_again(
     assert row.status == "failed"
     assert "исчез" in (row.error or "")
     assert _run_row(tmp_path).status == "failed"
+    report = json.loads((_run_dir(tmp_path) / "run.json").read_text(encoding="utf-8"))
+    assert report["status"] == "failed"
+    assert [item["status"] for item in report["items"]] == ["failed"]
+    assert "исчез" in (report["items"][0]["error"] or "")
     connection = _connection(tmp_path)
     try:
         server = generator_servers.get_row(connection, "s1")

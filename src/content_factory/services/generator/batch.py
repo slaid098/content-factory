@@ -314,25 +314,29 @@ def _postprocess(
         item = by_file.get(result.item.filename)
         if item is None:
             continue
-        if result.path is None:
+        if result.path is None and result.final is None:
             item.status = RunStatus.FAILED
             item.error = result.error or "источник не сгенерирован"
             _fail_item(journal, report.run_id, item, item.error)
             _write_report(run_dir, report)
             continue
         try:
-            _finish_item(
-                profile,
-                layer,
-                item,
-                result.path,
-                run_dir,
-                writer,
-                rng,
-                data_root,
-                journal,
-                report.run_id,
-            )
+            if result.final is None:
+                assert result.path is not None
+                _finish_item(
+                    profile,
+                    layer,
+                    item,
+                    result.path,
+                    run_dir,
+                    writer,
+                    rng,
+                    data_root,
+                    journal,
+                    report.run_id,
+                )
+            else:
+                _publish_final(profile, item, result.final, data_root, journal, report.run_id)
         except (GeneratorError, OSError) as ex:
             item.status = RunStatus.FAILED
             item.error = str(ex)
@@ -349,6 +353,21 @@ def _postprocess(
             item.status, item.error = RunStatus.FAILED, item.error or "результат не получен"
             _fail_item(journal, report.run_id, item, item.error)
     _write_report(run_dir, report)
+
+
+def _publish_final(
+    profile: _Profile,
+    item: RunItem,
+    final: Path,
+    data_root: Path,
+    journal: RunJournal | None,
+    run_id: str,
+) -> None:
+    """Publish a final built before a restart without rendering it again."""
+    publish_stock(profile, final, data_root)
+    if journal is not None:
+        journal.published(run_id, item.profile, item.file)
+    item.status = RunStatus.DONE
 
 
 def _fail_item(
