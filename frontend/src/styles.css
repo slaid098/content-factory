@@ -444,6 +444,7 @@
     display: grid;
     gap: var(--space-3);
     grid-template-columns: minmax(0, 1fr);
+    align-items: start;
   }
 
   .stat-card {
