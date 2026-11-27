@@ -40,23 +40,7 @@ from content_factory.services.generator.vast import VastSession
 
 _SessionFactory = Callable[[OverlayProfile, GeneratorSettings], _ServerSession]
 _QA_ATTEMPTS = 3
-_READY_TIMEOUT = 900
 _REPORT = "run.json"
-
-
-def _bounded_settings(settings: GeneratorSettings) -> GeneratorSettings:
-    """Cap the readiness wait of one overlay server.
-
-    A broken image can stay in ``loading`` for an hour while Vast.ai already
-    charges for it. Overlays need neither a long pull nor a long boot, so the
-    wait is capped; the health check is a hard 200 from ``/system_stats``.
-    """
-    return settings.model_copy(
-        update={
-            "server_ready_timeout": min(settings.server_ready_timeout, _READY_TIMEOUT),
-            "comfy_health_timeout": min(settings.comfy_health_timeout, 300),
-        }
-    )
 
 
 def generate_overlays(
@@ -113,7 +97,7 @@ def generate_overlays(
     if missing:
         (data_dir / GENERATED_DIR).mkdir(parents=True, exist_ok=True)
         media.ensure_free_space(data_dir / GENERATED_DIR)
-        run_settings = _bounded_settings(settings or load_generator_settings())
+        run_settings = settings or load_generator_settings()
         session = _session_factory(data_dir, plan, session_factory)(profile, run_settings)
         results = _run_missing(
             profile,

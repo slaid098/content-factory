@@ -208,14 +208,3 @@ def test_submit_and_download_hooks_match_the_real_server_queue(tmp_path: Path) -
 
     assert results[0].path == tmp_path / planned.filename
     assert _Session.destroyed == 1
-
-
-def test_overlay_batch_caps_the_readiness_wait(tmp_path: Path) -> None:
-    long_wait = _settings(tmp_path).model_copy(update={"server_ready_timeout": 3600})
-    short_wait = long_wait.model_copy(update={"server_ready_timeout": 300})
-
-    assert (
-        overlay_batch._bounded_settings(long_wait).server_ready_timeout
-        == overlay_batch._READY_TIMEOUT
-    )
-    assert overlay_batch._bounded_settings(short_wait).server_ready_timeout == 300
