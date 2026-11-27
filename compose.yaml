@@ -88,7 +88,7 @@ services:
 
   worker:
     <<: *image
-    command: ["prefect", "worker", "start", "--pool", "content-factory", "--limit", "2"]
+    command: ["python", "scripts/prefect_worker.py", "--pool", "content-factory", "--limit", "2"]
     # Тонкие настройки SUPPLIER_* удобнее держать в .env, чем дублировать
     # в compose. Файл необязателен: без него работают значения из кода.
     env_file:

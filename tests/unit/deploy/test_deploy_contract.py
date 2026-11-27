@@ -60,9 +60,8 @@ def test_compose_contract() -> None:
     ]
     assert api["restart"] == "unless-stopped"
     assert worker["command"] == [
-        "prefect",
-        "worker",
-        "start",
+        "python",
+        "scripts/prefect_worker.py",
         "--pool",
         "content-factory",
         "--limit",
@@ -181,6 +180,12 @@ def test_prod_dockerfile_bakes_release_identity() -> None:
     assert "ARG BUILT_AT=unknown" in dockerfile
     assert "GIT_SHA=${GIT_SHA}" in dockerfile
     assert "BUILT_AT=${BUILT_AT}" in dockerfile
+
+
+def test_prod_dockerfile_copies_the_worker_wrapper() -> None:
+    dockerfile = (_ROOT / _PROD_DOCKERFILE).read_text(encoding="utf-8")
+
+    assert "COPY scripts/device_access.py scripts/prefect_worker.py ./scripts/" in dockerfile
 
 
 def test_release_job_contract() -> None:
