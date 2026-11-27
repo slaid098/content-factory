@@ -298,7 +298,7 @@ def _resume_videos(
         run,
         profile,
         video_rows,
-        _server_block(connection, run),
+        _server_block(connection, run, profile.name),
         profile.production,
         run_dir,
     )
@@ -374,8 +374,8 @@ def _run_remote(
     """Find, wait for or resubmit the prompts of missing video items."""
     items = [_planned(profile, row) for row in rows]
     plans = {row.file: item for row, item in zip(rows, items, strict=True)}
-    servers = _live_servers(connection, run, provider)
-    if not servers and _has_bound_server(connection, run):
+    servers, bound = _live_servers(connection, run, profile.name, provider)
+    if not servers and bound:
         raise _LostServer(f"сервер рана {run.run_id} исчез из Vast.ai")
     if not servers:
         return _rent_and_generate(
@@ -740,16 +740,23 @@ def _layer_for(
 def _live_servers(
     connection: Connection,
     run: generator_runs.GeneratorRunRow,
+    profile: str,
     provider: VastProvider | None,
-) -> list[_LiveServer]:
-    """Return ready servers of the run that still exist in the Vast.ai account."""
+) -> tuple[list[_LiveServer], bool]:
+    """Return the profile's live servers and whether it ever had a contract."""
+    journal = generator_servers.list_for_run(connection, run.run_id)
     rows = [
         row
-        for row in generator_servers.list_for_run(connection, run.run_id)
-        if row.status == generator_servers.READY and row.contract_id and row.ip and row.port
+        for row in journal
+        if row.profile == profile
+        and row.status == generator_servers.READY
+        and row.contract_id
+        and row.ip
+        and row.port
     ]
+    bound = any(row.profile == profile and row.contract_id is not None for row in journal)
     if not rows:
-        return []
+        return [], bound
     present = _present_contracts(provider)
     servers: list[_LiveServer] = []
     for row in rows:
@@ -768,18 +775,7 @@ def _live_servers(
             cost_per_hour=row.cost_per_hour,
         )
         servers.append(_LiveServer(row, info))
-    return servers
-
-
-def _has_bound_server(
-    connection: Connection,
-    run: generator_runs.GeneratorRunRow,
-) -> bool:
-    """Return whether the run ever had a contract, so a missing one is a loss."""
-    return any(
-        row.contract_id is not None
-        for row in generator_servers.list_for_run(connection, run.run_id)
-    )
+    return servers, bound
 
 
 def _present_contracts(provider: VastProvider | None) -> set[str] | None:
@@ -840,12 +836,12 @@ def _write_reports(
     settings: GeneratorSettings,
 ) -> None:
     """Rebuild ``run.json`` of every profile from the journal rows."""
-    server = _server_block(connection, run)
     for profile in loaded:
         own = [row for row in rows if row.profile == profile.name]
         run_dir = profile_run_dir(
             settings.output_dir, profile.language, profile_slug(profile), run.run_id
         )
+        server = _server_block(connection, run, profile.name)
         report = _report(run, profile, own, server, profile.production, run_dir)
         _write_report(run_dir, report)
 
@@ -916,10 +912,11 @@ def _run_item(
 def _server_block(
     connection: Connection,
     run: generator_runs.GeneratorRunRow,
+    profile: str,
 ) -> RunServer | None:
-    """Return the server block of the first row that names a contract."""
+    """Return the server block of the profile's first row that names a contract."""
     for row in generator_servers.list_for_run(connection, run.run_id):
-        if row.contract_id is None:
+        if row.profile != profile or row.contract_id is None:
             continue
         return RunServer(
             contract_id=row.contract_id,

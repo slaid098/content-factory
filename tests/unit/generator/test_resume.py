@@ -27,8 +27,11 @@ from content_factory.utils.run_id import profile_run_dir
 
 _RUN_ID = "20260101T000000Z"
 _PROFILE = "dating/profile_2"
+_PROFILE_B = "dating/profile_3"
 _SLUG = "dating_profile_2"
+_SLUG_B = "dating_profile_3"
 _FILE = f"{_SLUG}_{_RUN_ID}_001.mp4"
+_FILE_B = f"{_SLUG_B}_{_RUN_ID}_001.mp4"
 _PHOTO = f"{_SLUG}_{_RUN_ID}_001.jpg"
 _AUDIO = "audio-track.mp3"
 _NOW = "2026-01-01T00:00:00+00:00"
@@ -53,6 +56,7 @@ def _connection(tmp_path: Path):
 def _item(
     file: str,
     *,
+    profile: str = _PROFILE,
     producer: str = "vast",
     type: str = "video",
     look_id: str | None = "c01",
@@ -60,7 +64,7 @@ def _item(
     frames: int | None = 119,
 ) -> JournalPlanItem:
     return JournalPlanItem(
-        profile=_PROFILE,
+        profile=profile,
         file=file,
         producer=producer,
         type=type,
@@ -95,23 +99,29 @@ def _start_run(
         connection.close()
 
 
-def _ready_server(tmp_path: Path, *, contract_id: str = "c1") -> str:
+def _ready_server(
+    tmp_path: Path,
+    *,
+    server_id: str = "s1",
+    profile: str = _PROFILE,
+    contract_id: str = "c1",
+) -> str:
     connection = _connection(tmp_path)
     try:
         generator_servers.insert_renting(
             connection,
-            server_id="s1",
+            server_id=server_id,
             run_id=_RUN_ID,
-            profile=_PROFILE,
+            profile=profile,
             gpu="L40S",
             image="image",
             cost_per_hour=0.5,
             now=_NOW,
         )
-        generator_servers.bind_contract(connection, "s1", contract_id, _NOW)
+        generator_servers.bind_contract(connection, server_id, contract_id, _NOW)
         generator_servers.mark_ready(
             connection,
-            "s1",
+            server_id,
             ip="127.0.0.1",
             port=8188,
             gpu="L40S",
@@ -122,7 +132,7 @@ def _ready_server(tmp_path: Path, *, contract_id: str = "c1") -> str:
         connection.commit()
     finally:
         connection.close()
-    return "s1"
+    return server_id
 
 
 def _run_row(tmp_path: Path) -> generator_runs.GeneratorRunRow:
@@ -442,6 +452,90 @@ def test_run_without_a_server_rents_one_and_generates(
     assert transport.submitted == ["prompt-1"]
     assert (session.opened, session.destroyed) == (1, 1)
     assert _item_rows(tmp_path)[0].status == "done"
+
+
+def test_pending_items_of_a_profile_without_a_server_stay_off_another_profile_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_profile(tmp_path / "profiles")
+    make_profile(tmp_path / "profiles", name=_PROFILE_B)
+    _start_run(
+        tmp_path,
+        (_item(_FILE), _item(_FILE_B, profile=_PROFILE_B)),
+        profiles=(_PROFILE, _PROFILE_B),
+    )
+    _journal(tmp_path).published(_RUN_ID, _PROFILE, _FILE)
+    _ready_server(tmp_path)
+    transport = _Transport()
+    session = _Session()
+    contracts: list[str] = []
+    _patch_media(monkeypatch, [])
+
+    def session_factory(*args: Any, **kwargs: Any) -> _Session:
+        del args, kwargs
+        return session
+
+    def client_factory(connection: ServerConnection) -> _Transport:
+        contracts.append(connection.contract_id)
+        return transport
+
+    monkeypatch.setattr(resume, "VastSession", session_factory)
+
+    outcomes = _resume(
+        tmp_path,
+        provider=_Provider(["c1"]),
+        client_factory=client_factory,
+    )
+
+    assert outcomes[0].status == "done"
+    assert session.opened == 1
+    assert set(contracts) == {"c-rent"}
+    assert transport.submitted == ["prompt-1"]
+    rows = {row.profile: row for row in _item_rows(tmp_path)}
+    assert rows[_PROFILE].status == "done"
+    assert rows[_PROFILE_B].status == "done"
+
+
+def test_destroyed_server_of_another_profile_does_not_fail_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_profile(tmp_path / "profiles")
+    make_profile(tmp_path / "profiles", name=_PROFILE_B)
+    _start_run(
+        tmp_path,
+        (_item(_FILE), _item(_FILE_B, profile=_PROFILE_B)),
+        profiles=(_PROFILE, _PROFILE_B),
+    )
+    _journal(tmp_path).published(_RUN_ID, _PROFILE, _FILE)
+    server_id = _ready_server(tmp_path)
+    connection = _connection(tmp_path)
+    try:
+        generator_servers.mark_destroyed(connection, server_id, _NOW)
+        connection.commit()
+    finally:
+        connection.close()
+    transport = _Transport()
+    session = _Session()
+    _patch_media(monkeypatch, [])
+
+    def session_factory(*args: Any, **kwargs: Any) -> _Session:
+        del args, kwargs
+        return session
+
+    monkeypatch.setattr(resume, "VastSession", session_factory)
+
+    outcomes = _resume(
+        tmp_path,
+        provider=_Provider(),
+        client_factory=lambda connection: transport,
+    )
+
+    assert outcomes[0].status == "done"
+    assert session.opened == 1
+    assert transport.submitted == ["prompt-1"]
+    rows = {row.profile: row for row in _item_rows(tmp_path)}
+    assert rows[_PROFILE].status == "done"
+    assert rows[_PROFILE_B].status == "done"
 
 
 def test_downloaded_source_skips_the_server_and_finishes_postprocessing(
