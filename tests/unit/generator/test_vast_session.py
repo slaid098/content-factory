@@ -1757,3 +1757,27 @@ def test_float_or_none_parses_numbers() -> None:
     assert _float_or_none(None) is None
     assert _float_or_none("1.5") == 1.5
     assert _float_or_none("broken") is None
+
+
+def test_wait_ready_drops_a_running_instance_without_a_port(tmp_path: Path) -> None:
+    state, clock, sleep = _clock_pair()
+    provider = _Provider(
+        instances={
+            "c1": {
+                **_instance(),
+                "ports": {},
+                "actual_status": "running",
+            }
+        }
+    )
+    session = _session(
+        fixture_profile(tmp_path / "profiles"),
+        _settings(tmp_path, server_ready_timeout=3600),
+        sleep=sleep,
+        clock=clock,
+    )
+
+    with pytest.raises(RentError, match="не открыл порт"):
+        session._wait_ready(provider, "c1")
+
+    assert state[0] <= 320

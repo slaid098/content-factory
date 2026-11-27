@@ -36,6 +36,7 @@ _DESTROY_PAUSE = 5.0
 _POLL_SECONDS = 5.0
 _POOL_TICK_SECONDS = 0.05
 _GONE_GRACE_SECONDS = 60.0
+_RUNNING_NO_PORT_SECONDS = 300.0
 HEALTH_TIMEOUT = 10.0
 _VERIFIED_PASSES: tuple[bool | None, ...] = (True, False, None)
 
@@ -672,7 +673,8 @@ class VastSession:
         Raises:
             _VastFatal: The token or the account itself is unusable; retrying
                 another offer cannot help.
-            RentError: The host did not publish a port in time, or an
+            RentError: The host did not publish a port in time, an instance
+                reported ``running`` without a port for five minutes, or an
                 instance already seen in the account was reported missing
                 past the gone grace.
             _RentCancelled: Another pool member won first.
@@ -682,6 +684,7 @@ class VastSession:
         seen = False
         gone_since: float | None = None
         gone_error: RentError | None = None
+        running_since: float | None = None
         while self._clock() < deadline:
             _raise_if_cancelled(stop)
             try:
@@ -710,6 +713,17 @@ class VastSession:
                 connection = connection_from_instance(contract_id, instance)
                 if connection is not None:
                     return self._wait_health(connection, stop=stop)
+                if instance.get("actual_status") == "running":
+                    now = self._clock()
+                    if running_since is None:
+                        running_since = now
+                    elif now - running_since >= _RUNNING_NO_PORT_SECONDS:
+                        raise RentError(
+                            f"инстанс {contract_id} запущен, но не открыл порт "
+                            f"за {_RUNNING_NO_PORT_SECONDS:g} с — образ дохлый"
+                        )
+                else:
+                    running_since = None
             _raise_if_cancelled(stop)
             self._sleep(_POLL_SECONDS)
         raise RentError(
