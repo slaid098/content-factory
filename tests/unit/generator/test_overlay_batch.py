@@ -11,8 +11,11 @@ from tests.unit.generator.helpers import make_overlay_profile
 from content_factory.config.settings import GeneratorSettings
 from content_factory.exceptions.generator import GeneratorError
 from content_factory.schemas.generator.overlay import OverlayPackage
+from content_factory.schemas.generator.server import ServerConnection, ServerInfo
 from content_factory.services.generator import comfy, overlay_batch
 from content_factory.services.generator.overlay_batch import generate_overlays
+from content_factory.services.generator.overlay_plan import plan_overlay
+from content_factory.services.generator.overlay_profiles import load_overlay_profile
 
 
 def _settings(tmp_path: Path) -> GeneratorSettings:
@@ -148,3 +151,60 @@ def test_batch_without_accepted_clips_raises_and_does_not_pack(
             settings=_settings(tmp_path),
             session_factory=lambda profile, settings: object(),
         )
+
+
+def test_submit_and_download_hooks_match_the_real_server_queue(tmp_path: Path) -> None:
+    root = tmp_path / "profiles"
+    make_overlay_profile(root, "overlay/profile_1")
+    profile = load_overlay_profile("overlay/profile_1", root)
+    planned = overlay_batch._planned(profile, plan_overlay(profile, "run").items[0])
+    connection = ServerConnection(
+        contract_id="contract-1",
+        ip="127.0.0.1",
+        port=8188,
+        gpu="L40S",
+        image="image",
+    )
+
+    class _Transport:
+        def submit(self, workflow: dict[str, Any]) -> str:
+            del workflow
+            return "p1"
+
+        def history(self, prompt_id: str) -> dict[str, Any]:
+            return {"outputs": {"15": {"gifs": [{"filename": f"{prompt_id}.mp4"}]}}}
+
+        def system_stats(self) -> dict[str, Any]:
+            return {"system": {}}
+
+        def download(self, output: Any) -> bytes:
+            del output
+            return b"clip"
+
+        def close(self) -> None:
+            pass
+
+    class _Session:
+        destroyed = 0
+
+        def open(self) -> ServerInfo:
+            return ServerInfo(connection=connection)
+
+        def destroy(self) -> None:
+            _Session.destroyed += 1
+
+    _, results = comfy.run_server(
+        _Session(),
+        lambda conn: _Transport(),
+        (planned,),
+        lambda item, attempt: {"attempt": attempt},
+        tmp_path,
+        label="overlay/profile_1",
+        settings=_settings(tmp_path),
+        store=lambda path, content: path.write_bytes(content),
+        on_submit=overlay_batch._log_submit,
+        on_download=overlay_batch._log_download,
+    )
+
+    assert results[0].path == tmp_path / planned.filename
+    assert _Session.destroyed == 1
