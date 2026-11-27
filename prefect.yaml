@@ -60,6 +60,13 @@ deployments:
       name: content-factory
     concurrency_limit: 1
 
+  - name: overlay_batch
+    description: "Ручной батч оверлеев: плотные частицы на чёрном фоне, zip + превью"
+    entrypoint: src/content_factory/flows/overlay_batch/flow.py:overlay_batch
+    work_pool:
+      name: content-factory
+    concurrency_limit: 1
+
   - name: profiles_describe
     description: "Ежедневное заполнение названий и пояснений профилей"
     entrypoint: src/content_factory/flows/profiles_describe/flow.py:profiles_describe

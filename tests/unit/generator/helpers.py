@@ -141,6 +141,76 @@ def fixture_profile(root: Path, **kwargs: Any) -> _Profile:
     return load_profile("dating/profile_2", root)
 
 
+OVERLAY_GRAPH: dict[str, Any] = {
+    "5": {
+        "class_type": "EmptyLTXVLatentVideo",
+        "inputs": {"width": 1, "height": 1, "length": 1, "batch_size": 1},
+    },
+    "8": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["2", 0]}},
+    "9": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["2", 0]}},
+    "10": {
+        "class_type": "LTXVConditioning",
+        "inputs": {"frame_rate": 1, "positive": ["8", 0], "negative": ["9", 0]},
+    },
+    "11": {
+        "class_type": "KSampler",
+        "inputs": {"seed": 0, "steps": 6, "cfg": 1, "sampler_name": "euler"},
+    },
+    "15": {
+        "class_type": "VHS_VideoCombine",
+        "inputs": {"frame_rate": 1, "filename_prefix": "overlay", "save_metadata": True},
+    },
+}
+
+
+def overlay_prompts(count: int = 10) -> list[str]:
+    """Return valid, distinct overlay prompts for fixtures."""
+    return [
+        f"Dense unique particle field number {index:02d} covering the frame "
+        "on pure black background, slow motion, no camera movement, no people, no text"
+        for index in range(1, count + 1)
+    ]
+
+
+def make_overlay_profile(
+    root: Path,
+    name: str = "overlay/profile_1",
+    *,
+    count: int = 10,
+    extra: dict[str, Any] | None = None,
+) -> Path:
+    """Create a minimal overlay profile and the shared overlay graph."""
+    directory = root / name
+    directory.mkdir(parents=True)
+    prompts = overlay_prompts(count)
+    (directory / "backgrounds.txt").write_text("\n".join(prompts) + "\n", encoding="utf-8")
+    (directory / "video_prompt.txt").write_text("{background}\n", encoding="utf-8")
+    data: dict[str, Any] = {
+        "count": count,
+        "width": 384,
+        "height": 672,
+        "frames": 89,
+        "frames_jitter": 0,
+        "fps": 18,
+        "gpu": "L40S",
+        "image": "ghcr.io/slaid099/video-gen-2:ltx-2.5",
+        "max_cost": 1.0,
+    }
+    if extra:
+        data.update(extra)
+    (directory / "profile.yaml").write_text(
+        yaml.safe_dump(data, allow_unicode=True),
+        encoding="utf-8",
+    )
+    shared = root / "_shared" / "workflows"
+    shared.mkdir(parents=True, exist_ok=True)
+    (shared / "workflow-overlay.json").write_text(
+        json.dumps(OVERLAY_GRAPH),
+        encoding="utf-8",
+    )
+    return directory
+
+
 class FakeSession:
     """Server session that records open and destroy calls."""
 

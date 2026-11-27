@@ -7,7 +7,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 import httpx
 from loguru import logger
@@ -15,7 +15,7 @@ from loguru import logger
 from content_factory.config.settings import GeneratorSettings
 from content_factory.exceptions.generator import JournalError, RentError
 from content_factory.schemas.generator.server import ServerConnection, ServerInfo
-from content_factory.services.generator.profiles import _Profile
+from content_factory.services.generator.profiles import _RentOptions
 from content_factory.services.generator.vast_cli import (
     VastProvider,
     _already_gone,
@@ -40,6 +40,35 @@ HEALTH_TIMEOUT = 10.0
 _VERIFIED_PASSES: tuple[bool | None, ...] = (True, False, None)
 
 
+class _RentProfile(Protocol):
+    """Profile fields a rented server reads, shared by dating and overlays."""
+
+    @property
+    def name(self) -> str:
+        """Profile name used in logs."""
+        ...
+
+    @property
+    def gpu(self) -> str:
+        """GPU name required by the offers."""
+        ...
+
+    @property
+    def image(self) -> str:
+        """Docker image with ComfyUI."""
+        ...
+
+    @property
+    def max_cost(self) -> float:
+        """Hourly price ceiling of the profile."""
+        ...
+
+    @property
+    def rent(self) -> _RentOptions:
+        """Disk and network filters of the offers."""
+        ...
+
+
 class _TeardownError(RentError):
     """A failed rental could not be destroyed; no further server may be rented."""
 
@@ -62,7 +91,7 @@ class VastSession:
 
     def __init__(
         self,
-        profile: _Profile,
+        profile: _RentProfile,
         settings: GeneratorSettings,
         *,
         provider: VastProvider | None = None,
@@ -924,7 +953,7 @@ def _raise_if_cancelled(stop: threading.Event | None) -> None:
 
 def _offers(
     provider: VastProvider,
-    profile: _Profile,
+    profile: _RentProfile,
     settings: GeneratorSettings,
     verified: bool | None,
 ) -> list[dict[str, Any]]:
