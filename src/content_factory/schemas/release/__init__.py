@@ -1,0 +1,1 @@
+"""Release-related API schemas."""

@@ -1,19 +1,20 @@
 """Trusted-device gate middleware.
 
-Every request except the one-time join route, the deployment probe and the
-delivery API must carry an active ``device_token`` cookie. The check asks the
-device-trust capsule on each request, so revoking a device denies the very next
-request.
+Every request except the version endpoint, the one-time join route, the
+deployment probe and the delivery API must carry an active ``device_token``
+cookie. The check asks the device-trust capsule on each request, so revoking a
+device denies the very next request.
 
 The delivery API accepts either the trusted-device cookie or its own Bearer
 token: the partner page calls it from a browser, while the YouTube Kit worker
 has no cookie. A cookie on that prefix is still verified, so a stale or revoked
 device is denied instead of silently falling back to the Bearer check.
 
-Two paths stay open. ``/join`` is the only way to earn a cookie. The stock
-endpoint of the local deploy healthcheck answers ``{"status": "ok"}`` only for
-a loopback ``Host`` without proxy headers and without a device cookie; a
-trusted browser sends its cookie and gets the real stock, so the local page is
+Three paths stay open. ``/api/version`` carries no state and tells the deploy
+and release jobs which SHA is live. ``/join`` is the only way to earn a cookie.
+The stock endpoint of the local deploy healthcheck answers ``{"status": "ok"}``
+only for a loopback ``Host`` without proxy headers and without a device cookie;
+a trusted browser sends its cookie and gets the real stock, so the local page is
 not empty. This keeps ``compose.yaml`` and ``scripts/deploy.sh`` working
 without a cookie.
 """
@@ -40,6 +41,7 @@ from content_factory.services.device_trust import authenticate, database_ready
 DEVICE_COOKIE_NAME = "device_token"
 
 _JOIN_PATH = "/join"
+_VERSION_PATH = "/api/version"
 _API_PREFIX = "/api/"
 _CONTENT_PREFIX = "/api/v1/content/"
 _HEALTH_PATH = "/api/v1/stock"
@@ -55,7 +57,9 @@ def _is_content_api(path: str) -> bool:
 def _is_open(request: Request) -> bool:
     """Return True when the request needs no device cookie at all."""
     path = request.url.path
-    return request.method == "GET" and (path == _JOIN_PATH or path.startswith(f"{_JOIN_PATH}/"))
+    return request.method == "GET" and (
+        path in (_VERSION_PATH, _JOIN_PATH) or path.startswith(f"{_JOIN_PATH}/")
+    )
 
 
 def _is_local_healthcheck(request: Request) -> bool:

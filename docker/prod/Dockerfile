@@ -11,10 +11,17 @@ RUN npm run build
 
 FROM python:3.12-slim AS runtime
 
+# Release identity: build-push передаёт полный SHA и время сборки, чтобы
+# /api/version и release-job говорили об одном и том же образе.
+ARG GIT_SHA=unknown
+ARG BUILT_AT=unknown
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PYTHONPATH=/app/src
+    PYTHONPATH=/app/src \
+    GIT_SHA=${GIT_SHA} \
+    BUILT_AT=${BUILT_AT}
 
 WORKDIR /app
 
