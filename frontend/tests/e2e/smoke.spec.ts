@@ -240,6 +240,47 @@ test("renders the delivery page without horizontal overflow", async ({ page }) =
   expect(consoleErrors).toEqual([]);
 });
 
+test("keeps stock cards compact with many profiles", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-1280", "desktop grid layout regression");
+
+  const profiles = Array.from({ length: 24 }, (_, index) => ({
+    ...PROFILE,
+    id: `dating/profile_${index + 1}`,
+    name: `profile_${index + 1}`,
+  }));
+  await mockStock(page);
+  await mockProfiles(page, profiles);
+
+  await page.goto("/");
+  await expect(page.locator("#profiles-stock .mini-row")).toHaveCount(profiles.length);
+
+  const boxes = await page.evaluate(() => {
+    const bar = document.querySelector("#general-bar");
+    const hint = document.querySelector("#general-hint");
+    const general = document.querySelector("#general-title")?.closest(".stat-card");
+    const profilesCard = document.querySelector("#profiles-stat-title")?.closest(".stat-card");
+    if (
+      !bar ||
+      !hint ||
+      !(general instanceof HTMLElement) ||
+      !(profilesCard instanceof HTMLElement)
+    ) {
+      return null;
+    }
+    const barBox = bar.getBoundingClientRect();
+    const hintBox = hint.getBoundingClientRect();
+    return {
+      gap: hintBox.top - barBox.bottom,
+      generalHeight: general.getBoundingClientRect().height,
+      profilesHeight: profilesCard.getBoundingClientRect().height,
+    };
+  });
+
+  expect(boxes).not.toBeNull();
+  expect(boxes?.gap).toBeLessThanOrEqual(48);
+  expect(boxes?.generalHeight).toBeLessThan(boxes?.profilesHeight ?? 0);
+});
+
 test("serves the built assets with stable names", async ({ page, request }) => {
   const css = await request.get("/ui/app.css");
   expect(css.status()).toBe(200);
