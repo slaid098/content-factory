@@ -146,6 +146,7 @@ def test_list_returns_profiles_with_stock_overrides_and_last_run(data_dir: Path)
         "niche": "auto",
         "title": None,
         "summary": None,
+        "cards": None,
         "width": 544,
         "height": 960,
         "audio": True,
@@ -312,6 +313,40 @@ def test_list_returns_profile_title_and_summary(data_dir: Path) -> None:
     assert profile["summary"] == "Спокойные знакомства с акцентом на серьёзные отношения."
 
 
+def test_list_returns_the_appearance_card_count(data_dir: Path) -> None:
+    directory = add_profile(data_dir, "dating", "profile_1")
+    (directory / "looks.yaml").write_text(
+        yaml.safe_dump([{"age": 30}, {"age": 40}], allow_unicode=True),
+        encoding="utf-8",
+    )
+
+    response = _get(_client(), _PREFIX)
+
+    assert response.status_code == 200
+    assert response.json()["profiles"][0]["cards"] == 2
+
+
+def test_list_returns_null_cards_without_looks_yaml(data_dir: Path) -> None:
+    add_profile(data_dir, "dating", "profile_1")
+
+    response = _get(_client(), _PREFIX)
+
+    assert response.status_code == 200
+    assert [profile["id"] for profile in response.json()["profiles"]] == ["dating/profile_1"]
+    assert response.json()["profiles"][0]["cards"] is None
+
+
+def test_list_survives_broken_looks_yaml(data_dir: Path) -> None:
+    directory = add_profile(data_dir, "dating", "profile_1")
+    (directory / "looks.yaml").write_text("looks: [\n", encoding="utf-8")
+
+    response = _get(_client(), _PREFIX)
+
+    assert response.status_code == 200
+    assert [profile["id"] for profile in response.json()["profiles"]] == ["dating/profile_1"]
+    assert response.json()["profiles"][0]["cards"] is None
+
+
 def test_list_does_not_change_stored_settings(data_dir: Path) -> None:
     add_profile(data_dir, "dating", "profile_1")
     client = _client()
@@ -453,6 +488,19 @@ def test_patch_toggles_and_clears_overrides(data_dir: Path) -> None:
     assert cleared_refill.json()["refill_at"] == 2
     assert cleared_refill.json()["refill_at_override"] is None
     assert cleared_refill.json()["refill_enabled"] is True
+
+
+def test_patch_returns_the_appearance_card_count(data_dir: Path) -> None:
+    directory = add_profile(data_dir, "dating", "profile_1")
+    (directory / "looks.yaml").write_text(
+        yaml.safe_dump({"looks": [{"age": 30}, {"age": 40}]}, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+    response = _patch(_client(), f"{_PREFIX}/dating/profile_1", {"refill_enabled": True})
+
+    assert response.status_code == 200
+    assert response.json()["cards"] == 2
 
 
 def test_patch_rejects_refill_at_not_less_than_target(data_dir: Path) -> None:
@@ -810,6 +858,7 @@ def test_get_detail_returns_outputs_recipe_and_safe_settings(data_dir: Path) -> 
     assert response.status_code == 200
     body = response.json()
     assert body["id"] == "dating/profile_1"
+    assert body["cards"] == 3
     assert body["outputs"] == ["video", "photo"]
     assert body["production"] == [
         {

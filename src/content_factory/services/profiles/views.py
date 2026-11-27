@@ -48,6 +48,7 @@ def _views(
     stock: dict[str, int],
     photo_stock: dict[str, int],
     refills: dict[str, ProfileRefill],
+    cards: dict[str, int | None],
     *,
     output_dir: Path,
     global_config: GeneratorConfig,
@@ -59,6 +60,7 @@ def _views(
             stock.get(profile.id, 0),
             photo_stock.get(profile.id, 0),
             refills.get(profile.id, _DISABLED),
+            cards.get(profile.id),
             output_dir,
             global_config,
         )
@@ -84,6 +86,7 @@ def _view(
     stock: int,
     photo_stock: int,
     refill: ProfileRefill,
+    cards: int | None,
     output_dir: Path,
     global_config: GeneratorConfig,
 ) -> ProfileResponse:
@@ -97,6 +100,7 @@ def _view(
         niche=profile.niche,
         title=profile.title,
         summary=profile.summary,
+        cards=cards,
         width=profile.width,
         height=profile.height,
         audio=profile.audio,

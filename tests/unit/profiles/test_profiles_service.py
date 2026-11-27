@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 from tests.unit.common.profile_helpers import (
     add_profile,
     add_profile_photo,
@@ -45,6 +47,13 @@ def _update(
         output_dir=data_dir / "generated",
         global_config=_GLOBAL,
         now=_MOMENT,
+    )
+
+
+def _write_looks(directory: Path, payload: object) -> None:
+    (directory / "looks.yaml").write_text(
+        yaml.safe_dump(payload, allow_unicode=True),
+        encoding="utf-8",
     )
 
 
@@ -225,6 +234,76 @@ def test_list_profiles_response_without_profiles_returns_the_catalog(
     assert response.total == 0
     assert response.niches == ()
     assert len(response.languages) == len(LANGUAGE_LABELS)
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ([{"age": 30}, {"age": 40}], 2),
+        ({"looks": []}, 0),
+        ({"looks": [{"age": 30}]}, 1),
+        ("возраст", None),
+        ({"cards": [{"age": 30}]}, None),
+    ],
+)
+def test_list_profile_views_reports_the_card_count(
+    tmp_path: Path,
+    payload: object,
+    expected: int | None,
+) -> None:
+    directory = add_profile(tmp_path)
+    _write_looks(directory, payload)
+
+    views = profiles_service.list_profile_views(
+        tmp_path,
+        output_dir=tmp_path / "generated",
+        global_config=_GLOBAL,
+    )
+
+    assert views[0].cards == expected
+
+
+def test_list_profile_views_without_looks_yaml_reports_no_cards(tmp_path: Path) -> None:
+    add_profile(tmp_path)
+
+    views = profiles_service.list_profile_views(
+        tmp_path,
+        output_dir=tmp_path / "generated",
+        global_config=_GLOBAL,
+    )
+
+    assert [view.id for view in views] == ["dating/profile_1"]
+    assert views[0].cards is None
+
+
+def test_list_profile_views_keeps_a_profile_with_broken_looks_yaml(
+    tmp_path: Path,
+    log_records: list[dict[str, Any]],
+) -> None:
+    directory = add_profile(tmp_path)
+    (directory / "looks.yaml").write_text("looks: [\n", encoding="utf-8")
+
+    views = profiles_service.list_profile_views(
+        tmp_path,
+        output_dir=tmp_path / "generated",
+        global_config=_GLOBAL,
+    )
+
+    assert [view.id for view in views] == ["dating/profile_1"]
+    assert views[0].cards is None
+    assert any(
+        record["level"].name == "WARNING" and "looks.yaml" in record["message"]
+        for record in log_records
+    )
+
+
+def test_update_returns_the_card_count(tmp_path: Path) -> None:
+    directory = add_profile(tmp_path)
+    _write_looks(directory, {"looks": [{"age": 30}]})
+
+    view = _update(tmp_path, ProfileUpdateRequest(refill_enabled=True))
+
+    assert view.cards == 1
 
 
 def test_update_rejects_oversized_stored_target(tmp_path: Path) -> None:
