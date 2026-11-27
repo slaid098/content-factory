@@ -240,9 +240,9 @@ test("renders the delivery page without horizontal overflow", async ({ page }) =
   expect(consoleErrors).toEqual([]);
 });
 
-test("keeps stock cards compact with many profiles", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== "desktop-1280", "desktop grid layout regression");
-
+test("keeps the stock list scrollable inside the card with many profiles", async ({
+  page,
+}, testInfo) => {
   const profiles = Array.from({ length: 24 }, (_, index) => ({
     ...PROFILE,
     id: `dating/profile_${index + 1}`,
@@ -255,11 +255,15 @@ test("keeps stock cards compact with many profiles", async ({ page }, testInfo) 
   await expect(page.locator("#profiles-stock .mini-row")).toHaveCount(profiles.length);
 
   const boxes = await page.evaluate(() => {
+    const list = document.querySelector("#profiles-stock");
+    const delivery = document.querySelector(".delivery-grid");
     const bar = document.querySelector("#general-bar");
     const hint = document.querySelector("#general-hint");
     const general = document.querySelector("#general-title")?.closest(".stat-card");
     const profilesCard = document.querySelector("#profiles-stat-title")?.closest(".stat-card");
     if (
+      !(list instanceof HTMLElement) ||
+      !(delivery instanceof HTMLElement) ||
       !bar ||
       !hint ||
       !(general instanceof HTMLElement) ||
@@ -273,12 +277,23 @@ test("keeps stock cards compact with many profiles", async ({ page }, testInfo) 
       gap: hintBox.top - barBox.bottom,
       generalHeight: general.getBoundingClientRect().height,
       profilesHeight: profilesCard.getBoundingClientRect().height,
+      listClient: list.clientHeight,
+      listScroll: list.scrollHeight,
+      deliveryTop: delivery.getBoundingClientRect().top,
+      viewport: window.innerHeight,
+      overflowX: document.documentElement.scrollWidth > window.innerWidth,
     };
   });
 
   expect(boxes).not.toBeNull();
-  expect(boxes?.gap).toBeLessThanOrEqual(48);
-  expect(boxes?.generalHeight).toBeLessThan(boxes?.profilesHeight ?? 0);
+  expect(boxes?.listScroll).toBeGreaterThan(boxes?.listClient ?? 0);
+  expect(boxes?.overflowX).toBe(false);
+
+  if (testInfo.project.name === "desktop-1280") {
+    expect(boxes?.gap).toBeLessThanOrEqual(48);
+    expect(boxes?.generalHeight).toBeLessThan(boxes?.profilesHeight ?? 0);
+    expect(boxes?.deliveryTop).toBeLessThan(boxes?.viewport ?? 0);
+  }
 });
 
 test("serves the built assets with stable names", async ({ page, request }) => {
