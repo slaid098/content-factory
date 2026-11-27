@@ -43,10 +43,14 @@ CRASH_MESSAGE = (
     "Flow run crashed by prefect_worker: its worker stopped heartbeating "
     "after the worker container restarted (issue #180)."
 )
+# Prefect 3 REST takes the target state under ``state``; a flat body answers
+# 422 ``missing body.state`` and the run stays RUNNING (issue #180 regression).
 CRASHED_STATE_BODY: dict[str, Any] = {
-    "type": "CRASHED",
-    "name": "Crashed",
-    "message": CRASH_MESSAGE,
+    "state": {
+        "type": "CRASHED",
+        "name": "Crashed",
+        "message": CRASH_MESSAGE,
+    },
 }
 RUNNING_RUNS_FILTER: dict[str, Any] = {
     "flow_runs": {"state": {"type": {"any_": [RUNNING_STATE]}}},
