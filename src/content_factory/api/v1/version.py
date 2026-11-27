@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter
 
 from content_factory.config.settings import get_settings
-from content_factory.schemas.version import VersionResponse
+from content_factory.schemas.release.version import VersionResponse
 
 version_router = APIRouter(tags=["version"])
 
