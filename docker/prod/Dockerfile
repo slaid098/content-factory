@@ -40,7 +40,7 @@ COPY --from=ui /build/src/content_factory/api/ui ./src/content_factory/api/ui
 RUN pip install .
 
 COPY main.py ./
-COPY scripts/device_access.py ./scripts/
+COPY scripts/device_access.py scripts/prefect_worker.py ./scripts/
 
 RUN useradd --create-home --uid 10001 app \
     && mkdir -p /app/app_data \
