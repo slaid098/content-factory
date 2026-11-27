@@ -31,7 +31,17 @@ _TEXT_PROMPT = "text_prompt.txt"
 _MAX_FRAGMENT = 20_000
 _ATTEMPTS = 2
 _DESCRIPTION_USER_MESSAGE = (
-    "Опиши профиль Content Factory: предложи title и summary по данным ниже."
+    "Опиши профиль Content Factory по конкретной сцене: title — короткий "
+    "ярлык сцены, summary — одна строка конкретики (возраст, место, "
+    "внешность, свет, действие)."
+)
+_FORBIDDEN_DESCRIPTION_PARTS = (
+    "контент",
+    "профил",
+    "content factory",
+    "генератор",
+    "тематик",
+    "направлени",
 )
 _FENCE_RE = re.compile(r"^\s*```[^\n]*\n?(.*?)\n?```\s*$", re.DOTALL)
 
@@ -42,22 +52,25 @@ def describe_profile(
     settings: GeneratorSettings,
     *,
     writer: TextWriter | None = None,
+    force: bool = False,
 ) -> ProfileDescription:
     """Describe one profile with the text model and save both fields.
 
     A profile with a non-empty ``title`` and ``summary`` is returned as is and
-    the model is not called. The prompt is built from ``profile.yaml``, the
-    scene prompt (``prompt_template.txt`` or ``video_prompt.txt``) and
-    ``text_prompt.txt``; every fragment is capped at 20 000 characters. The
-    answer must be a JSON object with both fields, otherwise one retry is
-    made. The file is replaced atomically and keeps its permissions, so a
-    failed model call or an invalid answer leaves it untouched.
+    the model is not called unless ``force`` is true. The prompt is built from
+    ``profile.yaml``, the scene prompt (``prompt_template.txt`` or
+    ``video_prompt.txt``) and ``text_prompt.txt``; every fragment is capped at
+    20 000 characters. The answer must be a JSON object with both fields and
+    without generic wording, otherwise one retry is made. The file is replaced
+    atomically and keeps its permissions, so a failed model call or an invalid
+    answer leaves it untouched.
 
     Args:
         data_dir: Root of the runtime data directory, usually ``app_data``.
         profile_id: Profile identifier such as ``dating/profile_2``.
         settings: Generator settings; the model comes from ``GENERATOR_MODEL``.
         writer: Text model port; defaults to :class:`TextClient`.
+        force: Re-describe a profile even when both fields are already filled.
 
     Returns:
         The stored or generated title and summary.
@@ -70,7 +83,7 @@ def describe_profile(
         profile = get_profile(data_dir, profile_id)
     except ProfileError as ex:
         raise ProfileDescriptionError(f"профиль недоступен: {profile_id}") from ex
-    if profile.title and profile.summary:
+    if profile.title and profile.summary and not force:
         return ProfileDescription(profile.title, profile.summary)
     data = _read_yaml(profile)
     system_prompt, user_prompt = _build_prompt(profile, data)
@@ -120,7 +133,18 @@ def _parse(raw: str, profile_id: str) -> ProfileDescription:
         raise ProfileDescriptionError(str(ex)) from ex
     if title is None or summary is None:
         raise ProfileDescriptionError(f"ответ модели для {profile_id} не содержит оба поля")
+    _ensure_concrete(title, summary, profile_id)
     return ProfileDescription(title=title, summary=summary)
+
+
+def _ensure_concrete(title: str, summary: str, profile_id: str) -> None:
+    """Reject generic wording instead of a concrete scene."""
+    for field, value in (("title", title), ("summary", summary)):
+        folded = value.casefold()
+        if any(part in folded for part in _FORBIDDEN_DESCRIPTION_PARTS):
+            raise ProfileDescriptionError(
+                f"ответ модели для {profile_id} содержит общее слово в {field}"
+            )
 
 
 def _strip_fence(raw: str) -> str:
@@ -138,12 +162,16 @@ def _build_prompt(profile: ProfileInfo, data: Mapping[str, Any]) -> tuple[str, s
     cannot push ``text_prompt.txt`` out of the request.
     """
     system_parts = [
-        "Ты описываешь профиль генератора контента Content Factory для оператора.",
+        "Ты описываешь конкретную сцену профиля генератора видео Content Factory для оператора.",
         "Верни строго один JSON-объект без markdown, без ``` и без пояснений:",
         '{"title": "...", "summary": "..."}',
         "Требования:",
-        "- title: 3..80 символов, одна строка, короткое человекочитаемое название;",
-        "- summary: 20..300 символов, одна строка, короткое пояснение о профиле;",
+        "- title: 3..80 символов, одна строка, короткий ярлык конкретной сцены — кто и что делает;",
+        "- summary: 20..300 символов, одна строка, конкретика из сцены: "
+        "возраст, место, внешность, свет, действие;",
+        "- запрещены общие слова и их части: контент, профиль, Content Factory, "
+        "генератор, тематика, направление;",
+        "- опирайся на данные профиля и сцену, не придумывай лишнего;",
         "- язык ответа: русский (всегда, независимо от языка профиля).",
         "",
         f"language (язык): {profile.language}",

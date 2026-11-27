@@ -16,16 +16,22 @@ from content_factory.services.profiles import describe_profile, list_profiles
 
 
 @flow(name="profiles_describe")
-def profiles_describe(*, writer: TextClient | None = None) -> str:
-    """Заполнить пустые title и summary профилей и вернуть счётчики.
+def profiles_describe(
+    *,
+    writer: TextClient | None = None,
+    force: bool = False,
+) -> str:
+    """Заполнить title и summary профилей и вернуть счётчики.
 
-    Уже описанные профили (оба поля непустые) пропускаются без вызова
-    модели. Ошибка одного профиля попадает в ``failed`` и не останавливает
-    остальные. Без ``OPENAI_API_KEY`` flow выходит со статусом ``disabled``.
+    Без ``force`` уже описанные профили (оба поля непустые) пропускаются без
+    вызова модели. С ``force`` каждый профиль описывается заново. Ошибка
+    одного профиля попадает в ``failed`` и не останавливает остальные. Без
+    ``OPENAI_API_KEY`` flow выходит со статусом ``disabled``.
 
     Args:
         writer: Порт текстовой модели; тесты подставляют свой, по умолчанию
             используется :class:`TextClient` с настройками генератора.
+        force: Перегенерировать описания даже у заполненных профилей.
     """
     settings = get_settings()
     prepare_data_dirs(settings)
@@ -36,7 +42,7 @@ def profiles_describe(*, writer: TextClient | None = None) -> str:
     model = writer or TextClient(generator_settings)
     described = skipped = failed = 0
     for profile in list_profiles(settings.data_dir):
-        if profile.title and profile.summary:
+        if not force and profile.title and profile.summary:
             skipped += 1
             continue
         try:
@@ -45,6 +51,7 @@ def profiles_describe(*, writer: TextClient | None = None) -> str:
                 profile.id,
                 generator_settings,
                 writer=model,
+                force=force,
             )
         except ProfileDescriptionError as ex:
             failed += 1

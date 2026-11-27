@@ -51,8 +51,19 @@ def _answer(title: str = _VALID_TITLE, summary: str = _VALID_SUMMARY) -> str:
     return json.dumps({"title": title, "summary": summary}, ensure_ascii=False)
 
 
-def _describe(tmp_path: Path, writer: _Writer) -> ProfileDescription:
-    return describe_profile(tmp_path, "dating/profile_1", _settings(), writer=writer)
+def _describe(
+    tmp_path: Path,
+    writer: _Writer,
+    *,
+    force: bool = False,
+) -> ProfileDescription:
+    return describe_profile(
+        tmp_path,
+        "dating/profile_1",
+        _settings(),
+        writer=writer,
+        force=force,
+    )
 
 
 def _yaml_text(profile: Path) -> str:
@@ -84,6 +95,9 @@ def test_prompt_contains_profile_fields_and_prompt_fragments(tmp_path: Path) -> 
     assert "язык ответа: en" not in system
     assert "niche (ниша): dating" in system
     assert "JSON" in system
+    assert "конкретной сцены" in system
+    assert "возраст, место, внешность, свет, действие" in system
+    assert "запрещены общие слова" in system
     assert "Сцена: {age}" in user
     assert "Голос: спокойный" in user
     assert "Опиши профиль" in user
@@ -121,6 +135,38 @@ def test_second_call_does_not_ask_the_model(tmp_path: Path) -> None:
 
     assert result == ProfileDescription(_VALID_TITLE, _VALID_SUMMARY)
     assert second.prompts == []
+
+
+def test_force_redescribes_a_filled_profile(tmp_path: Path) -> None:
+    profile = add_profile(
+        tmp_path,
+        "dating",
+        "profile_1",
+        title="Старое название",
+        summary="Старое описание профиля для оператора без конкретной сцены.",
+    )
+    writer = _Writer(_answer())
+
+    result = _describe(tmp_path, writer, force=True)
+
+    assert result == ProfileDescription(_VALID_TITLE, _VALID_SUMMARY)
+    assert len(writer.prompts) == 1
+    data = yaml.safe_load(_yaml_text(profile))
+    assert data["title"] == _VALID_TITLE
+    assert data["summary"] == _VALID_SUMMARY
+
+
+def test_force_on_an_empty_profile_describes_as_usual(tmp_path: Path) -> None:
+    profile = add_profile(tmp_path, "dating", "profile_1")
+    writer = _Writer(_answer())
+
+    result = _describe(tmp_path, writer, force=True)
+
+    assert result == ProfileDescription(_VALID_TITLE, _VALID_SUMMARY)
+    assert len(writer.prompts) == 1
+    data = yaml.safe_load(_yaml_text(profile))
+    assert data["title"] == _VALID_TITLE
+    assert data["summary"] == _VALID_SUMMARY
 
 
 def test_partial_profile_is_completed(tmp_path: Path) -> None:
@@ -202,6 +248,29 @@ def test_lone_surrogate_answer_retries_once_and_keeps_file(tmp_path: Path) -> No
     writer = _Writer(answer)
 
     with pytest.raises(ProfileDescriptionError, match="непечатаемые"):
+        _describe(tmp_path, writer)
+
+    assert len(writer.prompts) == 2
+    assert _yaml_text(profile) == before
+
+
+@pytest.mark.parametrize(
+    ("title", "summary"),
+    [
+        ("Контент в Content Factory", _VALID_SUMMARY),
+        (_VALID_TITLE, "Генератор создаёт контент для профиля в Content Factory."),
+    ],
+)
+def test_generic_answer_retries_once_and_keeps_file(
+    tmp_path: Path,
+    title: str,
+    summary: str,
+) -> None:
+    profile = add_profile(tmp_path, "dating", "profile_1")
+    before = _yaml_text(profile)
+    writer = _Writer(_answer(title, summary))
+
+    with pytest.raises(ProfileDescriptionError, match="общее слово"):
         _describe(tmp_path, writer)
 
     assert len(writer.prompts) == 2
