@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+import yaml
 from loguru import logger
 
 from content_factory.constants import DB_DIR, DB_FILENAME, PROFILES_DIR
@@ -55,6 +56,7 @@ from content_factory.services.stock import sync_stock
 _TARGET_MIN = 1
 _TARGET_MAX = 1000
 _PHOTO_REFILL_MAX = 999
+_LOOKS_FILENAME = "looks.yaml"
 
 
 def list_profile_views(
@@ -85,6 +87,7 @@ def list_profile_views(
         stock,
         photo_stock,
         refills,
+        _cards(selected),
         output_dir=output_dir,
         global_config=global_config,
     )
@@ -123,6 +126,7 @@ def list_profiles_response(
             stock,
             photo_stock,
             refills,
+            _cards(selected),
             output_dir=output_dir,
             global_config=global_config,
         ),
@@ -157,6 +161,7 @@ def get_profile_view(
         stock.get(profile.id, 0),
         photo_stock.get(profile.id, 0),
         refills.get(profile.id, _DISABLED),
+        _card_count(profile),
         output_dir,
         global_config,
     )
@@ -190,6 +195,7 @@ def get_profile_detail(
         stock.get(info.id, 0),
         photo_stock.get(info.id, 0),
         refills.get(info.id, _DISABLED),
+        _card_count(info),
         output_dir,
         global_config,
     )
@@ -245,6 +251,7 @@ def update_profile_settings(
         stock.get(profile.id, 0),
         photo_stock.get(profile.id, 0),
         refills.get(profile.id, updated),
+        _card_count(profile),
         output_dir,
         global_config,
     )
@@ -312,6 +319,36 @@ def _counters(
     finally:
         connection.close()
     return stock, photo_stock, refills
+
+
+def _cards(profiles: tuple[ProfileInfo, ...]) -> dict[str, int | None]:
+    """Return the appearance card count of every profile keyed by id."""
+    return {profile.id: _card_count(profile) for profile in profiles}
+
+
+def _card_count(profile: ProfileInfo) -> int | None:
+    """Return the ``looks.yaml`` list length without validating the cards.
+
+    The catalog only needs the number of cards, so prompts and fonts stay
+    unvalidated. A missing file, broken YAML or a value that is not a list is
+    logged and reported as ``None``: the profile keeps its place in the
+    catalog.
+    """
+    path = profile.dir / _LOOKS_FILENAME
+    try:
+        payload: object = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as ex:
+        logger.bind(path=str(path), error=ex, error_type=type(ex).__name__).warning(
+            "Не удалось прочитать looks.yaml профиля {}", profile.id
+        )
+        return None
+    items = payload.get("looks") if isinstance(payload, dict) else payload
+    if not isinstance(items, list):
+        logger.bind(path=str(path)).warning(
+            "В looks.yaml профиля {} нет списка карточек", profile.id
+        )
+        return None
+    return len(items)
 
 
 def _updated_refill(

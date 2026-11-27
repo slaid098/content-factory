@@ -32,7 +32,7 @@ class LanguageOption(BaseModel):
 
 
 class ProfileResponse(BaseModel):
-    """One generator profile with its video and photo stock and refill settings."""
+    """One generator profile with its stock, refill settings and card count."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -44,6 +44,7 @@ class ProfileResponse(BaseModel):
     niche: str
     title: str | None = None
     summary: str | None = None
+    cards: int | None = Field(default=None, ge=0)
     width: int
     height: int
     audio: bool
