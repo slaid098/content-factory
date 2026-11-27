@@ -785,6 +785,24 @@ def reap_stale(
     return killed
 
 
+def present_contracts(provider: VastProvider | None) -> set[str] | None:
+    """Return the contract ids of the account, or ``None`` when unavailable."""
+    if provider is None:
+        return None
+    try:
+        instances = provider.list_instances()
+    except RentError as ex:
+        logger.bind(error=str(ex), error_type=type(ex).__name__).warning(
+            "Список инстансов Vast.ai недоступен — серверы рана проверяются подключением"
+        )
+        return None
+    return {
+        contract_id
+        for instance in instances
+        if (contract_id := str(instance.get("id") or "").strip())
+    }
+
+
 def destroy_verified(
     provider: VastProvider,
     contract_id: str,

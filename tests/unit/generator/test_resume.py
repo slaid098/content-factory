@@ -135,6 +135,15 @@ def _ready_server(
     return server_id
 
 
+def _destroy_server(tmp_path: Path, server_id: str) -> None:
+    connection = _connection(tmp_path)
+    try:
+        generator_servers.mark_destroyed(connection, server_id, _NOW)
+        connection.commit()
+    finally:
+        connection.close()
+
+
 def _run_row(tmp_path: Path) -> generator_runs.GeneratorRunRow:
     connection = _connection(tmp_path)
     try:
@@ -507,13 +516,7 @@ def test_destroyed_server_of_another_profile_does_not_fail_the_run(
         profiles=(_PROFILE, _PROFILE_B),
     )
     _journal(tmp_path).published(_RUN_ID, _PROFILE, _FILE)
-    server_id = _ready_server(tmp_path)
-    connection = _connection(tmp_path)
-    try:
-        generator_servers.mark_destroyed(connection, server_id, _NOW)
-        connection.commit()
-    finally:
-        connection.close()
+    _destroy_server(tmp_path, _ready_server(tmp_path))
     transport = _Transport()
     session = _Session()
     _patch_media(monkeypatch, [])
@@ -642,6 +645,70 @@ def test_lost_server_fails_the_run_without_renting_again(
         connection.close()
     assert server is not None
     assert server.status == generator_servers.LOST
+
+
+def test_destroyed_server_leaves_downloaded_items_to_postprocessing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_profile(tmp_path / "profiles")
+    failed_file = f"{_SLUG}_{_RUN_ID}_002.mp4"
+    _start_run(tmp_path, (_item(_FILE), _item(failed_file, look_id="c02")), count=2)
+    source = _run_dir(tmp_path) / "source" / _FILE
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"source")
+    server_id = _ready_server(tmp_path)
+    journal = _journal(tmp_path)
+    journal.downloaded(_RUN_ID, _PROFILE, _FILE, str(source))
+    journal.submitted(_RUN_ID, _PROFILE, failed_file, "gone", 1, "c1")
+    _destroy_server(tmp_path, server_id)
+    _patch_media(monkeypatch, [])
+
+    outcomes = _resume(
+        tmp_path,
+        provider=_Provider(),
+        client_factory=lambda connection: (_ for _ in ()).throw(AssertionError("no network")),
+    )
+
+    rows = {row.file: row for row in _item_rows(tmp_path)}
+    assert rows[_FILE].status == "done"
+    assert rows[failed_file].status == "failed"
+    assert rows[failed_file].error == "сервер профиля уничтожен до завершения элемента"
+    assert (outcomes[0].generated, outcomes[0].failed) == (1, 1)
+    assert (tmp_path / "content" / "dating" / "ru" / _FILE).is_file()
+
+
+def test_destroyed_chunk_server_does_not_fail_a_live_chunk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_profile(tmp_path / "profiles")
+    failed_file = f"{_SLUG}_{_RUN_ID}_001.mp4"
+    live_file = f"{_SLUG}_{_RUN_ID}_002.mp4"
+    _start_run(
+        tmp_path,
+        (_item(failed_file, look_id="c01"), _item(live_file, look_id="c02")),
+        count=2,
+    )
+    destroyed_server = _ready_server(tmp_path, server_id="s1", contract_id="c1")
+    _ready_server(tmp_path, server_id="s2", contract_id="c2")
+    _journal(tmp_path).submitted(_RUN_ID, _PROFILE, failed_file, "p1", 1, "c1")
+    _destroy_server(tmp_path, destroyed_server)
+    transport = _Transport()
+    provider = _Provider(["c2"])
+    _patch_media(monkeypatch, [])
+
+    outcomes = _resume(
+        tmp_path,
+        provider=provider,
+        client_factory=lambda connection: transport,
+    )
+
+    rows = {row.file: row for row in _item_rows(tmp_path)}
+    assert rows[failed_file].status == "failed"
+    assert rows[failed_file].error == "сервер профиля уничтожен до завершения элемента"
+    assert rows[live_file].status == "done"
+    assert (outcomes[0].generated, outcomes[0].failed) == (1, 1)
+    assert transport.submitted == ["prompt-1"]
+    assert provider.destroyed == ["c2"]
 
 
 def test_photo_pair_is_completed_after_a_restart_between_publishes(

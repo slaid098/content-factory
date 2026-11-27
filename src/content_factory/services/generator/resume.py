@@ -58,6 +58,7 @@ from content_factory.services.generator.report import _write_report
 from content_factory.services.generator.vast import (
     VastSession,
     destroy_verified,
+    present_contracts,
 )
 from content_factory.services.generator.vast_cli import VastProvider
 from content_factory.services.generator.workflow import workflow_builder
@@ -70,6 +71,7 @@ if TYPE_CHECKING:
 
 _FINAL_DIR = "final"
 _SOURCE_DIR = "source"
+_SERVER_GONE = "сервер профиля уничтожен до завершения элемента"
 
 
 class _LostServer(GeneratorError):
@@ -374,10 +376,10 @@ def _run_remote(
     """Find, wait for or resubmit the prompts of missing video items."""
     items = [_planned(profile, row) for row in rows]
     plans = {row.file: item for row, item in zip(rows, items, strict=True)}
-    servers, bound = _live_servers(connection, run, profile.name, provider)
-    if not servers and bound:
+    servers, own = _live_servers(connection, run, profile.name, provider)
+    if not servers and any(row.status == generator_servers.LOST for row in own.values()):
         raise _LostServer(f"сервер рана {run.run_id} исчез из Vast.ai")
-    if not servers:
+    if not servers and not own:
         return _rent_and_generate(
             run,
             profile,
@@ -399,6 +401,7 @@ def _run_remote(
         plans,
         run_dir,
         servers,
+        own,
         settings=settings,
         journal=journal,
         client_factory=client_factory,
@@ -414,6 +417,7 @@ def _generate_on_servers(
     plans: dict[str, _PlannedItem],
     run_dir: Path,
     servers: Sequence[_LiveServer],
+    known: dict[str, generator_servers.GeneratorServerRow],
     *,
     settings: GeneratorSettings,
     journal: RunJournalWriter,
@@ -422,11 +426,10 @@ def _generate_on_servers(
     rng: random.Random,
 ) -> list[comfy._JobResult]:
     """Generate every pending item on the server that already owns it."""
-    assigned = _assigned_rows(run, rows, servers)
+    assigned, results = _assigned_rows(run, rows, plans, servers, known)
     builder = workflow_builder(profile, rng)
     verifier = _verifier(checker)
     attempts = {plans[row.file].seq: (row.attempt or 0) + 1 for row in rows}
-    results: list[comfy._JobResult] = []
     for server in servers:
         own = assigned.get(server.row.id, [])
         if not own:
@@ -464,23 +467,34 @@ def _generate_on_servers(
 def _assigned_rows(
     run: generator_runs.GeneratorRunRow,
     rows: Sequence[generator_runs.GeneratorItemRow],
+    plans: dict[str, _PlannedItem],
     servers: Sequence[_LiveServer],
-) -> dict[str, list[generator_runs.GeneratorItemRow]]:
-    """Group pending rows by their journal server, spreading unbound ones."""
+    known: dict[str, generator_servers.GeneratorServerRow],
+) -> tuple[
+    dict[str, list[generator_runs.GeneratorItemRow]],
+    list[comfy._JobResult],
+]:
+    """Group rows by live server; fail rows of a server that is gone but known."""
     assigned: dict[str, list[generator_runs.GeneratorItemRow]] = {
         server.row.id: [] for server in servers
     }
+    results: list[comfy._JobResult] = []
     unassigned: list[generator_runs.GeneratorItemRow] = []
     for row in rows:
         if row.server_id is None:
             unassigned.append(row)
         elif row.server_id in assigned:
             assigned[row.server_id].append(row)
+        elif row.server_id in known and known[row.server_id].status != generator_servers.LOST:
+            results.append(comfy._JobResult(item=plans[row.file], error=_SERVER_GONE))
         else:
             raise _LostServer(f"сервер {row.server_id} рана {run.run_id} исчез из Vast.ai")
     for index, row in enumerate(unassigned):
-        assigned[servers[index % len(servers)].row.id].append(row)
-    return assigned
+        if servers:
+            assigned[servers[index % len(servers)].row.id].append(row)
+        else:
+            results.append(comfy._JobResult(item=plans[row.file], error=_SERVER_GONE))
+    return assigned, results
 
 
 def _rent_and_generate(
@@ -742,27 +756,27 @@ def _live_servers(
     run: generator_runs.GeneratorRunRow,
     profile: str,
     provider: VastProvider | None,
-) -> tuple[list[_LiveServer], bool]:
-    """Return the profile's live servers and whether it ever had a contract."""
-    journal = generator_servers.list_for_run(connection, run.run_id)
-    rows = [
-        row
-        for row in journal
+) -> tuple[list[_LiveServer], dict[str, generator_servers.GeneratorServerRow]]:
+    """Return the profile's live servers and all of its journal rows by id."""
+    own = {
+        row.id: row
+        for row in generator_servers.list_for_run(connection, run.run_id)
         if row.profile == profile
-        and row.status == generator_servers.READY
-        and row.contract_id
-        and row.ip
-        and row.port
+    }
+    ready = [
+        row
+        for row in own.values()
+        if row.status == generator_servers.READY and row.contract_id and row.ip and row.port
     ]
-    bound = any(row.profile == profile and row.contract_id is not None for row in journal)
-    if not rows:
-        return [], bound
-    present = _present_contracts(provider)
+    if not ready:
+        return [], own
+    present = present_contracts(provider)
     servers: list[_LiveServer] = []
-    for row in rows:
+    for row in ready:
         if present is not None and row.contract_id not in present:
             generator_servers.mark_lost(connection, row.id, now_iso(), "инстанс исчез из Vast.ai")
             connection.commit()
+            own[row.id] = replace(row, status=generator_servers.LOST)
             continue
         info = ServerInfo(
             connection=ServerConnection(
@@ -775,25 +789,7 @@ def _live_servers(
             cost_per_hour=row.cost_per_hour,
         )
         servers.append(_LiveServer(row, info))
-    return servers, bound
-
-
-def _present_contracts(provider: VastProvider | None) -> set[str] | None:
-    """Return the contract ids of the account, or ``None`` when unavailable."""
-    if provider is None:
-        return None
-    try:
-        instances = provider.list_instances()
-    except RentError as ex:
-        logger.bind(error=str(ex), error_type=type(ex).__name__).warning(
-            "Список инстансов Vast.ai недоступен — серверы рана проверяются подключением"
-        )
-        return None
-    return {
-        contract_id
-        for instance in instances
-        if (contract_id := str(instance.get("id") or "").strip())
-    }
+    return servers, own
 
 
 def _destroy_run_servers(
