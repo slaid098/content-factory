@@ -97,9 +97,10 @@ def test_orphaned_run_is_crashed(worker: ModuleType) -> None:
     assert crashed == 1
     run_id, body = api.state_calls[0]
     assert run_id == "run-1"
-    assert body["type"] == "CRASHED"
-    assert body["name"] == "Crashed"
-    assert "heartbeat" in body["message"]
+    assert set(body) == {"state"}
+    assert body["state"]["type"] == "CRASHED"
+    assert body["state"]["name"] == "Crashed"
+    assert "heartbeat" in body["state"]["message"]
 
 
 def test_live_worker_with_a_fresh_heartbeat_is_untouched(worker: ModuleType) -> None:
