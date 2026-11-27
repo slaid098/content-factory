@@ -20,7 +20,8 @@ from content_factory.exceptions.generator import RentError
 from content_factory.schemas.generator.journal import JournalPlanItem
 from content_factory.schemas.generator.run import RunReport
 from content_factory.schemas.generator.server import ServerConnection, ServerInfo
-from content_factory.services.generator import comfy, media, resume, service
+from content_factory.services import production
+from content_factory.services.generator import batch, comfy, media, resume
 from content_factory.services.production.card import CardProducer
 from content_factory.utils.run_id import profile_run_dir
 
@@ -279,8 +280,8 @@ def _patch_media(monkeypatch: pytest.MonkeyPatch, audios: list[Path | None]) -> 
             size=path.stat().st_size,
         )
 
-    monkeypatch.setattr(service.overlay, "mix", mix)
-    monkeypatch.setattr(service.qa, "check_video", check)
+    monkeypatch.setattr(batch.overlay, "mix", mix)
+    monkeypatch.setattr(batch.qa, "check_video", check)
     monkeypatch.setattr(comfy, "_store_video", lambda path, content: path.write_bytes(content))
 
 
@@ -589,7 +590,7 @@ def test_photo_pair_is_completed_after_a_restart_between_publishes(
             ),
         )
 
-    monkeypatch.setattr(resume, "CardProducer", factory)
+    monkeypatch.setattr(production, "card_producer", factory)
     provider = _Provider()
 
     outcomes = _resume(

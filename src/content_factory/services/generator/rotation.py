@@ -82,6 +82,11 @@ def _read_payload(path: Path) -> dict[str, Any] | None:
     return payload
 
 
+def cursor_path(output_dir: Path, language: str, slug: str) -> Path:
+    """Return the rotation cursor path of one ``language + profile`` pair."""
+    return output_dir / language / slug / ROTATION_FILENAME
+
+
 def read_profile_cursor(output_dir: Path, language: str, slug: str) -> str | None:
     """Return the cursor of one ``language + profile`` output directory.
 

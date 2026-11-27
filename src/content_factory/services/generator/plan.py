@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from pathlib import Path
 
 from loguru import logger
 
@@ -28,6 +29,14 @@ class _PlannedItem:
     seed: int
     frames: int
     filename: str
+
+
+def sequence_from_filename(filename: str) -> int:
+    """Return the one-based sequence stored in a deterministic file name."""
+    try:
+        return int(Path(filename).stem.rsplit("_", 1)[-1])
+    except (ValueError, IndexError):
+        return 1
 
 
 def plan_batch(

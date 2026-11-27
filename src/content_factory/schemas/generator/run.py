@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
@@ -29,6 +30,16 @@ class RunStatus(StrEnum):
     DONE = "done"
     FAILED = "failed"
     DRY_RUN = "dry_run"
+
+
+@dataclass(frozen=True, slots=True)
+class RunOutcome:
+    """Result of resuming one run from its journal."""
+
+    run_id: str
+    status: str
+    generated: int
+    failed: int
 
 
 class RunServer(BaseModel):

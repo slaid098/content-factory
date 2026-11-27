@@ -29,6 +29,7 @@ from content_factory.schemas.generator.run import (
     RunStep,
     RunTotals,
 )
+from content_factory.utils.fields import optional_int, optional_text
 
 
 def build_report(
@@ -139,9 +140,9 @@ def _item(
     return RunItem(
         file=artifact.item,
         profile=artifact.profile,
-        look_id=_text(meta, "look_id"),
-        seed=_integer(meta, "seed"),
-        frames=_integer(meta, "frames"),
+        look_id=optional_text(meta.get("look_id")),
+        seed=optional_int(meta.get("seed")),
+        frames=optional_int(meta.get("frames")),
         duration=_number(meta, "duration"),
         status=status,
         error=error,
@@ -200,23 +201,6 @@ def _server(meta: Mapping[str, object]) -> RunServer | None:
     if not isinstance(raw, Mapping):
         return None
     return RunServer.model_validate(dict(raw))
-
-
-def _text(meta: Mapping[str, object], key: str) -> str | None:
-    """Return an optional non-empty string field."""
-    value = meta.get(key)
-    if value is None:
-        return None
-    text = str(value)
-    return text or None
-
-
-def _integer(meta: Mapping[str, object], key: str) -> int | None:
-    """Return an optional integer field."""
-    value = meta.get(key)
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return value
 
 
 def _number(meta: Mapping[str, object], key: str) -> float | None:

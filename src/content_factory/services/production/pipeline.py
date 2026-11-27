@@ -26,6 +26,7 @@ from content_factory.schemas.generator.pipeline import (
 )
 from content_factory.services.production.qa import CheckRegistry
 from content_factory.services.production.registry import ProducerRegistry
+from content_factory.utils.fields import optional_int, optional_text
 
 _ItemKey = tuple[str, str]
 
@@ -212,9 +213,9 @@ def _journal_plan(
                 file=artifact.item,
                 producer=item.layer.producer,
                 type=item.layer.output.value,
-                look_id=_text(artifact, "look_id"),
-                seed=_integer(artifact, "seed"),
-                frames=_integer(artifact, "frames"),
+                look_id=optional_text(artifact.meta.get("look_id")),
+                seed=optional_int(artifact.meta.get("seed")),
+                frames=optional_int(artifact.meta.get("frames")),
             )
             for artifact in planned
         ),
@@ -253,23 +254,6 @@ def _journal_results(
     for (profile, name), reason in reasons.items():
         if (profile, name) not in reported:
             context.journal.failed(context.run_id, profile, name, reason)
-
-
-def _text(artifact: Artifact, key: str) -> str | None:
-    """Return an optional non-empty string field of artifact meta."""
-    value = artifact.meta.get(key)
-    if value is None:
-        return None
-    text = str(value)
-    return text or None
-
-
-def _integer(artifact: Artifact, key: str) -> int | None:
-    """Return an optional integer field of artifact meta."""
-    value = artifact.meta.get(key)
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return value
 
 
 def _run_layer(

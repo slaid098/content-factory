@@ -22,13 +22,14 @@ from content_factory.schemas.generator.text import TextWriter
 from content_factory.services.generator import (
     TextClient,
     generate_overlay,
+    load_overlay,
     load_profile,
     profile_slug,
     publish_photo,
     render_card,
+    save_overlay,
     validate_count,
 )
-from content_factory.services.generator.texts import load_overlay, save_overlay
 from content_factory.services.production.paths import context_run_dir
 from content_factory.utils.run_id import validate_run_id
 

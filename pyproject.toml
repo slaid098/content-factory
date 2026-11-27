@@ -102,6 +102,20 @@ exclude_lines = [
 ]
 
 [tool.audit]
+# ConfigError наследует ContentFactoryError — осознанная иерархия ошибок
+# сервиса, чтобы вызывающий код мог ловить общий тип. DatabaseError — база
+# порта БД: IntegrityError и OperationalError уточняют её, а не доменную
+# иерархию, поэтому сервис не смешивает отказ базы с ошибкой конфигурации.
+# JournalWriter — общий writer транзакций двух журналов; наследники задают
+# только доменную подпись ошибки и методы записи.
+inheritance_allowlist = [
+  "content_factory.db.journal.JournalWriter",
+  "content_factory.exceptions.errors.ContentFactoryError",
+  "content_factory.exceptions.errors.SupplierError",
+  "content_factory.exceptions.errors.DeliveryError",
+  "content_factory.exceptions.errors.DatabaseError",
+]
+
 # README этого репозитория — служебный runbook сервиса, а не продуктовая
 # витрина. Delimiter-теги (summary/tagline/features) и cover из assets/
 # осознанно не применяются: репозиторий не публикует продукт.
@@ -109,17 +123,6 @@ exclude_lines = [
 check_id = "readme_ceremony"
 path = "README.md"
 reason = "служебный runbook, не продуктовая витрина"
-
-# ConfigError наследует ContentFactoryError — осознанная иерархия ошибок
-# сервиса, чтобы вызывающий код мог ловить общий тип. DatabaseError — база
-# порта БД: IntegrityError и OperationalError уточняют её, а не доменную
-# иерархию, поэтому сервис не смешивает отказ базы с ошибкой конфигурации.
-inheritance_allowlist = [
-  "content_factory.exceptions.errors.ContentFactoryError",
-  "content_factory.exceptions.errors.SupplierError",
-  "content_factory.exceptions.errors.DeliveryError",
-  "content_factory.exceptions.errors.DatabaseError",
-]
 
 # Конструкторы этапов (download/filter/mcp_session) совпадают по форме: два
 # поля и их присваивание. Общий базовый класс ради четырёх строк добавил бы
@@ -277,3 +280,19 @@ reason = "фильтр uvicorn.access — stdlib logging.Filter, loguru запи
 check_id = "inheritance_whitelist"
 path = "src/content_factory/config/access_log.py"
 reason = "logging.Filter — контракт stdlib для фильтра access-log uvicorn"
+
+# Миграция 0006 подключается по строке из MIGRATION_MODULES, как 0001 и 0005:
+# прямой импорт модуля с именем, начинающимся с цифры, невозможен.
+[[tool.audit.ignore]]
+check_id = "dead_module"
+path = "src/content_factory/db/migrations/0006_generator_runs.py"
+reason = "миграция подключается по строке из MIGRATION_MODULES, прямой импорт не требуется"
+
+# resume.py — композиционный адаптер восстановления рана, а не ядро
+# генерации: он читает журнал ранов и серверов через db-репозитории и
+# собирает producers. Ядро service.py и batch.py базы не знают; ORM-моделей
+# в resume.py нет, только строки журнала и вызовы репозиториев.
+[[tool.audit.ignore]]
+check_id = "orm_in_core"
+path = "src/content_factory/services/generator/resume.py"
+reason = "адаптер восстановления: читает журнал через db-репозитории, ORM-моделей нет"

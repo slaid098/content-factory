@@ -20,7 +20,8 @@ from content_factory.db.lock import GENERATOR_LOCK, lock_path, try_acquire
 from content_factory.db.run_journal import RunJournalWriter
 from content_factory.exceptions.generator import RentError
 from content_factory.flows.generator_recovery import recovery
-from content_factory.services.generator import VastProvider, resume
+from content_factory.services.generator import VastProvider
+from content_factory.services.generator.service import resume_unfinished
 
 
 @flow(name="generator_recovery")
@@ -67,7 +68,7 @@ def _recover(settings: Settings, provider: VastProvider | None) -> str:
     try:
         try:
             vast = provider or _provider()
-            outcomes = resume.resume_unfinished(
+            outcomes = resume_unfinished(
                 connection,
                 data_dir=settings.data_dir,
                 settings=load_generator_settings(),

@@ -32,7 +32,7 @@ POSTPROCESSING = "postprocessing"
 ITEM_DONE = "done"
 ITEM_FAILED = "failed"
 
-UNFINISHED_RUN_STATUSES = (RUNNING,)
+_UNFINISHED_RUN_STATUSES = (RUNNING,)
 TERMINAL_ITEM_STATUSES = (ITEM_DONE, ITEM_FAILED)
 PENDING_ITEM_STATUSES = (PLANNED, QUEUED)
 
@@ -306,14 +306,14 @@ def get_run(connection: Connection, run_id: str) -> GeneratorRunRow | None:
 
 def list_unfinished_runs(connection: Connection) -> list[GeneratorRunRow]:
     """Return every run that has not reached a terminal state yet."""
-    placeholders = ", ".join("?" for _ in UNFINISHED_RUN_STATUSES)
+    placeholders = ", ".join("?" for _ in _UNFINISHED_RUN_STATUSES)
     rows = connection.execute(
         f"""
         SELECT {_RUN_COLUMNS} FROM generator_runs
         WHERE status IN ({placeholders})
         ORDER BY started_at, run_id
         """,
-        UNFINISHED_RUN_STATUSES,
+        _UNFINISHED_RUN_STATUSES,
     ).fetchall()
     return [_run_row(row) for row in rows]
 

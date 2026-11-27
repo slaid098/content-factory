@@ -24,8 +24,9 @@ from content_factory.services.generator import (
     profile_slug,
     read_profile_cursor,
 )
-from content_factory.services.generator.plan import _PlannedItem, planned_item
+from content_factory.services.generator.service import PlannedItem, planned_item
 from content_factory.services.production.paths import context_run_dir
+from content_factory.utils.fields import optional_int, optional_text
 
 _FINAL_DIR = "final"
 _RUN_FILENAME = "run.json"
@@ -124,12 +125,12 @@ class VastProducer:
         return artifacts
 
 
-def _planned_items(context: PipelineContext, layer: Layer) -> tuple[_PlannedItem, ...] | None:
+def _planned_items(context: PipelineContext, layer: Layer) -> tuple[PlannedItem, ...] | None:
     """Convert the journal plan of a layer into planned videos, when present."""
     artifacts = context.planned.get(layer.name)
     if artifacts is None:
         return None
-    items: list[_PlannedItem] = []
+    items: list[PlannedItem] = []
     for profile in context.profiles:
         loaded = load_profile(profile.name, context.data_dir / PROFILES_DIR)
         own = [artifact for artifact in artifacts if artifact.profile == loaded.name]
@@ -138,9 +139,9 @@ def _planned_items(context: PipelineContext, layer: Layer) -> tuple[_PlannedItem
                 planned_item(
                     loaded,
                     artifact.item,
-                    look_id=_text(artifact, "look_id"),
-                    seed=_integer(artifact, "seed"),
-                    frames=_integer(artifact, "frames"),
+                    look_id=optional_text(artifact.meta.get("look_id")),
+                    seed=optional_int(artifact.meta.get("seed")),
+                    frames=optional_int(artifact.meta.get("frames")),
                     seq=seq,
                 )
             )
@@ -223,7 +224,9 @@ def _artifact(
 ) -> Artifact:
     """Describe one planned video, using its report item when it matches."""
     filename = planned.item
-    frames = item.frames if item is not None else _integer(planned, "frames")
+    frames = item.frames if item is not None else optional_int(planned.meta.get("frames"))
+    look_id = item.look_id if item is not None else optional_text(planned.meta.get("look_id"))
+    seed = item.seed if item is not None else optional_int(planned.meta.get("seed"))
     if item is None:
         status, error = "failed", "нет отчёта генератора"
     elif item.status is RunStatus.DONE:
@@ -237,8 +240,8 @@ def _artifact(
         path=_final_path(run_dir, filename),
         media_type=_VIDEO_MEDIA_TYPE,
         meta={
-            "look_id": item.look_id if item is not None else _text(planned, "look_id"),
-            "seed": item.seed if item is not None else _integer(planned, "seed"),
+            "look_id": look_id,
+            "seed": seed,
             "frames": frames,
             "duration": item.duration if item is not None else None,
             "status": status,
@@ -248,23 +251,6 @@ def _artifact(
             "server": server.model_dump() if server is not None else None,
         },
     )
-
-
-def _text(artifact: Artifact, key: str) -> str | None:
-    """Return an optional non-empty string field of artifact meta."""
-    value = artifact.meta.get(key)
-    if value is None:
-        return None
-    text = str(value)
-    return text or None
-
-
-def _integer(artifact: Artifact, key: str) -> int | None:
-    """Return an optional integer field of artifact meta."""
-    value = artifact.meta.get(key)
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return value
 
 
 def _plain_name(filename: str) -> bool:

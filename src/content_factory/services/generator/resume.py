@@ -9,19 +9,17 @@ those rows instead of starting a second batch.
 from __future__ import annotations
 
 import random
-import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
 from content_factory.config.settings import GeneratorSettings
 from content_factory.constants import DB_DIR, DB_FILENAME, PROFILES_DIR
 from content_factory.db import generator_runs, generator_servers
-from content_factory.db.connection import Connection
 from content_factory.db.run_journal import RunJournalWriter
 from content_factory.db.server_journal import ServerJournal
 from content_factory.exceptions.generator import (
@@ -35,6 +33,7 @@ from content_factory.schemas.generator.journal import JournalPlanItem
 from content_factory.schemas.generator.pipeline import Layer, PipelineContext
 from content_factory.schemas.generator.run import (
     RunItem,
+    RunOutcome,
     RunReport,
     RunServer,
     RunStatus,
@@ -44,33 +43,33 @@ from content_factory.schemas.generator.run import (
 from content_factory.schemas.generator.server import ServerConnection, ServerInfo
 from content_factory.schemas.generator.text import TextWriter
 from content_factory.services import production
-from content_factory.services.generator import VastProvider, comfy, profiles, safety, service
-from content_factory.services.generator.plan import _PlannedItem, attempt_seed, planned_item
+from content_factory.services.generator import batch, comfy, safety
+from content_factory.services.generator.plan import (
+    _PlannedItem,
+    planned_item,
+    sequence_from_filename,
+)
 from content_factory.services.generator.profiles import (
     _Profile,
     load_profile,
     profile_slug,
 )
+from content_factory.services.generator.report import _write_report
 from content_factory.services.generator.vast import (
     VastSession,
     destroy_verified,
 )
-from content_factory.services.generator.workflow import build_workflow
-from content_factory.services.production.card import CardProducer
+from content_factory.services.generator.vast_cli import VastProvider
+from content_factory.services.generator.workflow import workflow_builder
+from content_factory.utils.clock import now_iso, start_moment
+from content_factory.utils.fields import optional_int, optional_text
 from content_factory.utils.run_id import profile_run_dir
+
+if TYPE_CHECKING:
+    from content_factory.db.connection import Connection
 
 _FINAL_DIR = "final"
 _SOURCE_DIR = "source"
-
-
-@dataclass(frozen=True, slots=True)
-class RunOutcome:
-    """Result of resuming one run."""
-
-    run_id: str
-    status: str
-    generated: int
-    failed: int
 
 
 class _LostServer(GeneratorError):
@@ -262,7 +261,7 @@ def _resume_photos(
     if not photo_rows:
         return
     context = _context(profile, run, data_dir, settings, journal, rng)
-    producer = CardProducer(writer=text_writer)
+    producer = production.card_producer(writer=text_writer)
     run_dir = profile_run_dir(
         settings.output_dir, profile.language, profile_slug(profile), run.run_id
     )
@@ -303,18 +302,7 @@ def _resume_videos(
         profile.production,
         run_dir,
     )
-    results: list[comfy._JobResult] = []
-    pending: list[generator_runs.GeneratorItemRow] = []
-    for row in video_rows:
-        if row.status in generator_runs.TERMINAL_ITEM_STATUSES:
-            continue
-        source = _source(row)
-        if source is not None:
-            results.append(comfy._JobResult(item=_planned(profile, row), path=source))
-            continue
-        if _had_source(row):
-            journal.requeue(run.run_id, profile.name, row.file)
-        pending.append(row)
+    results, pending = _video_results(profile, video_rows, journal, run.run_id)
     if pending:
         results.extend(
             _run_remote(
@@ -332,7 +320,7 @@ def _resume_videos(
                 rng=rng,
             )
         )
-    service._postprocess(
+    batch._postprocess(
         profile,
         layer,
         tuple(results),
@@ -344,6 +332,28 @@ def _resume_videos(
         data_dir,
         journal,
     )
+
+
+def _video_results(
+    profile: _Profile,
+    rows: Sequence[generator_runs.GeneratorItemRow],
+    journal: RunJournalWriter,
+    run_id: str,
+) -> tuple[list[comfy._JobResult], list[generator_runs.GeneratorItemRow]]:
+    """Separate finished sources from the rows that still need a server."""
+    results: list[comfy._JobResult] = []
+    pending: list[generator_runs.GeneratorItemRow] = []
+    for row in rows:
+        if row.status in generator_runs.TERMINAL_ITEM_STATUSES:
+            continue
+        source = _source(row)
+        if source is not None:
+            results.append(comfy._JobResult(item=_planned(profile, row), path=source))
+            continue
+        if _had_source(row):
+            journal.requeue(run_id, profile.name, row.file)
+        pending.append(row)
+    return results, pending
 
 
 def _run_remote(
@@ -412,20 +422,8 @@ def _generate_on_servers(
     rng: random.Random,
 ) -> list[comfy._JobResult]:
     """Generate every pending item on the server that already owns it."""
-    by_id = {server.row.id: server for server in servers}
-    assigned: dict[str, list[generator_runs.GeneratorItemRow]] = {sid: [] for sid in by_id}
-    unassigned: list[generator_runs.GeneratorItemRow] = []
-    for row in rows:
-        if row.server_id is None:
-            unassigned.append(row)
-        elif row.server_id in assigned:
-            assigned[row.server_id].append(row)
-        else:
-            raise _LostServer(f"сервер {row.server_id} рана {run.run_id} исчез из Vast.ai")
-    for index, row in enumerate(unassigned):
-        target = servers[index % len(servers)].row.id
-        assigned[target].append(row)
-    builder = _builder(profile, rng)
+    assigned = _assigned_rows(run, rows, servers)
+    builder = workflow_builder(profile, rng)
     verifier = _verifier(checker)
     attempts = {plans[row.file].seq: (row.attempt or 0) + 1 for row in rows}
     results: list[comfy._JobResult] = []
@@ -463,6 +461,28 @@ def _generate_on_servers(
     return results
 
 
+def _assigned_rows(
+    run: generator_runs.GeneratorRunRow,
+    rows: Sequence[generator_runs.GeneratorItemRow],
+    servers: Sequence[_LiveServer],
+) -> dict[str, list[generator_runs.GeneratorItemRow]]:
+    """Group pending rows by their journal server, spreading unbound ones."""
+    assigned: dict[str, list[generator_runs.GeneratorItemRow]] = {
+        server.row.id: [] for server in servers
+    }
+    unassigned: list[generator_runs.GeneratorItemRow] = []
+    for row in rows:
+        if row.server_id is None:
+            unassigned.append(row)
+        elif row.server_id in assigned:
+            assigned[row.server_id].append(row)
+        else:
+            raise _LostServer(f"сервер {row.server_id} рана {run.run_id} исчез из Vast.ai")
+    for index, row in enumerate(unassigned):
+        assigned[servers[index % len(servers)].row.id].append(row)
+    return assigned
+
+
 def _rent_and_generate(
     run: generator_runs.GeneratorRunRow,
     profile: _Profile,
@@ -493,7 +513,7 @@ def _rent_and_generate(
             session,
             client_factory,
             items,
-            _builder(profile, rng),
+            workflow_builder(profile, rng),
             run_dir / _SOURCE_DIR,
             label=profile.name,
             settings=settings,
@@ -508,21 +528,6 @@ def _rent_and_generate(
         )
         return [comfy._JobResult(item=item, error=str(ex)) for item in items]
     return list(results)
-
-
-def _builder(
-    profile: _Profile,
-    rng: random.Random,
-) -> Callable[[_PlannedItem, int], dict[str, Any]]:
-    """Build a workflow for one resumed item with the shared random source."""
-    lock = threading.Lock()
-
-    def build(item: _PlannedItem, attempt: int) -> dict[str, Any]:
-        with lock:
-            prompt = profiles.build_prompt(profile, item.look, rng)
-        return build_workflow(profile, item, prompt, seed=attempt_seed(item.seed, attempt))
-
-    return build
 
 
 def _verifier(
@@ -606,16 +611,8 @@ def _planned(
         look_id=row.look_id,
         seed=row.seed,
         frames=row.frames,
-        seq=_seq(row.file),
+        seq=sequence_from_filename(row.file),
     )
-
-
-def _seq(filename: str) -> int:
-    """Return the one-based sequence stored in a deterministic file name."""
-    try:
-        return int(Path(filename).stem.rsplit("_", 1)[-1])
-    except (ValueError, IndexError):
-        return 1
 
 
 def _source(row: generator_runs.GeneratorItemRow) -> Path | None:
@@ -676,7 +673,7 @@ def _ensure_plan(
         settings=settings,
         run_id=run.run_id,
         rng=rng,
-        now=_started(run),
+        now=start_moment(run.started_at),
     )
     items: list[JournalPlanItem] = []
     registry = production.default_producers()
@@ -696,9 +693,9 @@ def _plan_item(layer: Layer, artifact: Any) -> JournalPlanItem:
         file=artifact.item,
         producer=layer.producer,
         type=layer.output.value,
-        look_id=_text(artifact.meta.get("look_id")),
-        seed=_integer(artifact.meta.get("seed")),
-        frames=_integer(artifact.meta.get("frames")),
+        look_id=optional_text(artifact.meta.get("look_id")),
+        seed=optional_int(artifact.meta.get("seed")),
+        frames=optional_int(artifact.meta.get("frames")),
     )
 
 
@@ -719,7 +716,7 @@ def _context(
         run_id=run.run_id,
         rng=rng,
         journal=journal,
-        now=_started(run),
+        now=start_moment(run.started_at),
     )
 
 
@@ -757,7 +754,7 @@ def _live_servers(
     servers: list[_LiveServer] = []
     for row in rows:
         if present is not None and row.contract_id not in present:
-            generator_servers.mark_lost(connection, row.id, _now(), "инстанс исчез из Vast.ai")
+            generator_servers.mark_lost(connection, row.id, now_iso(), "инстанс исчез из Vast.ai")
             connection.commit()
             continue
         info = ServerInfo(
@@ -813,17 +810,17 @@ def _destroy_run_servers(
         if row.status not in generator_servers.UNFINISHED_STATUSES:
             continue
         if row.contract_id is None:
-            generator_servers.mark_lost(connection, row.id, _now(), "contract_id не появился")
+            generator_servers.mark_lost(connection, row.id, now_iso(), "contract_id не появился")
             connection.commit()
             continue
         if provider is None:
             continue
-        generator_servers.mark_destroying(connection, row.id, _now())
+        generator_servers.mark_destroying(connection, row.id, now_iso())
         connection.commit()
         try:
             destroy_verified(provider, row.contract_id)
         except RentError as ex:
-            generator_servers.mark_destroying(connection, row.id, _now(), str(ex))
+            generator_servers.mark_destroying(connection, row.id, now_iso(), str(ex))
             connection.commit()
             logger.bind(
                 contract_id=row.contract_id,
@@ -831,7 +828,7 @@ def _destroy_run_servers(
                 error=str(ex),
             ).error("Сервер рана не уничтожен — следующий тик recovery повторит")
             continue
-        generator_servers.mark_destroyed(connection, row.id, _now())
+        generator_servers.mark_destroyed(connection, row.id, now_iso())
         connection.commit()
 
 
@@ -850,7 +847,7 @@ def _write_reports(
             settings.output_dir, profile.language, profile_slug(profile), run.run_id
         )
         report = _report(run, profile, own, server, profile.production, run_dir)
-        _write(report, run_dir)
+        _write_report(run_dir, report)
 
 
 def _report(
@@ -869,7 +866,7 @@ def _report(
     size = sum(path.stat().st_size for row in done if (path := final_dir / row.file).is_file())
     return RunReport(
         run_id=run.run_id,
-        started_at=_started(run),
+        started_at=start_moment(run.started_at),
         finished_at=datetime.now(UTC),
         status=RunStatus.FAILED if failed else RunStatus.DONE,
         profiles=[profile.name],
@@ -994,44 +991,6 @@ def _active_checker(
     checker = injected or safety.FrameChecker(settings)
     checker.preflight()
     return checker
-
-
-def _write(report: RunReport, run_dir: Path) -> None:
-    """Write ``run.json`` atomically into the run directory."""
-    run_dir.mkdir(parents=True, exist_ok=True)
-    target = run_dir / "run.json"
-    temporary = target.with_suffix(".json.tmp")
-    temporary.write_text(report.model_dump_json(indent=2) + "\n", encoding="utf-8")
-    temporary.replace(target)
-
-
-def _started(run: generator_runs.GeneratorRunRow) -> datetime:
-    """Parse the start moment of a run, falling back to now."""
-    try:
-        moment = datetime.fromisoformat(run.started_at)
-    except ValueError:
-        return datetime.now(UTC)
-    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
-
-
-def _text(value: object) -> str | None:
-    """Return an optional non-empty string."""
-    if value is None:
-        return None
-    text = str(value)
-    return text or None
-
-
-def _integer(value: object) -> int | None:
-    """Return an optional integer."""
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return value
-
-
-def _now() -> str:
-    """Return the current UTC moment as ISO 8601."""
-    return datetime.now(UTC).isoformat()
 
 
 __all__ = ["RunOutcome", "resume_unfinished"]

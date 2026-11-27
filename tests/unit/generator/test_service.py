@@ -24,7 +24,16 @@ from content_factory.exceptions.generator import (
     RentError,
     SafetyError,
 )
-from content_factory.services.generator import comfy, media, overlay, publish, qa, safety, service
+from content_factory.services.generator import (
+    batch,
+    comfy,
+    media,
+    overlay,
+    publish,
+    qa,
+    safety,
+    service,
+)
 from content_factory.services.generator.comfy import _OutputFile
 from content_factory.services.generator.plan import attempt_seed
 
@@ -643,7 +652,7 @@ def test_publication_error_marks_the_video_failed_and_keeps_the_final(
         del profile, data_root
         raise GeneratorError(f"не удалось положить в сток: {final}")
 
-    monkeypatch.setattr(service, "publish_stock", fail_publish)
+    monkeypatch.setattr(batch, "publish_stock", fail_publish)
 
     result = service.generate_batch(
         profiles="dating/profile_2",
@@ -1393,7 +1402,7 @@ def test_clef_only_recipe_still_rejects_a_broken_mp4_before_publish(
 
     monkeypatch.setattr(qa, "check_video", reject)
     monkeypatch.setattr(
-        service,
+        batch,
         "publish_stock",
         lambda profile, final, data_root: published.append(final),
     )

@@ -31,10 +31,10 @@ from content_factory.services.generator import (
     load_profile,
     parse_names,
     profile_slug,
-    resume,
     validate_count,
     write_report,
 )
+from content_factory.services.generator.service import resume_unfinished
 from content_factory.utils.run_id import profile_run_dir
 
 if TYPE_CHECKING:
@@ -48,7 +48,7 @@ def _resume_unfinished(data_dir: Path, settings: GeneratorSettings) -> None:
         if not generator_runs.list_unfinished_runs(connection):
             return
         token = settings.vast_api_token.get_secret_value() if settings.vast_api_token else ""
-        outcomes = resume.resume_unfinished(
+        outcomes = resume_unfinished(
             connection,
             data_dir=data_dir,
             settings=settings,
